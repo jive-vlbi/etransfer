@@ -1,0 +1,170 @@
+#!/usr/bin/env python
+# this handles the client side of things
+# 1.) connect to SRC and DST
+# 2.) transfer data
+# 3.) profit!
+import os, sys, re, etdc_fd, etd_server, traceback, trace, exceptions, functools
+
+version   = "$Id: $"
+partition = lambda p, l: reduce(lambda a, i: (a[0]+[i], a[1]) if p(i) else (a[0], a[1]+[i]), l, ([], []))
+compose   = lambda *funcs: lambda x: reduce(lambda v, f: f(v), reversed(funcs), x) 
+
+trace.dont_trace()
+
+# we are a main program, not loadable as module
+# Our command line options either start with '-' (minus) or have the form key=value
+rxOpt                = re.compile(r"^(-.+|[^=]+=.+)$")
+(options, arguments) = partition(rxOpt.match, sys.argv[1:])
+
+print "{0}: options = {1}, arguments = {2}".format(sys.argv[0], options, arguments)
+
+def usage(name, longhelp, exitval):
+    print """{name} [options] [[user1@]host1:]//src-path/ [[user2@]host2:]//dst-path/
+    run e-transfer(s) between SRC and DST, using [options]""".format( name=name )
+    if longhelp:
+        print """
+currently recognized options:
+    -h          print this message and exit succesfully
+    -v          print version and exit succesfully
+    -d          enable debug output
+    
+"""
+    sys.exit( exitval )
+
+
+if '-h' in options:
+    # help exists sucessfully
+    usage(sys.argv[0], True, 0)
+
+if '-v' in options:
+    print version
+    sys.exit( 0 )
+
+debug = '-d' in options
+
+# command line parsing
+if not arguments:
+    usage(sys.argv[0], False, 1)
+
+
+rxURI = re.compile(r"^(file|dir)://(((?P<user>[^@:/]+)@)?(?P<host>[^@:/]+)?(:(?P<port>[0-9]+))?)?(?P<path>/.*)$")
+uris  = map(rxURI.match, arguments)
+
+if uris[0] is None:
+    print "{0} is not a valid source path".format(arguments[0])
+
+class network_context:
+    def __init__(self, conn):
+        self.connection = conn
+
+    def __enter__(self):
+        return self.connection
+
+    def __exit__(self, tp, val, tb):
+        try:
+            self.connection.close()
+        except Exception as E:
+            print "network_context: failed to close: ",E
+
+        if not (tp is None and val is None and tb is None):
+            if tp==exceptions.KeyboardInterrupt:
+                print "Closing down because of keyboard interrupt."
+            elif debug:
+                print traceback.print_exception(tp, val, tb)
+            else:
+                print val
+            sys.exit( -1 )
+        return True
+
+def connection_factory( uri_mo ):
+    host = uri_mo.group('host')
+    if host:
+        return etd_server.ETDProxy( etdc_fd.mk_client('tcp', (host, int(uri_mo.group('port')) if uri_mo.group('port') else 4004)) )
+    return etd_server.ETDServer()
+
+
+@trace.trace
+def push_file(src, srcFile, dst, dstFile, addr):
+    try:
+        uuid = None
+        print "push {0} ====> {1}".format(srcFile, dstFile)
+        (uuid, alreadyhave) = dst.requestFileWrite(dstFile, "write")
+        src.sendFile(srcFile, uuid, alreadyhave, addr)
+    except Exception, E:
+        print "Error trying to send file: ",repr(E)
+        pass
+    if uuid is not None:
+        src.removeUUID( uuid )
+        dst.removeUUID( uuid )
+
+@trace.trace
+def pull_file(src, srcFile, dst, dstFile, addr):
+    try:
+        uuidSrc = uuidDst = None
+        print "pull {0} ====> {1}".format(srcFile, dstFile)
+        (uuidDst, alreadyhave, _) = dst.requestFileWrite(dstFile, "write")
+        (uuidSrc, remain)         = src.requestFileRead(srcFile, alreadyhave)
+        if remain>0:
+            dst.getFile(uuidSrc, uuidDst, remain, addr)
+    except Exception, E:
+        print "Error trying to send file: ",repr(E)
+        pass
+    if uuidSrc:
+        src.removeUUID( uuidSrc )
+    if uuidDst:
+        dst.removeUUID( uuidDst )
+
+
+with network_context(connection_factory(uris[0])) as src:
+    print "ETClient {0} starting up".format( version )
+    path = uris[0].group('path')
+    user = uris[0].group('user')
+    if user:
+        print "   should authenticate user=",user
+    files = src.listPath( path )
+    if len(uris)==1:
+        print "Contents of {0}:".format( path )
+        print files
+    else:
+        with network_context(connection_factory(uris[1])) as dst:
+            if src.isRemote==dst.isRemote:
+                raise RuntimeError, "Source/destination are the same"
+            # Depending on who has the data channel we push or pull the files
+            # Note that if the data channel ip is None we replace it with the
+            # host name/ip given on the command line
+            addr = dst.dataChannelAddr()
+            if addr is not None:
+                host = uris[1].group('host')
+                fn   = push_file
+            else:
+                addr = src.dataChannelAddr()
+                host = uris[0].group('host')
+                fn   = pull_file
+            (proto, (ip, port)) = addr
+            addr = (proto, (host if ip is None else ip, port))
+            # create the function that computes the output file names
+            out_fn = compose(functools.partial(os.path.join, uris[1].group('path')), os.path.basename)
+            for (srcFile, dstFile) in map(lambda x: (x, out_fn(x)), files):
+                fn(src, srcFile, dst, dstFile, addr)
+
+
+
+#            # If dst is not remote (i.e. the local machine)
+#            for f in files:
+#                dstFile = os.path.join(uris[1].group('path'), os.path.basename(f))
+#                print "{0} ====> {1}".format(f, dstFile)
+#                (uuid, alreadyhave, addr) = dst.requestFileWrite(dstFile, "write")
+#                try:
+#                    # If dst has a data server we can tell the src to push data to it,
+#                    # otherwise we'll ask the dst to pull data from src
+#                    if addr is not None:
+#                        (proto, (ip, port)) = addr
+#                        src.sendFile(f, uuid, alreadyhave, (proto, (if ip is None else ip, port)))
+#                    else:
+#                        (proto, (ip, port)) = src.dataChannelAddr() 
+#                        dst.getFile(f, uuid, alreadyhave, )
+#                except Exception, E:
+#                    print "Error trying to send file: ",repr(E)
+#                    pass
+#                src.removeUUID( uuid )
+#                dst.removeUUID( uuid )
