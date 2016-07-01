@@ -18,10 +18,10 @@ def doXFER(fdin, fdout, uuid):
         x  = fdin.read( 2 * 1024 * 1024 )
         if not x:
             break
-        msg = {'uuid': uuid, 'fpos': fp, 'sz': len(x)}
-        fdout.send(repr(msg))
-        fdout.send(x)
-        #ok = fdout.recv(1024)
+        msg = repr({'uuid': uuid, 'fpos': fp, 'sz': len(x)})+x
+        n   = 0
+        while n<len(msg):
+            n += fdout.send(msg[n:])
     fdin.close()
     fdout.close()
     return True
@@ -589,13 +589,17 @@ class ETDDataHandler(threading.Thread):
                 # Ok, get the message, this is a header followed by the data
                 # MSG = "{'key':value, 'other key':other value, ..}DATA"
                 msg = msg + self.sokkit.recv(1024)
-                print "ETDDataHandler[{0}]: got {1} bytes".format( self.remote_addr, len(msg))
+                #print "ETDDataHandler[{0}]: got {1} bytes".format( self.remote_addr, len(msg))
+                #print "  ",msg[:min(len(msg), 40)]
                 x = rxHDR.split(msg)
-                if len(x)!=3 and len(msg)>2048:
-                    raise RuntimeError, "This is not a proper formatted header:\n{0}".format(msg[:80])
-                (_, hdr, data) = rxHDR.split(msg)
+                if len(x)!=3:
+                    if len(msg)>2048:
+                        raise RuntimeError, "This is not a proper formatted header:\n{0}".format(msg[:80])
+                    # ok maybe just not enough data - get a new chunk and append it
+                    continue
+                (_, hdr, data) = x
                 hdr = dict(map(xForm, map(operator.methodcaller('groups'), map(rxKeyValue.match, rxComma.split(hdr.strip("{}"))))))
-                print "ETDDataHandler[{0}]: hdr={1}".format( self.remote_addr, hdr )
+                #print "ETDDataHandler[{0}]: hdr={1}".format( self.remote_addr, hdr )
 
                 uuid = hdr['uuid']
                 if uuid not in self.xfers:
@@ -606,19 +610,19 @@ class ETDDataHandler(threading.Thread):
                 n  = hdr['sz']
                 if 'push' in hdr:
                     org_n = n 
-                    print "ETDDataHandler[{0}]: need to push {1} bytes sz={2}".format(self.remote_addr, n, fd.size())
+                    #print "ETDDataHandler[{0}]: need to push {1} bytes sz={2}".format(self.remote_addr, n, fd.size())
                     while n>0:
                         b = fd.read(max(n, 2*1024*1024))
                         self.sokkit.send(b)
                         n = n - len(b)
-                    print "ETDDataHandler[{0}]: pushed {1} bytes".format(self.remote_addr, org_n - n)
+                    #print "ETDDataHandler[{0}]: pushed {1} bytes".format(self.remote_addr, org_n - n)
                     break
                 else:
                     fpos = hdr['fpos']
                     while len(data)<n:
                         data = data + self.sokkit.recv(n - len(data))
                     # Ok got all data!
-                    print "ETDDataHandler[{0}]: got {1} bytes of data payload (expect {2})".format(self.remote_addr, len(data), n)
+                    #print "ETDDataHandler[{0}]: got {1} bytes of data payload (expect {2})".format(self.remote_addr, len(data), n)
                     fd.write( data )
                 msg = ''
         except Exception, E:

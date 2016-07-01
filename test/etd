@@ -47,7 +47,8 @@ clients   = []
 lissensok = etdc_fd.mk_server('tcp', (None, 4004))
 # the data channel
 transfers = {}
-dataAddr  = ('tcp', (None, 4005))
+#dataAddr  = ('tcp', (None, 4005))
+dataAddr  = ('udt', (None, 4005))
 dataServ  = etd_server.ETDDataServer( dataAddr, transfers )
 try:
     while True:
