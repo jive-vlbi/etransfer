@@ -613,7 +613,9 @@ class ETDDataHandler(threading.Thread):
                     #print "ETDDataHandler[{0}]: need to push {1} bytes sz={2}".format(self.remote_addr, n, fd.size())
                     while n>0:
                         b = fd.read(max(n, 2*1024*1024))
-                        self.sokkit.send(b)
+                        cnt = 0
+                        while cnt<len(b):
+                            cnt += self.sokkit.send(b[cnt:])
                         n = n - len(b)
                     #print "ETDDataHandler[{0}]: pushed {1} bytes".format(self.remote_addr, org_n - n)
                     break
