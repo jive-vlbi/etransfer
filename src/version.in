@@ -1,0 +1,26 @@
+// 'template' version for any program. the Makefile will run it through
+// sed(2) and replace the placeholders with the actual values for the
+// program under construction
+#include <string>
+
+std::string buildinfo( void ) { 
+    return std::string(" @@PROG@@ : @@PROG_VERSION@@ : @@B2B@@bit : @@RELEASE@@ : @@BUILD@@ : @@BUILDINFO@@ " );
+}
+
+std::string version_constant( std::string constant ) {
+    if ( constant == "PROG")
+        return "@@PROG@@";
+    if ( constant == "PROG_VERSION" )
+        return "@@PROG_VERSION@@";
+    if ( constant == "B2B" )
+        return "@@B2B@@";
+    if ( constant == "RELEASE" )
+        return "@@RELEASE@@";
+    if ( constant == "BUILD" )
+        return "@@BUILD@@";
+    if ( constant == "BUILDINFO"  )
+        return "@@BUILDINFO@@";
+    if ( constant == "DATE")
+        return "@@DATE@@";
+    return "";
+}
