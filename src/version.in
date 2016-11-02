@@ -2,6 +2,7 @@
 // sed(2) and replace the placeholders with the actual values for the
 // program under construction
 #include <string>
+#include <sstream>
 
 std::string buildinfo( void ) { 
     return std::string(" @@PROG@@ : @@PROG_VERSION@@ : @@B2B@@bit : @@RELEASE@@ : @@BUILD@@ : @@BUILDINFO@@ " );
@@ -22,5 +23,7 @@ std::string version_constant( std::string constant ) {
         return "@@BUILDINFO@@";
     if ( constant == "DATE")
         return "@@DATE@@";
+    if ( constant == "SEQUENCE_NUMBER")
+        return SEQNR;
     return "";
 }

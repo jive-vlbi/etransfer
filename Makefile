@@ -93,9 +93,9 @@ etc_DEPS=libudt4hv
 etc_LIBS=-lm $(PLATFORMLIBS) -lpthread -L./libudt4hv -ludt4hv
 
 
-test_SRC=src/etc.cc
-test_VERSION=0
-test_OBJS=$(call mkobjs,test)
+t3_SRC=src/t3.cc
+t3_VERSION=3
+t3_OBJS=$(call mkobjs,t3)
 
 # Process make command line targets and filter out the ones that we should build
 # This is only to be able to include the correct dependency files
@@ -105,8 +105,8 @@ ifeq ($(TODO),)
 endif
 
 # Hints to gmake 
-.PHONY: info clean %.depend %.version %.target libudt4hv $(repos)/src/%_version.cco
-.PRECIOUS: $(repos)/src/%_version.cco
+.PHONY: info clean %.depend %.version %.target libudt4hv %.dep
+.PRECIOUS: $(repos)/src/%_version.cco $(repos)/%.d
 
 
 ###################################################################
@@ -127,8 +127,7 @@ clean: $(foreach P, $(DEFAULTTARGETS), $(addsuffix .clean, $(P)))
 libudt4hv: 
 	@$(MAKE) -C libudt4hv -f Makefile B2B="$(B2B)" CPP="$(CXX)"
 
-#@echo "*.target: ($@) stem=$* [$?]{$($*_OBJS) + $(repos)/src/$*_version.cco}"
-%.target: repos %.version %.depend %.dep
+%.target: %.version %.depend %.dep
 	$(LD) -o $* $($*_OBJS) $(repos)/src/$*_version.cco $(LIBD) $($*F_LIBS)
 
 %.clean:
@@ -141,27 +140,26 @@ libudt4hv:
 #@echo "*.depend rule triggered for [$*] {$?}"
 %.depend: $(repos)/%.d
 
-repos:
-	@if [ ! -d $(repos) ]; then \
-		mkdir -p $(repos); \
-	fi
-
 # Let g++ generate deps for the source files. Then we manually add the
 # dependencies listed in the per program specification and also write
 # a specific target rule
-$(repos)/%.d: repos 
+$(repos)/%.d: 
+	@ mkdir -p $(repos)
 	@ $(CXX) -MM $(CXXOPT) $(INCD) $($(*F)_SRC) | sed -e 's@^\(.*\)\.o:@$(repos)/src/\1.cco:@;' > $@
-	@ export TMP=`cat $@ | sed -n '/^[^:]*:/{ s/^[^:]*: *//;p; }' | tr ' ' '\n' | sort | uniq | tr '\n' ' '`; printf "$(repos)/$*.d: repos $${TMP}\n" >> $@;
+	@ export TMP=`cat $@ | sed -n '/^[^:]*:/{ s/^[^:]*: *//;p; }' | tr ' ' '\n' | sort | uniq | tr '\n' ' ' | sed 's#\\\\##g'`; printf "$(repos)/$*.d $(repos)/src/$*_version.cco: src/version.h $${TMP}\n" >> $@;
 	@ printf ".PHONY: $*.dep\n$*.dep : $($*_DEPS)\n" >> $@;
-	@ printf "$*.target: repos $(repos)/src/$*_version.cco $(repos)/$*.d $*.dep $($*_OBJS)\n\t$(LD) -o $(repos)/$* $($*_OBJS) $(repos)/src/$*_version.cco $(LIBD) $($(*F)_LIBS)\n" >> $@;
+	@ printf "$*.target: $(repos)/src/$*_version.cco $(repos)/$*.d $*.dep $($*_OBJS)\n\t$(LD) -o $(repos)/$* $($*_OBJS) $(repos)/src/$*_version.cco $(LIBD) $($(*F)_LIBS)\n" >> $@;
 
-$(repos)/src/%_version.cco: repos src/version.in
+$(repos)/src/%_version.cco: 
 	@ echo "[creating version file for $* into $@]";
+	@ mkdir -p $(repos)
 	@ export TMP=`dirname $@`; if [ ! -d "$${TMP}" ]; then mkdir -p "$${TMP}"; fi;
-	@ sed 's/@@PROG@@/$(*F)/;s/@@PROG_VERSION@@/$($(*F)_VERSION)-$($(*F)_RELEASE)-$(BUILD)/;s/@@B2B@@/$(B2B)/;s/@@RELEASE@@/$($(*F)_RELEASE)/;s/@@BUILD@@/$(BUILD)/;s/@@BUILDINFO@@/$(BUILDINFO)/;s/@@DATE@@/$(DATE)/' src/version.in | $(CXX) $(CXXOPT) $(INCD) -c -o $@ -pipe -x c++ -;
+	@ if [ ! -f ".$*.seq" ]; then echo 0 > .$*.seq; fi;
+	@ export SEQ=`cat .$*.seq`; sed 's/@@PROG@@/$(*F)/;s/@@PROG_VERSION@@/$($(*F)_VERSION)-$($(*F)_RELEASE)-$(BUILD)/;s/@@B2B@@/$(B2B)/;s/@@RELEASE@@/$($(*F)_RELEASE)/;s/@@BUILD@@/$(BUILD)/;s/@@BUILDINFO@@/$(BUILDINFO)/;s/@@DATE@@/$(DATE)/;' src/version.in | $(CXX) -DSEQNR=\"$${SEQ}\" $(CXXOPT) $(INCD) -c -o $@ -pipe -x c++ -; echo `expr $${SEQ} + 1` > .$*.seq
 
 #@echo "[compile] $< into $@"
 $(repos)/%.cco: %.cc
+	@ mkdir -p $(repos)
 	$(CXX) $(CXXOPT) $(INCD) -c -o $@ $<
 
 %: %.target
@@ -171,5 +169,4 @@ $(repos)/%.cco: %.cc
 ifeq ($(findstring clean, $(MAKECMDGOALS)),)
 -include $(foreach P, $(TODO), $(addprefix $(repos)/, $(addsuffix .d, $(P))))
 endif
-
 
