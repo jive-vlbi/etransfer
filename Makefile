@@ -97,6 +97,10 @@ t3_SRC=src/t3.cc
 t3_VERSION=3
 t3_OBJS=$(call mkobjs,t3)
 
+t4_SRC=src/t4.cc
+t4_VERSION=0
+t4_OBJS=$(call mkobjs,t4)
+
 # Process make command line targets and filter out the ones that we should build
 # This is only to be able to include the correct dependency files
 TODO=$(strip $(filter-out install, $(filter-out Repos%, $(filter-out chown, $(filter-out Makefile, $(filter-out clean, $(filter-out info, $(filter-out all, $(MAKECMDGOALS)))))))))
@@ -146,7 +150,7 @@ libudt4hv:
 $(repos)/%.d: 
 	@ mkdir -p $(repos)
 	@ $(CXX) -MM $(CXXOPT) $(INCD) $($(*F)_SRC) | sed -e 's@^\(.*\)\.o:@$(repos)/src/\1.cco:@;' > $@
-	@ export TMP=`cat $@ | sed -n '/^[^:]*:/{ s/^[^:]*: *//;p; }' | tr ' ' '\n' | sort | uniq | tr '\n' ' ' | sed 's#\\\\##g'`; printf "$(repos)/$*.d $(repos)/src/$*_version.cco: src/version.h $${TMP}\n" >> $@;
+	@ export TMP="`cat $@ | sed -n '/^[^:]*:/{ s/^[^:]*: *//;p; }' | tr ' ' '\n' | sort | uniq | tr '\n' ' ' | sed 's#\\\\##g'`"; printf "$(repos)/$*.d $(repos)/src/$*_version.cco: src/version.h $${TMP}\n" >> $@;
 	@ printf ".PHONY: $*.dep\n$*.dep : $($*_DEPS)\n" >> $@;
 	@ printf "$*.target: $(repos)/src/$*_version.cco $(repos)/$*.d $*.dep $($*_OBJS)\n\t$(LD) -o $(repos)/$* $($*_OBJS) $(repos)/src/$*_version.cco $(LIBD) $($(*F)_LIBS)\n" >> $@;
 
