@@ -165,7 +165,6 @@ namespace etdc {
         scoped_signal_mask(typename std::enable_if<A==MaskOp::setMask && AddSignal==nullptr, int>::type = 0) {
             InitMask(&__m_cur_sigmask);
             ::pthread_sigmask(static_cast<int>(How), &__m_cur_sigmask, &__m_old_sigmask);
-            //cout << "Installed signalmask HOW=" << How << ", sm=" << hex << __m_cur_sigmask << dec << endl;
         }
 
         template <MaskOp A=How>
@@ -176,7 +175,6 @@ namespace etdc {
             // unchanged; thus the call can be used to enquire about
             // currently blocked signals."
             ::pthread_sigmask(static_cast<int>(How), nullptr, &__m_cur_sigmask);
-            //cout << "Getting signalmask sm=" << hex << __m_cur_sigmask << dec << endl;
         }
 
         // for some reason we cannot forward std::initializer_list?
@@ -207,12 +205,12 @@ namespace etdc {
             // and install it
             if( int r = ::pthread_sigmask(static_cast<int>(How), &__m_cur_sigmask, &__m_old_sigmask) )
                 throw std::runtime_error(std::string("Failed to install signalmask - ")+::strerror(r));
-            //cout << "Installed signalmask HOW=" << How << ", sm=" << hex << __m_cur_sigmask << dec << endl;
         }
         ~scoped_signal_mask() {
-            if( InitMask!=nullptr ) {
-                //cout << "Uninstalling signalmask HOW=" << How << ", sm=" << hex << __m_cur_sigmask << dec << endl;
-                ::pthread_sigmask(SIG_SETMASK, &__m_old_sigmask, nullptr);
+            // Restore old signal mask on destruction of instances that modified the signal mask
+            if( How!=MaskOp::getMask ) {
+                if( int r = ::pthread_sigmask(static_cast<int>(MaskOp::setMask), &__m_old_sigmask, nullptr) )
+                    throw std::runtime_error(std::string("Failed to restore signalmask - ")+::strerror(r));
             }
         }
 
