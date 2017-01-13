@@ -58,7 +58,12 @@ ifeq ($(shell uname),SunOS)
 	PLATFORMLIBS=-lnsl -lrt -lsocket -lresolv
 endif
 
-repos=Repos-$(B2B)-$(BUILD)
+###########################################################################
+#
+#    The architecture, O/S and build type dependent object repository
+#
+###########################################################################
+repos=$(shell uname -sm | sed 's/\( \{1,\}\)/-/g')-$(B2B)-$(BUILD)
 
 #####################################################################
 # 'function' to compute the list of objects given a list of source files
@@ -79,7 +84,7 @@ etd_OBJS=$(call mkobjs,etd)
 # targets that etd depends upon
 # Link in support for UDT  
 etd_DEPS=libudt4hv
-etd_LIBS=-lm $(PLATFORMLIBS) -lpthread -L./libudt4hv -ludt4hv
+etd_LIBS=-lm $(PLATFORMLIBS) -lpthread -L./$(repos)/libudt4hv -ludt4hv
 
 # etransfer client
 etc_SRC=src/etc.cc 
@@ -90,14 +95,14 @@ etc_OBJS=$(call mkobjs,etc)
 # targets that etd depends upon
 # Link in support for UDT  
 etc_DEPS=libudt4hv
-etc_LIBS=-lm $(PLATFORMLIBS) -lpthread -L./libudt4hv -ludt4hv
+etc_LIBS=-lm $(PLATFORMLIBS) -lpthread -L./$(repos)/libudt4hv -ludt4hv
 
 
 t3_SRC=src/t3.cc
 t3_VERSION=3
 t3_OBJS=$(call mkobjs,t3)
 
-t4_SRC=src/t4.cc
+t4_SRC=src/tkwarg.cc
 t4_VERSION=0
 t4_OBJS=$(call mkobjs,t4)
 
@@ -116,7 +121,6 @@ endif
 ###################################################################
 ##                   Targets start here!
 ###################################################################
-
 all: $(foreach P, $(DEFAULTTARGETS), $(addsuffix .target, $(P)))
 	@echo "all: that's all folks!"
 
@@ -125,11 +129,11 @@ info:
 	@echo "INCD=$(INCD)";
 
 clean: $(foreach P, $(DEFAULTTARGETS), $(addsuffix .clean, $(P)))
-	-$(MAKE) -C libudt4hv -f Makefile B2B="$(B2B)" clean
+	-$(MAKE) -C libudt4hv -f Makefile B2B="$(B2B)" REPOS="$(repos)" clean
 	@echo "cleaned: $(DEFAULTTARGETS)"
 
 libudt4hv: 
-	@$(MAKE) -C libudt4hv -f Makefile B2B="$(B2B)" CPP="$(CXX)"
+	@$(MAKE) -C libudt4hv -f Makefile B2B="$(B2B)" CPP="$(CXX)" REPOS="$(repos)"
 
 %.target: %.version %.depend %.dep
 	$(LD) -o $* $($*_OBJS) $(repos)/src/$*_version.cco $(LIBD) $($*F_LIBS)

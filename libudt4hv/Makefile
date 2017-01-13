@@ -2,26 +2,32 @@
 # etd/etc's makefile calls this Makefile with
 #    CPP=<whatever it is compiled with>
 #    B2B=32|64|native  which bit-flavour etd/etc is compiled with
+#    REPOS=path/to/arch-os-build specific location
 # 
 # NOTE: the original makefile had 'C++' but you can't, apparently,
 #       pass that in on the commandline as "make C++=/path/to/compiler"
 # The os setting is figured out by this Makefile itself
+ifeq ($(REPOS),)
+	UDTREPOS = "."
+else
+	UDTREPOS = ../$(REPOS)/libudt4hv
+endif
 
 ## Detect the operating system
 UNAME=$(shell uname)
 ifeq ($(UNAME),Linux)
 	os     = LINUX
-	target = libudt4hv.a
+	target = $(UDTREPOS)/libudt4hv.a
 endif
 
 ifeq ($(UNAME),Darwin)
 	os     = OSX
-	target = libudt4hv.a
+	target = $(UDTREPOS)/libudt4hv.a
 endif
 
 ifeq ($(UNAME),SunOS)
     os     = BSD
-    target = libudt4hv.a
+    target = $(UDTREPOS)/libudt4hv.a
 endif
 
 ifeq ($(os),)
@@ -73,14 +79,14 @@ ifeq ($(arch), AMD64)
    CCFLAGS += -DAMD64
 endif
 
-OBJS = md5.o common.o window.o list.o buffer.o packet.o channel.o queue.o ccc.o cache.o core.o epoll.o api.o
+OBJS = $(addprefix $(UDTREPOS)/, md5.o common.o window.o list.o buffer.o packet.o channel.o queue.o ccc.o cache.o core.o epoll.o api.o)
 
-all: $(target) 
+all: mkdir $(target) 
 
-%.o: %.cpp %.h udt.h
-	$(CPP) $(CCFLAGS) $< -c
+$(UDTREPOS)/%.o: %.cpp %.h udt.h
+	$(CPP) $(CCFLAGS) -o $@ $< -c
 
-libudt4hv.a: $(OBJS)
+$(UDTREPOS)/libudt4hv.a: $(OBJS)
 	ar -rcs $@ $^
 
 #libudt4hv.so: $(OBJS)
@@ -90,9 +96,12 @@ libudt4hv.a: $(OBJS)
 #	$(CPP) -dynamiclib -o $@ -lstdc++ -lpthread -lm $^
 
 clean:
-	rm -f *.o *.so *.dylib *.a udt
+	rm -f $(UDTREPOS)/*.o $(UDTREPOS)/*.so $(UDTREPOS)/*.dylib $(UDTREPOS)/*.a $(UDTREPOS)/udt
 
-.PHONY: failos failarch
+mkdir:
+	@ mkdir -p $(UDTREPOS)
+
+.PHONY: failos failarch compiling_it_wrong
 failos:
 	@echo "Unrecognized/unset operating system!"; exit 1
 
@@ -101,5 +110,5 @@ failarch:
 
 info:
 	@echo "$(UNAME) => os=$(os) arch=$(arch) target=$(target)"
-	@echo " compiler=$(CPP)"
+	@echo " compiler=$(CPP) UDTREPOS=$(UDTREPOS)"
 	@echo "MAKECMDGOALS=$(MAKECMDGOALS)"
