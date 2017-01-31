@@ -21,12 +21,44 @@
 #define ETDC_UTILITIES_H
 
 // std c++
+#include <tuple>
+#include <string>
+#include <sstream>
 #include <iterator>
 
 // plain old C
 #include <stdlib.h>
+#include <cxxabi.h>
 
 namespace etdc {
+
+    // Sometimes you just *have* to be able to get the (demangled) name from
+    // "typeid(T).name()" so as to know what the **** 'T' happens to be.
+    namespace detail {
+        // http://stackoverflow.com/a/4541470
+        std::string demangle(char const*const name) {
+            int status = -4; // some arbitrary value to eliminate the compiler warning
+
+            // enable c++11 by passing the flag -std=c++11 to g++
+            std::unique_ptr<char, void(*)(void*)> res {
+                abi::__cxa_demangle(name, NULL, NULL, &status),
+                std::free
+            };
+
+            return (status==0) ? res.get() : name ;
+        }
+    }
+
+    // can use as "type2str<X, Y<Z>, ....>()" and get a comma-separated
+    // string of demangled types
+    template <typename... Ts>
+    std::string type2str( void ) {
+        std::string dummy[sizeof...(Ts)] = { detail::demangle(typeid(Ts).name())... };
+        std::ostringstream oss;
+        std::copy(&dummy[0], &dummy[sizeof...(Ts)], std::ostream_iterator<std::string>(oss, ","));
+        return oss.str();
+    }
+
 
     // Helpers for enabling/disabling certain flavours of contstructors
     namespace detail {
@@ -64,7 +96,7 @@ namespace etdc {
             static bool const end_value = sizeof(g<T>(0)) == 1;
             static bool const value     = beg_value && end_value;
         };
-    }
+    } // namespace detail
 
     // Let's put the useful primitive just in etdc in stead of etdc::detail
     template<typename T> 
@@ -72,18 +104,147 @@ namespace etdc {
         std::integral_constant<bool, detail::has_const_iterator<T>::value && detail::has_begin_end<T>::value> 
     {};
 
+    ///////////////////////////////////////////////////////////////////
+    //                'function application'
+    ///////////////////////////////////////////////////////////////////
+    template <template <typename...> class Function, typename... Ts>
+    struct apply {
+        using type = std::tuple<typename Function<Ts>::type...>;
+    };
 
 
-    // for use with stl algorithms that work on a pair of iterators
-    // this pseudo sequence will allow iteration over the sequence 
-    //    init, init+inc, init+2*inc, ...  
-    // without actually allocating memory for <nElement> items
+    /////////////////////////////////////////////////////////////////////////////////////////
     //
-    // http://en.cppreference.com/w/cpp/iterator/iterator
-    // does mention a class template along these lines. This implementation
-    // allows for multiple iterators to iterate over the same sequence
-    // because the iterators do not modify the underlying Sequence object.
-    // Incrementing one iterator does not invalidate an other.
+    //                (Helper) stuff for getting the index of type T in a
+    //                std::tuple<> or just in a parameter pack
+    //
+    /////////////////////////////////////////////////////////////////////////////////////////
+
+    struct requested_element_not_found {};
+    template <typename T>
+    struct requested_type_not_found {};
+
+    namespace detail {
+        // 'end' case: type T not found in pack or tuple 
+        template <typename T, std::size_t I, typename...>
+        struct index_of_impl {};
+
+        template <typename T, std::size_t I>
+        struct index_of_impl<T, I> {
+                using  type = requested_type_not_found<T>;
+                static constexpr requested_type_not_found<T> value = requested_type_not_found<T>();
+            };
+
+        // specialization: we find type T at position I in the sequence of types
+        template <typename T, std::size_t I, typename... Ts>
+        struct index_of_impl<T, I, T, Ts...>:
+            std::integral_constant<std::size_t, I> {};
+
+        // specialization: type at postion I is not what we're looking for, check the next one along
+        template <typename T, std::size_t I, typename U, typename... Ts>
+        struct index_of_impl<T, I, U, Ts...>:
+            index_of_impl<T, I+1, Ts...> {};
+
+        ///// Check if the set Ts... contains type T:
+
+        // 'end' case: type T not found in pack or tuple 
+        template <typename T, std::size_t I, typename... Ts>
+        struct has_type_impl: std::false_type {};
+
+        // specialization: we find type T at position I in the sequence of types
+        template <typename T, std::size_t I, typename... Ts>
+        struct has_type_impl<T, I, T, Ts...>:
+            std::true_type {};
+
+        // specialization: type at postion I is not what we're looking for, check the next one along
+        template <typename T, std::size_t I, typename U, typename... Ts>
+        struct has_type_impl<T, I, U, Ts...>:
+            has_type_impl<T, I+1, Ts...> {};
+
+    } // namespace detail!
+
+
+    // Put the useful template(s) in etdc in stead of etdc::detail
+    // 1.) find the (first) occurrence of T in Ts...
+    template <typename T, typename... Ts>
+    struct index_of:
+        std::integral_constant<std::size_t, detail::index_of_impl<T, 0, Ts...>::value> {};
+
+    // 2.) specialization for std::tuple<>, find the (first) occurrence of T in std::tuple<Ts...>
+    template <typename T, typename... Ts>
+    struct index_of<T, std::tuple<Ts...>>:
+        std::integral_constant<std::size_t, detail::index_of_impl<T, 0, Ts...>::value> {};
+
+    // Put the useful template(s) in etdc in stead of etdc::detail
+    // 1.) find the (first) occurrence of T in Ts...
+    template <typename T, typename... Ts>
+    struct has_type: detail::has_type_impl<T, 0, Ts...> {};
+
+    // 2.) specialization for std::tuple<>, find the (first) occurrence of T in std::tuple<Ts...>
+    template <typename T, typename... Ts>
+    struct has_type<T, std::tuple<Ts...>>: detail::has_type_impl<T, 0, Ts...> {};
+
+    // 1.) find the (first) occurrence of Pred<T> in Ts...
+    // Apply Pred to all types and check if the true_type is present
+    template <template <typename...> class Pred, typename... Ts>
+    struct index_of_p:
+        std::conditional<has_type<std::true_type, typename detail::apply<Pred, Ts...>::type>::value,
+                         typename index_of<std::true_type, typename detail::apply<Pred, Ts...>::type>::type,
+                         requested_element_not_found>
+    {};
+
+    // 2.) specialization for std::tuple<>, find the (first) occurrence where Pred<T> in std::tuple<Ts...> is true
+    template <template <typename...> class Pred, typename... Ts>
+    struct index_of_p<Pred, std::tuple<Ts...>>:
+        std::conditional<has_type<std::true_type, typename detail::apply<Pred, Ts...>::type>::value,
+                         typename index_of<std::true_type, typename detail::apply<Pred, Ts...>::type>::type,
+                         requested_element_not_found>
+    {};
+
+
+    /////////////////////////////////////////////////////////////////////////////////////////
+    //
+    //     An integral constant for testing if T is a 'real' integer.
+    //     Yes, we are most certainly aware that 'char' and 'bool' typically
+    //     are integers behind the scenes but we want to be able to enforce 
+    //     strict numerical types - e.g. when a port number is expected.
+    //
+    //     You don't want to support code that reads:
+    //          fd->connect( "host.example.com", true ); 
+    //      or
+    //          fd->connect( "host.example.com", 'a' ); 
+    //
+    //     The standard C++11 type traits (http://en.cppreference.com/w/cpp/header/type_traits) primitive
+    //           std::is_integral<T>::value
+    //     evaluates to 'true' for 'char' (including 'wchar_t'), 'bool' &cet ... 
+    //
+    /////////////////////////////////////////////////////////////////////////////////////////
+    template <typename T>
+    struct is_integer_number_type :
+        std::integral_constant<bool, std::is_same<T, short>::value ||
+                                     std::is_same<T, unsigned short>::value ||
+                                     std::is_same<T, int>::value ||
+                                     std::is_same<T, unsigned int>::value ||
+                                     std::is_same<T, long>::value ||
+                                     std::is_same<T, unsigned long>::value ||
+                                     std::is_same<T, long long>::value ||
+                                     std::is_same<T, unsigned long long>::value>
+    {};
+
+    /////////////////////////////////////////////////////////////////////////////////////////
+    //
+    //     for use with stl algorithms that work on a pair of iterators
+    //     this pseudo sequence will allow iteration over the sequence 
+    //          init, init+inc, init+2*inc, ...  
+    //     without actually allocating memory for <nElement> items
+    //
+    //     http://en.cppreference.com/w/cpp/iterator/iterator
+    //     does mention a class template along these lines. 
+    //
+    //     The implementation in here allows for multiple iterators to
+    //     iterate over the same sequence. This is possible because the
+    //     iterators do not modify the underlying Sequence object.
+    //     Incrementing one iterator does not invalidate an other.
     template <typename T>
     struct Sequence {
         // delete stuff that we really don't want to enable
@@ -140,8 +301,8 @@ namespace etdc {
         typedef iterator_impl       iterator;
         typedef const iterator_impl const_iterator;
 
-        iterator       begin( void ) { return iterator_impl(__m_counter, &__m_counter, __m_increment); }
-        iterator       end( void )   { return iterator_impl(__m_counter, __m_last, __m_increment); }
+        iterator       begin( void )       { return iterator_impl(__m_counter, &__m_counter, __m_increment); }
+        iterator       end( void )         { return iterator_impl(__m_counter, __m_last, __m_increment); }
         const_iterator begin( void ) const { return iterator_impl(__m_counter, &__m_counter, __m_increment); }
         const_iterator end( void )   const { return iterator_impl(__m_counter, __m_last, __m_increment); }
 
@@ -154,7 +315,6 @@ namespace etdc {
     Sequence<T> mk_sequence(T const& f, T const& l, T const& inc=T{1}) {
         return Sequence<T>(f, l, inc);
     }
-
 }
 
 #endif // ETDC_UTILITIES_H

@@ -136,6 +136,57 @@ namespace etdc {
     auto mk_streamiter(std::ostream& os, Args&&... args) -> streamiter<Args...> {
         return streamiter<Args...>{os, std::forward<Args>(args)...};
     }
+
+    ///////////////////////////////////////////////////////////////////////////////////////////////////
+    //
+    //   Print the contents of a tuple
+    //
+    ///////////////////////////////////////////////////////////////////////////////////////////////////
+    namespace detail {
+        // helpers for printing the tuple's elements
+
+        // This is the endpoint of the 'recursion'
+        template <typename SIter, typename Tuple, size_t I, size_t N>
+        void copy_to_streamiter(SIter&, Tuple const&, typename std::enable_if<(I>=N), int>::type = 0) {
+            return;
+        }
+
+        // generic case - enabled if requested index < number of elements in tuple
+        template <typename SIter, typename Tuple, size_t I, size_t N>
+        void copy_to_streamiter(SIter& si, Tuple const& tup, typename std::enable_if<(I<N), int>::type = 0) {
+            *si++ = std::get<I>(tup);
+            copy_to_streamiter<SIter, Tuple, I+1, N>(si, tup);
+        }
+
+        template <typename T>
+        struct tuple_holder {
+            public:
+
+                // We allow construction form reference-to-T as well as the move constructor
+                tuple_holder(T const& value): __m_value_ref(value) {}
+                tuple_holder(tuple_holder<T>&& other): __m_value_ref( std::move(other.__m_value_ref) ) {}
+
+                // the ostream insert operator better be our friend
+                friend std::ostream& operator<<(std::ostream& os, tuple_holder<T> const& h) {
+                    auto strmiter = mk_streamiter(os, ',', '(', ')');
+                    copy_to_streamiter<decltype(strmiter), T, size_t(0), std::tuple_size<T>::value>(strmiter, h.__m_value_ref.get());
+                    return os;
+                }
+
+                // your really don't want any of these
+                tuple_holder()                                           = delete;
+                tuple_holder(tuple_holder<T> const&)                     = delete;
+                tuple_holder<T> const& operator=(tuple_holder<T> const&) = delete;
+        
+            private:
+                using ValueRef = std::reference_wrapper<T const>;
+                ValueRef    __m_value_ref;
+        };
+    }
+    template <typename T>
+    auto fmt_tuple(T const& tref) -> detail::tuple_holder<T> {
+        return detail::tuple_holder<T>(tref);
+    }
 }
 
 
