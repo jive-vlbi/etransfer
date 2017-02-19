@@ -106,12 +106,24 @@ t4_SRC=src/tkwarg.cc
 t4_VERSION=0
 t4_OBJS=$(call mkobjs,t4)
 
+tsok_SRC=src/tsok.cc
+tsok_VERSION=0
+tsok_OBJS=$(call mkobjs,tsok)
+tsok_DEPS=libudt4hv
+tsok_LIBS=-lm $(PLATFORMLIBS) -lpthread -L./$(repos)/libudt4hv -ludt4hv
+
 # Process make command line targets and filter out the ones that we should build
 # This is only to be able to include the correct dependency files
 TODO=$(strip $(filter-out install, $(filter-out Repos%, $(filter-out chown, $(filter-out Makefile, $(filter-out clean, $(filter-out info, $(filter-out all, $(MAKECMDGOALS)))))))))
 ifeq ($(TODO),)
 	TODO=etc etd
 endif
+
+# If any of the targets need libutd4, add that include path
+ifneq ($(findstring libudt4hv, $(foreach P, $(TODO), $($(P)_DEPS))),)
+	INCD+=-I$(shell pwd)/libudt4hv
+endif
+
 
 # Hints to gmake 
 .PHONY: info clean %.depend %.version %.target libudt4hv %.dep
@@ -126,7 +138,7 @@ all: $(foreach P, $(DEFAULTTARGETS), $(addsuffix .target, $(P)))
 
 info:
 	@echo "info: TODO=$(TODO)"; echo "repos=$(repos)"; echo "OBJS: $(foreach T, $(TODO), $($(T)_OBJS))"
-	@echo "INCD=$(INCD)";
+	@echo "INCD=$(INCD)"; echo "D=$(D)";
 
 clean: $(foreach P, $(DEFAULTTARGETS), $(addsuffix .clean, $(P)))
 	-$(MAKE) -C libudt4hv -f Makefile B2B="$(B2B)" REPOS="$(repos)" clean
