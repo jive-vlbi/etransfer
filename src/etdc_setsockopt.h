@@ -21,7 +21,10 @@
 #define ETDC_ETDC_SOCKOPT_H
 
 #include <tagged.h>
+#include <streamutil.h>
+// UDT includes
 #include <udt.h>
+#include <ccc.h>
 
 #include <errno.h>
 #include <stdio.h>
@@ -30,15 +33,21 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 
+#include <map>
 #include <stdexcept>
 
 namespace etdc {
 
     // We're going to tag our socket options
     namespace tags {
+        // Believe it or not, UDT has socket options that are only settable
+        // or only gettable! (Actually, there are also 'normal' SO_* options that
+        // are only gettable)
+        struct settable      {};
+        struct gettable      {};
         struct level         {}; // the tagged value is the level value of set/getsockopt(2)
         struct option_name   {}; //         ,,              option_name      ,,
-        struct is_udt_option {};
+        struct udt_option    {};
     }
 
     namespace detail {
@@ -54,7 +63,10 @@ namespace etdc {
         using SocketOption = etdc::tagged<T, Tags...>;
 
         template <int option_name>
-        using SimpleSocketOption = SocketOption<int, Name<option_name>, Level<SOL_SOCKET>>;
+        using SimpleSocketOption  = SocketOption<int, tags::settable, Name<option_name>, tags::gettable, Level<SOL_SOCKET>>;
+
+        template <int option_name>
+        using BooleanSocketOption = SocketOption<bool, tags::settable, Name<option_name>, tags::gettable, Level<SOL_SOCKET>>;
 
         // According to http://udt.sourceforge.net/udt4/doc/opt.htm the level is ignored:
         //
@@ -64,8 +76,14 @@ namespace etdc {
         //  u       [in] Descriptor identifying a UDT socket.
         //  level   [in] Unused. For compatibility only.
         //  optName [in] The enum name of UDT option. The names and meanings are ...
+        template <UDTOpt udtname>
+        using UDTName = etdc::tagged<std::integral_constant<UDTOpt, udtname>, tags::option_name>;
+
         template <UDTOpt udtname> 
-        using SimpleUDTOption    = SocketOption<int, Name<udtname>, Level<-1>, tags::is_udt_option>;
+        using SimpleUDTOption    = SocketOption<int, UDTName<udtname>, Level<-1>, tags::udt_option, tags::gettable, tags::settable>;
+
+        template <UDTOpt udtname> 
+        using BooleanUDTOption   = SocketOption<bool, UDTName<udtname>, Level<-1>, tags::udt_option, tags::gettable, tags::settable>;
     }
 
     // Helpers
@@ -80,13 +98,38 @@ namespace etdc {
 
     template <typename T, typename... Ts>
     struct has_name_tag<tagged<T, Ts...>>: etdc::has_type<tags::option_name, Ts...> {};
-#if 0
+
     template <typename T, typename...>
-    struct has_udt_tag: std::false_type {};
+    struct is_udt_option: std::false_type {};
 
     template <typename T, typename... Ts>
-    struct has_udt_tag<tagged<T, Ts...>>: etdc::has_type<tags::is_udt_option, Ts...> {};
-#endif
+    struct is_udt_option<tagged<T, Ts...>>: etdc::has_type<tags::udt_option, Ts...> {};
+
+    /////////////////////////////////////////////////////////////////////////////////////////
+    //
+    //  Socket options are not always integers but are typically *mapped to* integers
+    //  Here is support for defining application socket option type to
+    //  actual data type being sent to the socket layer.
+    //
+    //  An example would be a boolean option: at application level we want
+    //  just 'true' or 'false' which should be translated to the int '1' or
+    //  '0' respectively
+    //
+    /////////////////////////////////////////////////////////////////////////////////////////
+    namespace detail {
+        template <typename T>
+        struct identity_xform {
+            template <typename... Us>
+            static T from(Us... us) {
+                return T( std::forward<Us>(us)... );
+            }
+            template <typename U>
+            static U to(T const& t) {
+                return U{t};
+            }
+        };
+    }
+
     ////////////////////////////////////////////////////////////////////////////////////////
     //
     //                   The socket options we support
@@ -94,77 +137,218 @@ namespace etdc {
     //  This is what it's all about: we encode all vital information in the type
     //
     ////////////////////////////////////////////////////////////////////////////////////////
-    using so_sndbuf     = SimpleSocketOption<SO_SNDBUF>;
-    using so_rcvbuf     = SimpleSocketOption<SO_RCVBUF>;
-    using so_reuseaddr  = SimpleSocketOption<SO_REUSEADDR>;
-    using so_rcvtimeo   = SocketOption<struct timeval, Level<SOL_SOCKET>, Name<SO_RCVTIMEO>>;
-    using tcp_nodelay   = SocketOption<int, Name<TCP_NODELAY>, Level<IPPROTO_TCP>>;
-    using udt_mss       = SimpleUDTOption<UDT_MSS>;
-    using udt_sndbuf    = SimpleUDTOption<UDT_SNDBUF>;
-    using udt_rcvbuf    = SimpleUDTOption<UDT_RCVBUF>;
-    using udt_reuseaddr = SimpleUDTOption<UDT_REUSEADDR>;
+    using so_sndbuf     = detail::SimpleSocketOption<SO_SNDBUF>;
+    using so_rcvbuf     = detail::SimpleSocketOption<SO_RCVBUF>;
+    using so_reuseaddr  = detail::BooleanSocketOption<SO_REUSEADDR>;
+    using so_rcvtimeo   = detail::SocketOption<struct timeval, detail::Level<SOL_SOCKET>, tags::settable, detail::Name<SO_RCVTIMEO>>;
+    using tcp_nodelay   = detail::SocketOption<bool, detail::Name<TCP_NODELAY>, detail::Level<IPPROTO_TCP>, tags::gettable, tags::settable>;
 
-
-    // And templated set/getsockopt methods that can be used to set/get
-    // multiple socket options in 'one' go. Exception will be raised in case of wonky
-
-    void setsockopt(int) {} 
-
-    template <typename Option, typename... Rest>
-    void setsockopt(int s, Option const& ov, Rest... rest) {
-        // All socket options MUST have a level and a name
-        const int level    = etdc::get_tag_p<has_level_tag, Option>::type::type::value;
-        const int opt_name = etdc::get_tag_p<has_name_tag,  Option>::type::type::value;
-        const bool is_udt  = etdc::has_tag<tags::is_udt_option, Option>::type::value;
-
-        if( is_udt ) {
-            if( UDT::setsockopt(s, opt_name, level, (char const*)&untag(ov).get(), int(sizeof(Option::type)))==0 ) {
-                UDT::ERRORINFO const& udterr( UDT::getlasterror() );
-                throw std::runtime_error("Failed to set UDT option "+repr(opt_name)+": "+
-                                          udterr.getErrorMessage()+" ("+repr(udterr.getErrorCode()));
-            }
-        } else {
-            if( ::setsockopt(s, opt_name, level, (void*)&untag(ov).get(), socklen_t(sizeof(Option::type)))==0 )
-                throw std::runtime_error("Failed to set socket option "+repr(opt_name)+": "+::strerror(errno));
-        }
-        // OK, this option done, carry on with rest
-        setsockopt(s, std::forward<Rest>(rest)...);
-    }
-
-    template <typename Option, typename... Rest>
-    void getsockopt(int s, Option& ov, Rest... rest) {
-        // All socket options MUST have a level and a name
-        const int level    = etdc::get_tag_p<has_level_tag, Option>::type::type::value;
-        const int opt_name = etdc::get_tag_p<has_name_tag,  Option>::type::type::value;
-        const bool is_udt  = etdc::has_tag<tags::is_udt_option, Option>::type::value;
-
-        if( is_udt ) {
-            int   sl{ sizeof(Option::type) };
-            if( UDT::getsockopt(s, opt_name, level, (char const*)&untag(ov).get(), &sl)==0 ) {
-                UDT::ERRORINFO const& udterr( UDT::getlasterror() );
-                throw std::runtime_error("Failed to get UDT option "+repr(opt_name)+": "+
-                                          udterr.getErrorMessage()+" ("+repr(udterr.getErrorCode()));
-            }
-        } else {
-            socklen_t   sl{ sizeof(Option::type) };
-            if( ::getsockopt(s, opt_name, level, (void*)&untag(ov).get(), &sl)==0 )
-                throw std::runtime_error("Failed to get socket option "+repr(opt_name)+": "+::strerror(errno));
-        }
-        // OK, this option done, carry on with rest
-        getsockopt(s, std::forward<Rest>(rest)...);
-    }
-#if 0
-    template <template <typename...> class Option, typename T, typename... Tags, typename... Rest>
-    void setsockopt(int, Option<T, Tags...> const& ov, Rest... rest) {
-        // Need to extract the level and the name from Tags...
-        std::cout << "Setting socket option/tags, value=" << ov << std::endl;
-        std::cout << "  has_tag/cruft::level_tag = " << etdc::has_type<cruft::level_tag, Tags...>::value << std::endl;
-        std::cout << "  has_pred<is_level, Tags...>::type::value = " << has_pred<is_level, Tags...>::type::value << std::endl;
-        std::cout << "  type2str<Tags...> = " << type2str<Tags...>() << std::endl;
-        std::cout << "  type2str<xform<is_level,Tags...>> = " << type2str<typename xform<is_level,Tags...>::type>() << std::endl;
-        setSocketOption(0, std::forward<Rest>(rest)...);
-    }
+    // The SO_REUSEPORT may or may not be available. 
+#ifdef SO_REUSEPORT
+    using so_reuseport  = detail::BooleanSocketOption<SO_REUSEPORT>;
 #endif
+
+    using udt_mss       = detail::SimpleUDTOption<UDT_MSS>;
+    using udt_sndbuf    = detail::SimpleUDTOption<UDT_SNDBUF>;
+    using udt_rcvbuf    = detail::SimpleUDTOption<UDT_RCVBUF>;
+    using udt_reuseaddr = detail::BooleanUDTOption<UDT_REUSEADDR>;
+
+    // UDT Congestion Control
+    template <typename T>
+    using udt_set_cc    = detail::SocketOption<CCCFactory<T>*, detail::UDTName<UDT_CC>, detail::Level<-1>, tags::udt_option, tags::settable>;
+    using udt_get_cc    = detail::SocketOption<CCC*, detail::UDTName<UDT_CC>, detail::Level<-1>, tags::udt_option, tags::gettable>;
+
+
+    // Translation between system/low level option type/value and high level
+    // type-safe API
+    namespace detail {
+        template <typename T>
+        struct native_sockopt {
+            using type = T;
+
+            static type to_native(type const& t) {
+                return t;
+            }
+            static type from_native(type const& t) {
+                return t;
+            }
+        };
+        // Pointer types get exchanged through void*
+        template <typename T>
+        struct native_sockopt<T*> {
+            using type = void*;
+
+            static type to_native(T* p) {
+                return static_cast<void*>(p);
+            }
+            static type* from_native(void* p) {
+                return reinterpret_cast<T*>(p);
+            }
+        };
+        // Make sure that booleans are really really really only translated
+        // between 0/1 and false/true
+        template <>
+        struct native_sockopt<bool> {
+            using type = int;
+
+            static type to_native(bool b) {
+                return b ? 1 : 0;
+            }
+            static bool from_native(int i) {
+                // Apparently, 'boolean' socket options, when just read, can
+                // be either 0 or non-0, not strictly 0 or 1: 
+                //
+                // int        ndel, s = socket(AF_INET, SOCK_STREAM, 0);
+                // socklen_t  sz(sizeof(i));
+                //
+                // ::getsockopt(s, TCP_NODELAY, IPPROTO_TCP, &ndel, &sz);
+                // cout << "tcp_nodelay=" << ndel << endl;
+                //
+                // Did output:
+                // tcp_nodelay=4
+                //
+                //if( i<0 || i>1 )
+                //    throw std::domain_error("from_native: sockopt int value to bool: value is not 0 or 1, it is "+repr(i));
+                //return i==1;
+                return static_cast<bool>(i);
+            }
+        };
+
+        ////////////////////// option name to string
+        #define OPTION(a) {a, std::string(#a)}
+
+        // For ordinary options
+        using i2n_map_type = std::map<int, std::string>;
+        static const i2n_map_type i2n_map{ OPTION(TCP_NODELAY), OPTION(SO_RCVBUF), OPTION(SO_REUSEADDR), OPTION(SO_SNDBUF),
+                                           #ifdef SO_REUSEPORT
+                                           OPTION(SO_REUSEPORT),
+                                           #endif
+                                           OPTION(SO_RCVTIMEO) };
+
+        std::string option_str(int o) {
+            i2n_map_type::const_iterator p = i2n_map.find(o);
+            return ((p==i2n_map.end()) ? (std::string("** unknown socket option #")+repr(o)+" **") : p->second);
+        }
+
+        // And type safe for UDT
+        using i2n_udt_map_type = std::map<UDTOpt, std::string>;
+        static const i2n_udt_map_type i2n_udt_map{ OPTION(UDT_MSS), OPTION(UDT_CC), OPTION(UDT_REUSEADDR), OPTION(UDT_SNDBUF),
+                                                   OPTION(UDT_RCVBUF), OPTION(UDT_MAXBW) };
+
+        std::string udt_option_str(UDTOpt o) {
+            i2n_udt_map_type::const_iterator p = i2n_udt_map.find(o);
+            return ((p==i2n_udt_map.end()) ? (std::string("** unknown UDT socket option #")+repr(o)+" **") : p->second);
+        }
+        #undef OPTION
+    }
+
+    ///////////////////////////////////////////////////////////////////////////////////////////////////////
+    //
+    //          templated set/getsockopt methods that can be used to set/get
+    //          multiple socket options in 'one' go. Exception will be raised in case of wonky
+    //
+    //  signature:
+    //
+    //     etdc::setsockopt(fd, Option1, Option2, ... )
+    //     etdc::getsockopt(fd, Option1, Option2, ... )
+    //
+    //     Option1, Option2 &cet are instances of the "so_..." and "udt_..." types above  ^
+    //
+    ///////////////////////////////////////////////////////////////////////////////////////////////////////
+
+    int setsockopt(int) { return 0; } 
+
+    template <typename Option, typename... Rest>
+    typename std::enable_if<is_udt_option<Option>::value && etdc::has_tag<tags::settable, Option>::value, int>::type
+    setsockopt(int s, Option const& ov, Rest... rest) {
+        using native_type = detail::native_sockopt<typename Option::type>;
+        // All socket options MUST have a level and a name
+        const int                  level    = etdc::get_tag_p<has_level_tag, Option>::type::type::value;
+        const UDTOpt               opt_name = etdc::get_tag_p<has_name_tag,  Option>::type::type::value;
+        typename native_type::type opt_val  = native_type::to_native( untag(ov) );
+
+        if( UDT::setsockopt(s, level, opt_name, (char const*)&opt_val, int(sizeof(typename native_type::type)))==UDT::ERROR ) {
+            UDT::ERRORINFO & udterr( UDT::getlasterror() );
+            throw std::runtime_error("Failed to set UDT option "+detail::udt_option_str(opt_name)+": "+
+                                      udterr.getErrorMessage()+" ("+etdc::repr(udterr.getErrorCode()));
+        }
+
+        // OK, this option done, carry on with rest
+        return 1+setsockopt(s, std::forward<Rest>(rest)...);
+    }
+    template <typename Option, typename... Rest>
+    typename std::enable_if<!is_udt_option<Option>::value && etdc::has_tag<tags::settable, Option>::value, int>::type
+    setsockopt(int s, Option const& ov, Rest... rest) {
+        using native_type = detail::native_sockopt<typename Option::type>;
+        // All socket options MUST have a level and a name
+        const int                  level    = etdc::get_tag_p<has_level_tag, Option>::type::type::value;
+        const int                  opt_name = etdc::get_tag_p<has_name_tag,  Option>::type::type::value;
+        typename native_type::type opt_val  = native_type::to_native( untag(ov) );
+
+        if( ::setsockopt(s, level, opt_name, (void*)&opt_val, socklen_t(sizeof(typename native_type::type)))!=0 )
+            throw std::runtime_error("Failed to set socket option "+detail::option_str(opt_name)+": "+::strerror(errno));
+
+        // OK, this option done, carry on with rest
+        return 1+setsockopt(s, std::forward<Rest>(rest)...);
+    }
+
+    ///////////////////////////////////////////////////////////////////////////////////////////////////////
+    //
+    //  where there is setsockopt, getsockopt should be near ...
+    //
+    //  guess what ...
+    //
+    //  you just found it!
+    //
+    ///////////////////////////////////////////////////////////////////////////////////////////////////////
+    int getsockopt(int) { return 0; } 
+
+    template <typename Option, typename... Rest>
+    typename std::enable_if<is_udt_option<Option>::value && etdc::has_tag<tags::gettable, Option>::value, int>::type
+    getsockopt(int s, Option& ov, Rest&... rest) {
+        using native_type = detail::native_sockopt<typename Option::type>;
+        // All socket options MUST have a level and a name
+        int                        opt_len{ sizeof(typename native_type::type) };
+        const int                  level    = etdc::get_tag_p<has_level_tag, Option>::type::type::value;
+        const UDTOpt               opt_name = etdc::get_tag_p<has_name_tag,  Option>::type::type::value;
+        typename native_type::type opt_val;
+
+        if( UDT::getsockopt(s, level, opt_name, (char *)&opt_val, &opt_len)==UDT::ERROR ) {
+            UDT::ERRORINFO & udterr( UDT::getlasterror() );
+            throw std::runtime_error("Failed to get UDT option "+detail::udt_option_str(opt_name)+": "+
+                                      udterr.getErrorMessage()+" ("+etdc::repr(udterr.getErrorCode()));
+        }
+        if( opt_len!=sizeof(typename native_type::type) )
+            throw std::domain_error("getsockopt/udt: returned option_value size does not match native size");
+
+        // Transform from native to actual type and copy into the parameter
+        untag( ov ) = native_type::from_native( opt_val );
+
+        // OK, this option done, carry on with rest
+        return 1+getsockopt(s, std::forward<Rest&>(rest)...);
+    }
+
+    template <typename Option, typename... Rest>
+    typename std::enable_if<!is_udt_option<Option>::value && etdc::has_tag<tags::gettable, Option>::value, int>::type
+    getsockopt(int s, Option& ov, Rest&... rest) {
+        using native_type = detail::native_sockopt<typename Option::type>;
+        // All socket options MUST have a level and a name
+        socklen_t                  opt_len{ sizeof(typename native_type::type) };
+        const int                  level = etdc::get_tag_p<has_level_tag, Option>::type::type::value;
+        const int                  opt_name = etdc::get_tag_p<has_name_tag,  Option>::type::type::value;
+        typename native_type::type opt_val;
+
+        if( ::getsockopt(s, level, opt_name, (void*)&opt_val, &opt_len)!=0 )
+            throw std::runtime_error("Failed to get socket option "+detail::option_str(opt_name)+": "+::strerror(errno));
+        if( opt_len!=sizeof(typename native_type::type) )
+            throw std::domain_error("getsockopt: returned option_value size does not match native size");
+
+        // Transform from native to actual type and copy into the parameter
+        untag( ov ) = native_type::from_native( opt_val );
+
+        // OK, this option done, carry on with rest
+        return 1+getsockopt(s, std::forward<Rest&>(rest)...);
+    }
 }
 
 #endif

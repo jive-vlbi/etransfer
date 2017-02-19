@@ -23,6 +23,7 @@
 // Own includes
 #include <notimplemented.h>
 #include <utilities.h>
+#include <tagged.h>
 
 // C++
 #include <tuple>
@@ -94,12 +95,18 @@ struct get_tag_p<Pred, tagged<T, Tags...>> {
 namespace etdc {
     class host_type     : public std::string { using std::string::string; };
     class protocol_type : public std::string { using std::string::string; };
-    enum class port_type: unsigned short { any = 0 };
+    //enum class port_type: unsigned short { any = 0 };
+    namespace tags {
+        struct port_tag {};
+    }
 
+    using port_type = etdc::tagged<unsigned short, tags::port_tag>;
+    static constexpr port_type any_port = port_type{ (unsigned short)0 };
+#if 0
     std::ostream& operator<<(std::ostream& os, port_type const& p) {
         return os << static_cast<unsigned short>(p);
     }
-
+#endif
     // ipport_type:   <host> : <port>
     // sockname_type: <type> : <host> : <port>
     using ipport_type   = std::tuple<host_type, port_type>;
@@ -162,12 +169,14 @@ namespace etdc {
 
 // Functions to create an instance
 template <typename T>
-etdc::ipport_type mk_ipport(T const& host, etdc::port_type port = etdc::port_type::any) {
+//etdc::ipport_type mk_ipport(T const& host, etdc::port_type port = etdc::port_type::any) {
+etdc::ipport_type mk_ipport(T const& host, etdc::port_type port = etdc::any_port) {
     return etdc::ipport_type(host, port);
 }
 
 template <typename T, typename U>
-etdc::sockname_type mk_sockname(T const& proto, U const& host, etdc::port_type port = etdc::port_type::any) {
+//etdc::sockname_type mk_sockname(T const& proto, U const& host, etdc::port_type port = etdc::port_type::any) {
+etdc::sockname_type mk_sockname(T const& proto, U const& host, etdc::port_type port = etdc::any_port) {
     return etdc::sockname_type(proto, host, port);
 }
 
@@ -177,7 +186,7 @@ etdc::sockname_type mk_sockname(T const& proto, U const& host, etdc::port_type p
 //
 ///////////////////////////////////////////////////////////////////////////
 template <typename T>
-typename std::enable_if<etdc::is_integer_number_type<T>::value, etdc::port_type>::type mk_port(T const& p) {
+typename std::enable_if<etdc::is_integer_number_type<T>::value, etdc::port_type>::type port(T const& p) {
     // Assert 0 <= port number <= 65535
     if( p<0 || p>65536 )
         throw std::domain_error("Port number must be 0 <= p <= 65535");
@@ -186,10 +195,20 @@ typename std::enable_if<etdc::is_integer_number_type<T>::value, etdc::port_type>
 
 // For everything else we attempt string => number [so we can also accept wstring and god knows what
 template <typename T>
-typename std::enable_if<!etdc::is_integer_number_type<T>::value, etdc::port_type>::type mk_port(T const& s) {
+typename std::enable_if<!etdc::is_integer_number_type<T>::value, etdc::port_type>::type port(T const& s) {
     return mk_port( std::stoi(s) );
 }
 
+
+// And making a host
+template <typename T>
+etdc::host_type host(T const& t) {
+    return etdc::host_type(t);
+}
+template <typename T>
+etdc::protocol_type proto(T const& t) {
+    return etdc::protocol_type(t);
+}
 
 
 ///////////////////////////////////////////////////////////////////////////

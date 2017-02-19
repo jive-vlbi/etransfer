@@ -20,9 +20,14 @@
 #ifndef ETDC_TAGGED_H
 #define ETDC_TAGGED_H
 
+// Own C++ headers
+#include <utilities.h>   // for type2str<...>()
+
+// Standard C++ headers
 #include <tuple>         // ...
 #include <utility>       // std::forward
 #include <ostream>       // std::ostream
+#include <stdexcept>     // std::logic_error
 #include <functional>    // std::reference_wrapper et.al.
 #include <type_traits>   // std::is_same
 
@@ -72,7 +77,7 @@
 
 
 namespace etdc {
-    
+
     // details
     namespace detail {
         template <typename... Ts>
@@ -80,7 +85,50 @@ namespace etdc {
             template <typename... Us>
             using is_equal = std::is_same<std::tuple<Ts...>, std::tuple<Us...>>;
         };
+
     }
+
+    // forward declaration
+    template <typename T, typename... Tags>
+    struct tagged;
+
+    // Is the entry tagged with tag Tag?
+    template <typename Tag, typename...>
+    struct has_tag: std::false_type {};
+
+    template <typename Tag, typename T, typename... Tags>
+    struct has_tag<Tag, tagged<T, Tags...>>: etdc::has_type<Tag, Tags...> {};
+
+    // Does the thingy have a tag satisfying Pred<Tag>?
+    template <template <typename...> class Pred, typename T, typename...>
+    struct has_tag_p: std::false_type {};
+
+    template <template <typename...> class Pred, typename T, typename... Tags>
+    struct has_tag_p<Pred, tagged<T, Tags...>>:
+        etdc::has_type<std::true_type, typename etdc::apply<Pred, Tags...>::type>
+    {};
+
+    namespace detail {
+        template <typename T>
+        struct unsatisfied_predicate {};
+    }
+
+    //  Check if the tagged value has a tag satisfying predicate Pred
+    template <template <typename...> class Pred, typename... Ts>
+    struct get_tag_p {
+        using type = detail::unsatisfied_predicate<Pred<Ts...>>;
+    };
+    template <template <typename...> class Pred, typename T, typename... Tags>
+    struct get_tag_p<Pred, tagged<T, Tags...>> {
+        using result_type  = typename etdc::apply<Pred, Tags...>::type;
+        using type = typename std::conditional<
+            // Depending on wether true_type appears ...
+            etdc::has_type<std::true_type, result_type>::value,
+            // extract that tag
+            typename std::tuple_element<etdc::index_of<std::true_type, result_type>::value, std::tuple<Tags...>>::type,
+            // or not
+            detail::unsatisfied_predicate<Pred<tagged<T,Tags...>>>>::type;
+    };
 
     // The main template - tag an instance of T with any number of tags
     template <typename T, typename... Tags>
@@ -88,7 +136,7 @@ namespace etdc {
         using type    = T;
         using my_tags = detail::typelist_type<Tags...>;
 
-        explicit tagged(T const& t): __m_value(t) {}
+        explicit constexpr tagged(T const& t): __m_value(t) {}
 
         // Support any c'tors that T support
         template <typename... Ts>
@@ -140,31 +188,6 @@ namespace etdc {
         T   __m_value {};
     };
 
-    // Is the entry tagged with tag Tag?
-    template <typename Tag, typename...>
-    struct has_tag: std::false_type {};
-
-    template <typename Tag, typename T, typename... Tags>
-    struct has_tag<Tag, tagged<T, Tags...>>: etdc::has_type<Tag, Tags...> {};
-
-    //  Check if the tagged value has a tag satisfying predicate Pred
-    template <template <typename...> class Pred, typename...>
-    struct get_tag_p {
-        using type = std::tuple<>;
-    };
-
-    template <template <typename...> class Pred, typename T, typename... Tags>
-    struct get_tag_p<Pred, tagged<T, Tags...>> {
-        using result_type  = typename etdc::apply<Pred, Tags...>::type;
-        using type = typename std::conditional<
-            // Depending on wether true_type appears ...
-            etdc::has_type<std::true_type, result_type>::value,
-            // extract that tag
-            typename std::tuple_element<etdc::index_of<std::true_type, result_type>::value, std::tuple<Tags...>>::type,
-            // or not
-            std::tuple<>>::type;
-    };
-
 
     /////////////////////////////////////////////////////////////////////
     //
@@ -172,6 +195,44 @@ namespace etdc {
     //      an (optionally) tagged value
     //
     /////////////////////////////////////////////////////////////////////
+    template <typename T, typename...>
+    T& untag(T& t) {
+        return t;
+    }
+
+    template <typename T, typename...>
+    T& untag(T* t) {
+        return *t;
+    }
+
+    template <typename T, typename... Ts>
+    T& untag(tagged<T, Ts...>& t) {
+        return t.__m_value;
+    }
+
+    // const versions
+    template <typename T, typename...>
+    T const& untag(T const& t) {
+        return t;
+    }
+
+    template <typename T, typename...>
+    T const& untag(T const* t) {
+        return *t;
+    }
+
+    template <typename T, typename... Ts>
+    T const& untag(tagged<T, Ts...> const& t) {
+        return t.__m_value;
+    }
+#if 0
+    template <typename T, typename...>
+    typename std::enable_if<!std::is_pointer<T>::value && !std::is_lvalue_reference<T>::value, T&>::type
+    untag(T) {
+        throw std::logic_error("untag() called on unsupported type "+type2str<T>());
+    }
+#endif
+#if 0
     template <typename T, typename...>
     std::reference_wrapper<T> untag(T& t) {
         return std::ref(t);
@@ -181,7 +242,7 @@ namespace etdc {
     std::reference_wrapper<T> untag(tagged<T, Ts...>& t) {
         return std::ref(t.__m_value);
     }
-
+#endif
 } // namespace etdc
 
 

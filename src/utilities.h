@@ -132,7 +132,8 @@ namespace etdc {
         template <typename T, std::size_t I>
         struct index_of_impl<T, I> {
                 using  type = requested_type_not_found<T>;
-                static constexpr requested_type_not_found<T> value = requested_type_not_found<T>();
+                static constexpr size_t value = I;
+                //static constexpr requested_type_not_found<T> value = requested_type_not_found<T>();
             };
 
         // specialization: we find type T at position I in the sequence of types
@@ -188,16 +189,16 @@ namespace etdc {
     // Apply Pred to all types and check if the true_type is present
     template <template <typename...> class Pred, typename... Ts>
     struct index_of_p:
-        std::conditional<has_type<std::true_type, typename detail::apply<Pred, Ts...>::type>::value,
-                         typename index_of<std::true_type, typename detail::apply<Pred, Ts...>::type>::type,
+        std::conditional<has_type<std::true_type, typename apply<Pred, Ts...>::type>::value,
+                         typename index_of<std::true_type, typename apply<Pred, Ts...>::type>::type,
                          requested_element_not_found>
     {};
 
     // 2.) specialization for std::tuple<>, find the (first) occurrence where Pred<T> in std::tuple<Ts...> is true
     template <template <typename...> class Pred, typename... Ts>
     struct index_of_p<Pred, std::tuple<Ts...>>:
-        std::conditional<has_type<std::true_type, typename detail::apply<Pred, Ts...>::type>::value,
-                         typename index_of<std::true_type, typename detail::apply<Pred, Ts...>::type>::type,
+        std::conditional<has_type<std::true_type, typename apply<Pred, Ts...>::type>::value,
+                         typename index_of<std::true_type, typename apply<Pred, Ts...>::type>::type,
                          requested_element_not_found>
     {};
 
