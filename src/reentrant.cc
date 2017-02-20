@@ -69,7 +69,7 @@ namespace etdc {
         return ::lrand48();
     }
 
-    protodetails_type getprotobyname(char const* name) {
+    detail::protocol_entry getprotobyname(char const* name) {
         // Quoth getprotoent(3) on Mac OSX:
         // "These functions use a thread-specific data space; if the data is
         // needed for future use, it should be copied before any subsequent calls overwrite it."
@@ -82,6 +82,6 @@ namespace etdc {
 
         if( (pptr=::getprotobyname(name))==0 )
             throw std::runtime_error(std::string("getprotent(")+name+") fails - no such protocol found");
-        return protodetails_type(pptr);
+        return detail::protocol_entry(pptr);
     }
 } // namespace etdc

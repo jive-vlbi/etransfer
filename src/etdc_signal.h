@@ -23,6 +23,7 @@
 // own includes
 #include <utilities.h>
 #include <streamutil.h>
+#include <reentrant.h>
 #include <etdc_thread_local.h>
 
 // std c++
@@ -38,7 +39,6 @@
 #include <type_traits>
 
 // good old C
-#include <string.h>  // for ::strsignal() and ::strerror()
 #include <signal.h>
 #include <pthread.h>
 
@@ -204,13 +204,13 @@ namespace etdc {
 
             // and install it
             if( int r = ::pthread_sigmask(static_cast<int>(How), &__m_cur_sigmask, &__m_old_sigmask) )
-                throw std::runtime_error(std::string("Failed to install signalmask - ")+::strerror(r));
+                throw std::runtime_error(std::string("Failed to install signalmask - ")+etdc::strerror(r));
         }
         ~scoped_signal_mask() {
             // Restore old signal mask on destruction of instances that modified the signal mask
             if( How!=MaskOp::getMask ) {
                 if( int r = ::pthread_sigmask(static_cast<int>(MaskOp::setMask), &__m_old_sigmask, nullptr) )
-                    throw std::runtime_error(std::string("Failed to restore signalmask - ")+::strerror(r));
+                    throw std::runtime_error(std::string("Failed to restore signalmask - ")+etdc::strerror(r));
             }
         }
 

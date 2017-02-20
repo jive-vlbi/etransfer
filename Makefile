@@ -106,7 +106,7 @@ t4_SRC=src/tkwarg.cc
 t4_VERSION=0
 t4_OBJS=$(call mkobjs,t4)
 
-tsok_SRC=src/tsok.cc
+tsok_SRC=src/tsok.cc src/reentrant.cc
 tsok_VERSION=0
 tsok_OBJS=$(call mkobjs,tsok)
 tsok_DEPS=libudt4hv

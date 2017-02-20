@@ -21,6 +21,7 @@
 #define ETDC_ETDC_SOCKOPT_H
 
 #include <tagged.h>
+#include <reentrant.h>
 #include <streamutil.h>
 // UDT includes
 #include <udt.h>
@@ -286,7 +287,7 @@ namespace etdc {
         typename native_type::type opt_val  = native_type::to_native( untag(ov) );
 
         if( ::setsockopt(s, level, opt_name, (void*)&opt_val, socklen_t(sizeof(typename native_type::type)))!=0 )
-            throw std::runtime_error("Failed to set socket option "+detail::option_str(opt_name)+": "+::strerror(errno));
+            throw std::runtime_error("Failed to set socket option "+detail::option_str(opt_name)+": "+etdc::strerror(errno));
 
         // OK, this option done, carry on with rest
         return 1+setsockopt(s, std::forward<Rest>(rest)...);
@@ -339,7 +340,7 @@ namespace etdc {
         typename native_type::type opt_val;
 
         if( ::getsockopt(s, level, opt_name, (void*)&opt_val, &opt_len)!=0 )
-            throw std::runtime_error("Failed to get socket option "+detail::option_str(opt_name)+": "+::strerror(errno));
+            throw std::runtime_error("Failed to get socket option "+detail::option_str(opt_name)+": "+etdc::strerror(errno));
         if( opt_len!=sizeof(typename native_type::type) )
             throw std::domain_error("getsockopt: returned option_value size does not match native size");
 
