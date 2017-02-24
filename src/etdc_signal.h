@@ -68,8 +68,8 @@ namespace etdc {
     // How to display the sigmask is kept per thread ...
     //thread_local MaskDisplayFormat curMaskDisplay{ MaskDisplayFormat::defaultMaskFormat };
     using maskdisplaystack_type = std::stack<MaskDisplayFormat>;
-    etdc::thrd_local<MaskDisplayFormat>     curMaskDisplay{ MaskDisplayFormat::defaultMaskFormat };
-    etdc::thrd_local<maskdisplaystack_type> maskDisplayStack;
+    etdc::tls_object_type<MaskDisplayFormat>     curMaskDisplay{ MaskDisplayFormat::defaultMaskFormat };
+    etdc::tls_object_type<maskdisplaystack_type> maskDisplayStack;
 
     template <class CharT, class Traits>
     std::basic_ostream<CharT, Traits>& showMaskInHRF(std::basic_ostream<CharT, Traits>& os ) {
@@ -83,17 +83,15 @@ namespace etdc {
     } 
     template <class CharT, class Traits>
     std::basic_ostream<CharT, Traits>& pushMaskDisplayFormat(std::basic_ostream<CharT, Traits>& os ) {
-        maskdisplaystack_type&  lclMaskDisplayStack( maskDisplayStack.get() );
-        lclMaskDisplayStack.push( curMaskDisplay );
+        maskDisplayStack->push( curMaskDisplay );
         return os;
     } 
     template <class CharT, class Traits>
     std::basic_ostream<CharT, Traits>& popMaskDisplayFormat(std::basic_ostream<CharT, Traits>& os ) {
-        maskdisplaystack_type&  lclMaskDisplayStack( maskDisplayStack.get() );
-        if( lclMaskDisplayStack.empty() )
+        if( maskDisplayStack->empty() )
             throw std::logic_error("Attempt to pop maskDisplayFormat from empty stack!");
-        curMaskDisplay = lclMaskDisplayStack.top();
-        lclMaskDisplayStack.pop();
+        curMaskDisplay = maskDisplayStack->top();
+        maskDisplayStack->pop();
         return os;
     } 
 #if 0
