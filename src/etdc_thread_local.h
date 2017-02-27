@@ -162,6 +162,7 @@ namespace etdc {
 
         using stored_type  = std::array<T, N>;
         using Self         = tls_object_type<T[N]>;
+        enum my_size : std::size_t { size = N };
 
         // Type safe deleter
         static void deleter(void* ptr) {

@@ -18,6 +18,7 @@
 //          P.O. Box 2
 //          7990 AA Dwingeloo
 #include <reentrant.h>
+#include <etdc_thread_local.h>
 
 #include <thread>
 #include <iostream>
@@ -43,30 +44,59 @@ namespace etdc {
         {}
 
         // Simplest is just to use mutexes to make sure not more than one thread
-        // calls "strerror(3)", "getprotobyname(3)" or "random(3)" at the same time
+        // "getprotobyname(3)" at the same time. For random+strerror we now
+        // use proper thread-local storage
+#ifndef __APPLE__
         using mutex       = std::mutex;
         using scoped_lock = std::lock_guard<mutex>;
-
-        static mutex  strerror_lock{};
-        static mutex  random_lock{};
-#ifndef __APPLE__
         static mutex  protoent_lock{};
 #endif
+
+        struct random_state_type {
+            bool            sown;
+            unsigned short  xsubi[3];
+
+            random_state_type():
+                sown( false )
+            {}
+        };
+
+        // See - here is the thread-local stuff
+        using strerr_buf_type = etdc::tls_object_type<char[128]>;
+        strerr_buf_type                          strerr_buf;
+        etdc::tls_object_type<random_state_type> random_state;
     }
 
+    // Get thread-local storage where strerror_r(3) can write into then we
+    // copy it out back to the user
     std::string strerror(int errnum) {
-        detail::scoped_lock     scopedLock( detail::strerror_lock );
-        return std::string( ::strerror(errnum) );
+        ::strerror_r(errnum, &detail::strerr_buf[0], detail::strerr_buf_type::size);
+        return std::string( detail::strerr_buf.begin() );
     }
 
+    void srand( void ) {
+        time_t         now( ::time(0) ), tmp;
+        pthread_t      self = ::pthread_self();
+
+        ::memcpy(&tmp, &self, std::min(sizeof(time_t), sizeof(pthread_t)));
+        now += tmp;
+        ::memcpy(&detail::random_state->xsubi[0], &now, std::min(sizeof(time_t), sizeof(detail::random_state_type::xsubi)));
+        detail::random_state->sown = true;
+    }
+
+
+    // Deal with the random stuff - we just deal with the 48-bit versions
+
+    // 0 .. (2**32)-1
     long int random( void ) {
-        detail::scoped_lock     scopedLock( detail::random_lock );
-        return ::random();
+        if( !detail::random_state->sown )
+            etdc::srand();
+        return ::nrand48(detail::random_state->xsubi);
     }
-
     long int lrand48( void ) {
-        detail::scoped_lock     scopedLock( detail::random_lock );
-        return ::lrand48();
+        if( !detail::random_state->sown )
+            etdc::srand();
+        return ::nrand48(detail::random_state->xsubi);
     }
 
     detail::protocol_entry getprotobyname(char const* name) {

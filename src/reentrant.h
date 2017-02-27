@@ -52,12 +52,13 @@ namespace etdc {
     // "etdc::strerror()" everywhere
     std::string strerror(int errnum);
 
-    // Will do srandom_r() first time random() is called inside a thread <==
-    // NO NOT (YET)
+    // Seed the 48-bit random state
+    void     srand( void );
+
+    // Will do srand() first time random() is called inside a thread
     long int random( void );
 
-    // Will do srand48_r() first time lrand48() is called inside a thread
-    // NO NOT (YET)
+    // Will do srand() first time lrand48() is called inside a thread
     long int lrand48( void );
 
     // getprotobyname is not marked MT-Safe.
