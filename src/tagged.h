@@ -225,24 +225,6 @@ namespace etdc {
     T const& untag(tagged<T, Ts...> const& t) {
         return t.__m_value;
     }
-#if 0
-    template <typename T, typename...>
-    typename std::enable_if<!std::is_pointer<T>::value && !std::is_lvalue_reference<T>::value, T&>::type
-    untag(T) {
-        throw std::logic_error("untag() called on unsupported type "+type2str<T>());
-    }
-#endif
-#if 0
-    template <typename T, typename...>
-    std::reference_wrapper<T> untag(T& t) {
-        return std::ref(t);
-    }
-
-    template <typename T, typename... Ts>
-    std::reference_wrapper<T> untag(tagged<T, Ts...>& t) {
-        return std::ref(t.__m_value);
-    }
-#endif
 } // namespace etdc
 
 
