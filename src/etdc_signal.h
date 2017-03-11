@@ -94,28 +94,7 @@ namespace etdc {
         maskDisplayStack->pop();
         return os;
     } 
-#if 0
-    struct saveMask_impl {
-        public:
-            saveMask_impl(): __m_previous_fmt( curMaskDisplay ) {}
-            // in the move constructor, disable the putting back of the old
-            // value in the object we are move-constructed from
-            saveMask_impl(saveMask_impl&& other): __m_previous_fmt( other.__m_previous_fmt ) {
-                other.__m_previous_fmt = MaskDisplayFormat::noChange;
-            }
 
-            ~saveMask_impl()  {
-                if( __m_previous_fmt!=MaskDisplayFormat::noChange )
-                    curMaskDisplay = __m_previous_fmt;
-            }
-            
-        private:
-            MaskDisplayFormat   __m_previous_fmt;
-    };
-    std::ostream& operator<<(std::ostream& os, saveMask_impl const&) { return os; }
-
-    saveMask_impl saveMask( void ) { return saveMask_impl(); }
-#endif    
     //////////////////////////////////////////////////////////////////////////////////////////////////    
     // 
     //          threads + signals can work together, as long as you're keeping a
@@ -231,5 +210,55 @@ namespace etdc {
     using UnBlockAll = scoped_signal_mask<sigemptyset, nullptr ,  MaskOp::setMask>;
 }
 
+// As a convenience - define output operator for "sigset_t" but only if sigset_t
+// is not integral type [on many POSIXen sigset_t is just a typedef for unsigned long or so]
+// but on (some versions of?) Loonix, it is most definitely not.
+// Not an issue at all; sigset_t is supposed to be an opaque type, but in case your
+// O/S typedef'ed it as "unsigned long" then this overload below would clash very hard
+// with the built-in "cout << (unsigned long) << ..." overload ...
+// But with the help of std::enable_if<> we can only introduce this overload in case it's necessary.
+template <class CharT, class Traits>
+typename std::enable_if<!std::is_integral<sigset_t>::value, std::basic_ostream<CharT, Traits>&>::type
+operator<<(std::basic_ostream<CharT, Traits>& os, sigset_t const& ss) {
+    // Filter out the first 32 (POSIX?) signals. 
+    auto allSigs    = etdc::mk_sequence(1, 31);
+    
+    return os << std::accumulate(std::begin(allSigs), std::end(allSigs), uint32_t(0),
+                                 [&](uint32_t& acc, int s) { return acc |= (sigismember(&ss, s) << s); });
+}
+#if 0
+    // This implementation could be used to display ALL possible signals on Loonix
+    // (I think they can go up to 1024 signals)
+    using word_type  = uint32_t;
+    //using words_type = std::vector<word_type>;
+    using words_type = std::map<size_t,word_type>;
+    //constexpr unsigned int nWord     = sizeof(sigset_t)/sizeof(word_type);
+    constexpr unsigned int nSigPWord = 8 * sizeof(word_type);
+    constexpr unsigned int nSig      = 8 * sizeof(sigset_t);
+
+    // Limit ourselves to the first 32 (POSIX?) signals
+    auto       allSigs  = etdc::mk_sequence(1, 31);
+    //words_type actualSigs( nWord, word_type(0) );
+
+    auto actualSigs = std::accumulate(std::begin(allSigs), std::end(allSigs), words_type(),
+                    [&](words_type& acc, int s) { acc[s/nSigPWord] |= (sigismember(&ss, s) << (s % nSigPWord)); return acc; });
+
+    // Now output the words in reverse order (i.e. MSB to the right, LSB to the left)
+    // Depending on flags in os ...
+    const auto flags = os.flags();
+
+    // Clear showbase [will restore them later]
+    os.unsetf( std::ios_base::showbase );
+
+    // Deal with showbase
+    if( flags & std::ios_base::showbase )
+        os << ((flags & std::ios_base::oct) ? "0" : ((flags & std::ios_base::hex) ? "0x" : ""));
+
+    for(auto w: etdc::reversed(actualSigs))
+        os << w.second << " ";
+        //os << w << " ";
+    os.flags( flags );
+    return os;
+#endif
 
 #endif // ETDC_SIGNAL_H
