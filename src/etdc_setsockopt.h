@@ -226,7 +226,7 @@ namespace etdc {
                                            #endif
                                            OPTION(SO_RCVTIMEO) };
 
-        std::string option_str(int o) {
+        inline std::string option_str(int o) {
             i2n_map_type::const_iterator p = i2n_map.find(o);
             return ((p==i2n_map.end()) ? (std::string("** unknown socket option #")+repr(o)+" **") : p->second);
         }
@@ -236,7 +236,7 @@ namespace etdc {
         static const i2n_udt_map_type i2n_udt_map{ OPTION(UDT_MSS), OPTION(UDT_CC), OPTION(UDT_REUSEADDR), OPTION(UDT_SNDBUF),
                                                    OPTION(UDT_RCVBUF), OPTION(UDT_MAXBW) };
 
-        std::string udt_option_str(UDTOpt o) {
+        inline std::string udt_option_str(UDTOpt o) {
             i2n_udt_map_type::const_iterator p = i2n_udt_map.find(o);
             return ((p==i2n_udt_map.end()) ? (std::string("** unknown UDT socket option #")+repr(o)+" **") : p->second);
         }
@@ -257,7 +257,7 @@ namespace etdc {
     //
     ///////////////////////////////////////////////////////////////////////////////////////////////////////
 
-    int setsockopt(int) { return 0; } 
+    inline int setsockopt(int) { return 0; } 
 
     template <typename Option, typename... Rest>
     typename std::enable_if<is_udt_option<Option>::value && etdc::has_tag<tags::settable, Option>::value, int>::type
@@ -271,7 +271,7 @@ namespace etdc {
         if( UDT::setsockopt(s, level, opt_name, (char const*)&opt_val, int(sizeof(typename native_type::type)))==UDT::ERROR ) {
             UDT::ERRORINFO & udterr( UDT::getlasterror() );
             throw std::runtime_error("Failed to set UDT option "+detail::udt_option_str(opt_name)+": "+
-                                      udterr.getErrorMessage()+" ("+etdc::repr(udterr.getErrorCode()));
+                                      udterr.getErrorMessage()+" ("+etdc::repr(udterr.getErrorCode())+"/fd="+repr(s));
         }
 
         // OK, this option done, carry on with rest
@@ -287,7 +287,8 @@ namespace etdc {
         typename native_type::type opt_val  = native_type::to_native( untag(ov) );
 
         if( ::setsockopt(s, level, opt_name, (void*)&opt_val, socklen_t(sizeof(typename native_type::type)))!=0 )
-            throw std::runtime_error("Failed to set socket option "+detail::option_str(opt_name)+": "+etdc::strerror(errno));
+            throw std::runtime_error("Failed to set socket option "+detail::option_str(opt_name)+": "+
+                                     etdc::strerror(errno)+"/fd="+repr(s));
 
         // OK, this option done, carry on with rest
         return 1+setsockopt(s, std::forward<Rest>(rest)...);
@@ -302,7 +303,7 @@ namespace etdc {
     //  you just found it!
     //
     ///////////////////////////////////////////////////////////////////////////////////////////////////////
-    int getsockopt(int) { return 0; } 
+    inline int getsockopt(int) { return 0; } 
 
     template <typename Option, typename... Rest>
     typename std::enable_if<is_udt_option<Option>::value && etdc::has_tag<tags::gettable, Option>::value, int>::type
@@ -317,10 +318,12 @@ namespace etdc {
         if( UDT::getsockopt(s, level, opt_name, (char *)&opt_val, &opt_len)==UDT::ERROR ) {
             UDT::ERRORINFO & udterr( UDT::getlasterror() );
             throw std::runtime_error("Failed to get UDT option "+detail::udt_option_str(opt_name)+": "+
-                                      udterr.getErrorMessage()+" ("+etdc::repr(udterr.getErrorCode()));
+                                      udterr.getErrorMessage()+" ("+etdc::repr(udterr.getErrorCode())+"/fd="+repr(s));
         }
         if( opt_len!=sizeof(typename native_type::type) )
-            throw std::domain_error("getsockopt/udt: returned option_value size does not match native size");
+            throw std::domain_error(std::string("getsockopt/udt: returned option_value size (")+repr(opt_len)+") "+
+                                    "does not match native size ("+repr(sizeof(typename native_type::type))+")"+
+                                    "/fd="+repr(s));
 
         // Transform from native to actual type and copy into the parameter
         untag( ov ) = native_type::from_native( opt_val );
@@ -340,9 +343,12 @@ namespace etdc {
         typename native_type::type opt_val;
 
         if( ::getsockopt(s, level, opt_name, (void*)&opt_val, &opt_len)!=0 )
-            throw std::runtime_error("Failed to get socket option "+detail::option_str(opt_name)+": "+etdc::strerror(errno));
+            throw std::runtime_error("Failed to get socket option "+detail::option_str(opt_name)+": "+
+                                     etdc::strerror(errno)+"/fd="+repr(s));
         if( opt_len!=sizeof(typename native_type::type) )
-            throw std::domain_error("getsockopt: returned option_value size does not match native size");
+            throw std::domain_error(std::string("getsockopt: returned option_value size (")+repr(opt_len)+") " +
+                                    "does not match native size ("+repr(sizeof(typename native_type::type))+")" +
+                                    "/fd="+repr(s));
 
         // Transform from native to actual type and copy into the parameter
         untag( ov ) = native_type::from_native( opt_val );
