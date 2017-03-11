@@ -22,6 +22,7 @@
 
 // std c++
 #include <tuple>
+#include <memory>
 #include <string>
 #include <sstream>
 #include <iterator>
@@ -36,8 +37,10 @@ namespace etdc {
     // "typeid(T).name()" so as to know what the **** 'T' happens to be.
     namespace detail {
         // http://stackoverflow.com/a/4541470
-        std::string demangle(char const*const name) {
-            int status = -4; // some arbitrary value to eliminate the compiler warning
+        template <typename T>
+        std::string demangle(void) {
+            int              status = -4; // some arbitrary value to eliminate the compiler warning
+            char const*const name = typeid(T).name();
 
             // enable c++11 by passing the flag -std=c++11 to g++
             std::unique_ptr<char, void(*)(void*)> res {
@@ -53,10 +56,40 @@ namespace etdc {
     // string of demangled types
     template <typename... Ts>
     std::string type2str( void ) {
-        std::string dummy[sizeof...(Ts)] = { detail::demangle(typeid(Ts).name())... };
+        std::string dummy[sizeof...(Ts)] = { detail::demangle<Ts>()... };
         std::ostringstream oss;
-        std::copy(&dummy[0], &dummy[sizeof...(Ts)], std::ostream_iterator<std::string>(oss, ","));
+        std::copy(&dummy[0], &dummy[sizeof...(Ts)], std::ostream_iterator<std::string>(oss, ";"));
         return oss.str();
+    }
+
+
+    // Adaptor for easy creation of reversed range-based for loop, thanks to:
+    // http://stackoverflow.com/a/36928761
+    namespace detail {
+        template <typename C>
+        struct reverse_wrapper {
+            C& c_;   // could use std::reference_wrapper, maybe?
+            reverse_wrapper(C& c) :  c_(c) {}
+
+            // container.rbegin()/container.rend() is fine - these have existed for long
+            typename C::reverse_iterator begin() { return c_.rbegin(); }
+            typename C::reverse_iterator end()   { return c_.rend();   }
+        };
+
+        template <typename C, size_t N>
+        struct reverse_wrapper< C[N] >{
+            C (&c_)[N];
+            reverse_wrapper( C(&c)[N] ) : c_(c) {}
+
+            // std::rbegin()/std::rend() are c++14 :-(
+            typename std::reverse_iterator<const C *> begin() { return &c_[N-1];/*std::rbegin(c_);*/ }
+            typename std::reverse_iterator<const C *> end()   { return &c_[-1]; /*std::rend(c_);*/   }
+        };
+    }
+
+    template <typename C>
+    detail::reverse_wrapper<C> reversed(C & c) {
+        return detail::reverse_wrapper<C>(c);
     }
 
 
