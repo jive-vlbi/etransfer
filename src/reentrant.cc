@@ -20,6 +20,7 @@
 #include <reentrant.h>
 #include <etdc_thread_local.h>
 
+#include <mutex>
 #include <thread>
 #include <iostream>
 #include <stdexcept>
@@ -28,8 +29,6 @@
 #include <string.h>   // for ::strerror_r()
 #include <time.h>
 #include <errno.h>
-//#include <signal.h>
-//#include <dosyscall.h>
 
 
 namespace etdc {
@@ -70,7 +69,9 @@ namespace etdc {
     // Get thread-local storage where strerror_r(3) can write into then we
     // copy it out back to the user
     std::string strerror(int errnum) {
-        ::strerror_r(errnum, &detail::strerr_buf[0], detail::strerr_buf_type::size);
+        // We get an 'unused return value' warning-cum-error if we don't look at strerror_r(3)
+        // return value. We just don't care I guess.
+        if( ::strerror_r(errnum, &detail::strerr_buf[0], detail::strerr_buf_type::size)!=0 ) {}
         return std::string( detail::strerr_buf.begin() );
     }
 
