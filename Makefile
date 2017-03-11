@@ -11,7 +11,7 @@ DATE=$(shell date '+%d-%b-%Y %Hh%Mm%Ss')
 # on some compilers of the gcc.4.3.<small digit> the "-Wconversion" flag
 # is broken - it produces warning for perfectly legitimate code.
 # All files that could be fixed are fixed, however atomic.h can't be 
-BASEOPT=-fPIC $(OPT) -Wall -W -Werror -Wextra -pedantic -DB2B=$(B2B) -D_REENTRANT -D_POSIX_PTHREAD_SEMANTICS -D__STDC_FORMAT_MACROS -Wcast-qual -Wwrite-strings -Wredundant-decls -Wfloat-equal -Wshadow -D_FILE_OFFSET_BITS=64
+BASEOPT=-fPIC $(OPT) -Wall -W -Werror -Wextra -pedantic -DB2B=$(B2B) -D_POSIX_C_SOURCE=200809L -D__STDC_FORMAT_MACROS -Wcast-qual -Wwrite-strings -Wredundant-decls -Wfloat-equal -Wshadow -D_FILE_OFFSET_BITS=64
 
 CCOPT=$(BASEOPT) -Wbad-function-cast -Wstrict-prototypes
 CXXOPT=$(BASEOPT) -std=c++11
@@ -51,7 +51,7 @@ INCD+=-I$(shell pwd)/src
 
 PLATFORMLIBS=
 ifeq ($(shell uname),Linux)
-	PLATFORMLIBS=-lnsl -lrt -ldl
+	PLATFORMLIBS=-lm -lnsl -lrt -ldl
 endif
 
 ifeq ($(shell uname),SunOS)
@@ -83,8 +83,7 @@ etd_OBJS=$(call mkobjs,etd)
 
 # targets that etd depends upon
 # Link in support for UDT  
-etd_DEPS=libudt4hv
-etd_LIBS=-lm $(PLATFORMLIBS) -lpthread -L./$(repos)/libudt4hv -ludt4hv
+etd_DEPS=libudt4hv pthread
 
 # etransfer client
 etc_SRC=src/etc.cc 
@@ -94,23 +93,27 @@ etc_OBJS=$(call mkobjs,etc)
 
 # targets that etd depends upon
 # Link in support for UDT  
-etc_DEPS=libudt4hv
-etc_LIBS=-lm $(PLATFORMLIBS) -lpthread -L./$(repos)/libudt4hv -ludt4hv
+etc_DEPS=libudt4hv pthread
 
 
 t3_SRC=src/t3.cc
 t3_VERSION=3
 t3_OBJS=$(call mkobjs,t3)
 
-t4_SRC=src/tkwarg.cc
+t4_SRC=src/t4.cc src/reentrant.cc src/etdc_fd.cc
 t4_VERSION=0
 t4_OBJS=$(call mkobjs,t4)
+t4_DEPS=libudt4hv pthread
 
 tsok_SRC=src/tsok.cc src/reentrant.cc
 tsok_VERSION=0
 tsok_OBJS=$(call mkobjs,tsok)
-tsok_DEPS=libudt4hv
-tsok_LIBS=-lm $(PLATFORMLIBS) -lpthread -L./$(repos)/libudt4hv -ludt4hv
+tsok_DEPS=libudt4hv pthread
+
+ttls_SRC=src/ttls.cc
+ttls_VERSION=0
+ttls_OBJS=$(call mkobjs,ttls)
+ttls_DEPS=pthread
 
 # Process make command line targets and filter out the ones that we should build
 # This is only to be able to include the correct dependency files
@@ -120,13 +123,19 @@ ifeq ($(TODO),)
 endif
 
 # If any of the targets need libutd4, add that include path
-ifneq ($(findstring libudt4hv, $(foreach P, $(TODO), $($(P)_DEPS))),)
+ifneq ($(strip $(findstring libudt4hv, $(foreach P, $(TODO), $($(P)_DEPS)))),)
 	INCD+=-I$(shell pwd)/libudt4hv
+	PLATFORMLIBS+=-L./$(repos)/libudt4hv -ludt4hv
+endif
+# If any of the targets need pthread, add that library
+ifneq ($(strip $(findstring pthread, $(foreach P, $(TODO), $($(P)_DEPS)))),)
+	BASEOPT+=-pthread -D_REENTRANT -D_POSIX_PTHREAD_SEMANTICS 
+	PLATFORMLIBS+=-lpthread
 endif
 
 
 # Hints to gmake 
-.PHONY: info clean %.depend %.version %.target libudt4hv %.dep
+.PHONY: info clean %.depend %.version %.target libudt4hv pthread %.dep
 .PRECIOUS: $(repos)/src/%_version.cco $(repos)/%.d
 
 
@@ -138,7 +147,7 @@ all: $(foreach P, $(DEFAULTTARGETS), $(addsuffix .target, $(P)))
 
 info:
 	@echo "info: TODO=$(TODO)"; echo "repos=$(repos)"; echo "OBJS: $(foreach T, $(TODO), $($(T)_OBJS))"
-	@echo "INCD=$(INCD)"; echo "D=$(D)";
+	@echo "INCD=$(INCD)"; echo "D=$(D)"; echo "PLATFORMLIBS=$(PLATFORMLIBS)"
 
 clean: $(foreach P, $(DEFAULTTARGETS), $(addsuffix .clean, $(P)))
 	-$(MAKE) -C libudt4hv -f Makefile B2B="$(B2B)" REPOS="$(repos)" clean
@@ -148,7 +157,7 @@ libudt4hv:
 	@$(MAKE) -C libudt4hv -f Makefile B2B="$(B2B)" CPP="$(CXX)" REPOS="$(repos)"
 
 %.target: %.version %.depend %.dep
-	$(LD) -o $* $($*_OBJS) $(repos)/src/$*_version.cco $(LIBD) $($*F_LIBS)
+	$(LD) -o $* $($*_OBJS) $(repos)/src/$*_version.cco $(LIBD) $(PLATFORMLIBS) $($*F_LIBS)
 
 %.clean:
 	-rm -f $($*_OBJS) $(repos)/$* $(repos)/$*.d $(repos)/src/$*_version.cco
@@ -168,7 +177,7 @@ $(repos)/%.d:
 	@ $(CXX) -MM $(CXXOPT) $(INCD) $($(*F)_SRC) | sed -e 's@^\(.*\)\.o:@$(repos)/src/\1.cco:@;' > $@
 	@ export TMP="`cat $@ | sed -n '/^[^:]*:/{ s/^[^:]*: *//;p; }' | tr ' ' '\n' | sort | uniq | tr '\n' ' ' | sed 's#\\\\##g'`"; printf "$(repos)/$*.d $(repos)/src/$*_version.cco: src/version.h $${TMP}\n" >> $@;
 	@ printf ".PHONY: $*.dep\n$*.dep : $($*_DEPS)\n" >> $@;
-	@ printf "$*.target: $(repos)/src/$*_version.cco $(repos)/$*.d $*.dep $($*_OBJS)\n\t$(LD) -o $(repos)/$* $($*_OBJS) $(repos)/src/$*_version.cco $(LIBD) $($(*F)_LIBS)\n" >> $@;
+	@ printf "$*.target: $(repos)/src/$*_version.cco $(repos)/$*.d $*.dep $($*_OBJS)\n\t$(LD) -o $(repos)/$* $($*_OBJS) $(repos)/src/$*_version.cco $(LIBD) $(PLATFORMLIBS) $($(*F)_LIBS)\n" >> $@;
 
 $(repos)/src/%_version.cco: 
 	@ echo "[creating version file for $* into $@]";
