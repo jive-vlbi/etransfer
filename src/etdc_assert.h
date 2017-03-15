@@ -24,10 +24,6 @@
 #include <sstream>
 #include <stdexcept>
 
-#if 0
-#include <utilities.h>
-#endif
-
 namespace etdc {
 
     // Simple wrapper around std::ostringstream which allows for 
@@ -41,23 +37,21 @@ namespace etdc {
     // into the temporary
     //
     // (Or, as we'll see below, in generating assertion error messages ...
-    struct stream:
-        public std::ostringstream
-    {
+    struct stream {
         public:
-#if 0
-            // Short-circuit for when constructing from just a string
-            stream(std::string const& s):
-                std::ostringstream(s)
-            {}
-            template <typename... Ts,
-                      typename std::enable_if<std::is_same<std::string, typename etdc::common_type<Ts...>::type>::value, int>:type = 0>
-            stream(Ts const&... ts):
-                std::ostringstream( std::accumulate
-#endif
             // Construct from any number of arguments - they'll be inserted into self
             template <typename... Ts>
             stream(Ts... ts) { insert( std::forward<Ts>(ts)... ); }
+
+            // Provide operator<< for all types
+            template <typename T>
+            stream& operator<<(T const& t) {
+                __m_stream << t;
+                return *this;
+            }
+            inline std::string str( void ) const {
+                return __m_stream.str();
+            }
 
             // Support output to any type of ostream
             template <class CharT, class Traits>
@@ -66,12 +60,10 @@ namespace etdc {
                               stream const& s) {
                        return os << s.str();
                    }
-#if 0
-            inline operator char const*( void ) const {
-                return this->std::ostringstream::str().c_str();
-            }
-#endif
+
         private:
+            std::ostringstream __m_stream;
+
             // No need to expose these to der Publik
             // This is the only way to do it in c++11 where we don't have 'auto' parameters in lambdas
             // base-case - stop the iteration
@@ -80,7 +72,7 @@ namespace etdc {
             // Strip off one parameter, insert to self and move on to nxt
             template <typename T, typename... Ts>
             void insert(T const& t, Ts... ts) {
-                (*this) << t;
+                __m_stream << t;
                 insert( std::forward<Ts>(ts)... );
             }
     };
@@ -178,6 +170,7 @@ namespace etdc {
 // Almost the same but now we only take one extra argument the (stream)
 // formatted message, e.g.: ETDCASSERT(fd>0, "fd=" << fd << " is NOT > 0!");
 #define ETDCASSERT(cond, msg)  \
-    etdc::detail::location<etdc::assertion_error>(__FILE__, ":", __LINE__, " [", #cond, "]")(cond, (std::ostringstream() << msg).str())
+    etdc::detail::location<etdc::assertion_error>(__FILE__, ":", __LINE__, " [", #cond, "]")(cond, (etdc::stream() << msg).str())
+    //etdc::detail::location<etdc::assertion_error>(__FILE__, ":", __LINE__, " [", #cond, "]")(cond, (std::ostringstream() << msg).str())
 
 #endif // ETDC_ASSERT_H
