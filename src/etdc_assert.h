@@ -165,14 +165,15 @@ namespace etdc {
 //  4. Yes, apparently this is C++11 standardized, the __VA_ARGS__
 //     It came in through C99, apparently:
 //     https://en.wikipedia.org/wiki/Variadic_macro
-//  5. We must disable the warning:
-//     .../etransfer/src/etdc_assert.h:172:98:
-//        error: token pasting of ',' and __VA_ARGS__ is a GNU extension
-//        [-Werror,-Wgnu-zero-variadic-macro-arguments]
+//  5. The __VA_ARGS__ is actually only useful if it can do zero or more
+//     arguments but that is only through a GNU extension. 
+//     The only standardized __VA_ARGS__ only works correctly for 
+//     one or more arguments. So we might as well do away with __VA_ARGS__
+//     for the moment.
 //
 ////////////////////////////////////////////////////////////////////////////////
-#define ETDCASSERTX(cond, ...)  \
-    etdc::detail::location<etdc::assertion_error>(__FILE__, ":", __LINE__, " [", #cond, "]")(cond, ##__VA_ARGS__)
+#define ETDCASSERTX(cond)  \
+    etdc::detail::location<etdc::assertion_error>(__FILE__, ":", __LINE__, " [", #cond, "]")(cond)
 
 // Almost the same but now we only take one extra argument the (stream)
 // formatted message, e.g.: ETDCASSERT(fd>0, "fd=" << fd << " is NOT > 0!");

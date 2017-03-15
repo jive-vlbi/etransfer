@@ -14,7 +14,7 @@ DATE=$(shell date '+%d-%b-%Y %Hh%Mm%Ss')
 BASEOPT=-fPIC $(OPT) -Wall -W -Werror -Wextra -pedantic -DB2B=$(B2B) -D_POSIX_C_SOURCE=200809L -D__STDC_FORMAT_MACROS -Wcast-qual -Wwrite-strings -Wredundant-decls -Wfloat-equal -Wshadow -D_FILE_OFFSET_BITS=64
 
 CCOPT=$(BASEOPT) -Wbad-function-cast -Wstrict-prototypes
-CXXOPT=$(BASEOPT) -std=c++11 #-Wno-gnu-zero-variadic-macro-arguments
+CXXOPT=$(BASEOPT) -std=c++11 
 
 ifeq ($(shell uname),OpenBSD)
 	# OpenBSD system headers redeclare the same stuff many times ...
