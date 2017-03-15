@@ -14,7 +14,7 @@ DATE=$(shell date '+%d-%b-%Y %Hh%Mm%Ss')
 BASEOPT=-fPIC $(OPT) -Wall -W -Werror -Wextra -pedantic -DB2B=$(B2B) -D_POSIX_C_SOURCE=200809L -D__STDC_FORMAT_MACROS -Wcast-qual -Wwrite-strings -Wredundant-decls -Wfloat-equal -Wshadow -D_FILE_OFFSET_BITS=64
 
 CCOPT=$(BASEOPT) -Wbad-function-cast -Wstrict-prototypes
-CXXOPT=$(BASEOPT) -std=c++11
+CXXOPT=$(BASEOPT) -std=c++11 #-Wno-gnu-zero-variadic-macro-arguments
 
 ifeq ($(shell uname),OpenBSD)
 	# OpenBSD system headers redeclare the same stuff many times ...
@@ -76,7 +76,7 @@ mkobjs=$(foreach O, $(patsubst %.c, %.co, $(patsubst %.cc, %.cco, $(patsubst %.S
 #         only set this variable if you actually need it
 
 # etransfer daemon
-etd_SRC=src/etd.cc 
+etd_SRC=src/etd.cc src/reentrant.cc src/etdc_fd.cc
 etd_VERSION=0.1
 etd_RELEASE=dev
 etd_OBJS=$(call mkobjs,etd)
@@ -86,7 +86,7 @@ etd_OBJS=$(call mkobjs,etd)
 etd_DEPS=libudt4hv pthread
 
 # etransfer client
-etc_SRC=src/etc.cc 
+etc_SRC=src/etc.cc src/reentrant.cc src/etdc_fd.cc
 etc_VERSION=0.1
 etc_RELEASE=dev
 etc_OBJS=$(call mkobjs,etc)
