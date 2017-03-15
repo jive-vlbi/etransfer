@@ -11,7 +11,7 @@ DATE=$(shell date '+%d-%b-%Y %Hh%Mm%Ss')
 # on some compilers of the gcc.4.3.<small digit> the "-Wconversion" flag
 # is broken - it produces warning for perfectly legitimate code.
 # All files that could be fixed are fixed, however atomic.h can't be 
-BASEOPT=-fPIC $(OPT) -Wall -W -Werror -Wextra -pedantic -DB2B=$(B2B) -D_POSIX_C_SOURCE=200809L -D__STDC_FORMAT_MACROS -Wcast-qual -Wwrite-strings -Wredundant-decls -Wfloat-equal -Wshadow -D_FILE_OFFSET_BITS=64
+BASEOPT=-fPIC $(OPT) -Wall -W -Werror -Wextra -pedantic -DB2B=$(B2B) -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -D_GNU_SOURCE -U_GNU_SOURCE -D__STDC_FORMAT_MACROS -Wcast-qual -Wwrite-strings -Wredundant-decls -Wfloat-equal -Wshadow -D_FILE_OFFSET_BITS=64
 
 CCOPT=$(BASEOPT) -Wbad-function-cast -Wstrict-prototypes
 CXXOPT=$(BASEOPT) -std=c++11 
