@@ -26,6 +26,7 @@
 #include <string>
 #include <sstream>
 #include <iterator>
+#include <type_traits>
 
 // plain old C
 #include <stdlib.h>
@@ -349,6 +350,56 @@ namespace etdc {
     Sequence<T> mk_sequence(T const& f, T const& l, T const& inc=T{1}) {
         return Sequence<T>(f, l, inc);
     }
+
+    /////////////////////////////////////////////////////////////////////////////////////////
+    //
+    //    A 'common_type' template that does not actually trigger a
+    //    compilation error. Attempting to use std::enable_if<> with
+    //    std::common_type<...> does not seem to work because if there
+    //    isn't a common type, there is no "::type" typedef
+    //
+    //    If there is a common type, the ::value is true, otherwise the
+    //    ::value is false.
+    //
+    //    In all cases the member typedef ::type exists. 
+    //    When there /IS/ a common type, the ::type holds the type of the 
+    //    common type. Otherwise it is detail::no_common_type
+    //
+    /////////////////////////////////////////////////////////////////////////////////////////
+    namespace detail {
+        struct no_common_type {};
+
+        // No types => no common type
+        template <typename...>
+        struct m_common_type: std::false_type {
+            using type = no_common_type;
+        };
+
+        // One type => common by default :D
+        template <typename T>
+        struct m_common_type<T>: std::true_type {
+            using type = typename std::decay<T>::type;
+        };
+
+        // Two types - dat's a simple check
+        template <typename T, typename U>
+        struct m_common_type<T, U>:
+            std::conditional<std::is_same<typename std::decay<T>::type, typename std::decay<U>::type>::value,
+                             m_common_type<T>,
+                             m_common_type<>>::type
+        {};
+
+        template <typename T, typename U, typename... Rest>
+        struct m_common_type<T, U, Rest...>:
+            std::conditional<std::is_same<no_common_type, typename m_common_type<T, U>::type>::value,
+                             m_common_type<>, // T and U were already not same so no point in checking Rest
+                             m_common_type<typename m_common_type<T, U>::type, Rest...>>::type
+        {};
+    }
+
+    // Expose only this into the etdc namespace
+    template <typename... Ts>
+    using common_type = detail::m_common_type<Ts...>;
 }
 
 #endif // ETDC_UTILITIES_H
