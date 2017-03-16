@@ -20,6 +20,7 @@
 #ifndef ETDC_ETDC_RESOLVE_H
 #define ETDC_ETDC_RESOLVE_H
 
+#include <etdc_assert.h>
 #include <string>
 #include <memory>
 #include <stdexcept>
@@ -40,6 +41,15 @@ namespace etdc {
     inline uint16_t htons_(uint16_t p) {
         return htons(p);
     }
+    inline uint16_t ntohs_(uint16_t p) {
+        return ntohs(p);
+    }
+    inline uint32_t htonl_(uint32_t p) {
+        return htonl(p);
+    }
+    inline uint32_t ntohl_(uint32_t p) {
+        return ntohl(p);
+    }
 
     namespace detail {
         using addrinfo_ptr = std::shared_ptr<struct addrinfo>;
@@ -50,10 +60,9 @@ namespace etdc {
         inline addrinfo_ptr getaddrinfo(char const* hostname, char const* servname, struct addrinfo const* hints) {
             int              gai_error;
             struct addrinfo* resultptr;
-            if( (gai_error=::getaddrinfo(hostname, servname, hints, &resultptr))!=0 )
-                throw std::runtime_error( std::string("getaddrinfo[")+hostname+"] "+::gai_strerror(gai_error) );
-            std::cout << "Allocated addrinfo!" << std::endl;
-            return addrinfo_ptr(resultptr, [](struct addrinfo* p) { std::cout << "Freeing addrinfo!" << std::endl; ::freeaddrinfo(p); });
+            ETDCSYSCALL( (gai_error=::getaddrinfo(hostname, servname, hints, &resultptr))==0,
+                         "::getaddrinfo[\"" << hostname << "\"] says " << ::gai_strerror(gai_error) );
+            return addrinfo_ptr(resultptr, ::freeaddrinfo);
         }
     }
 
@@ -87,9 +96,13 @@ namespace etdc {
     };
 
     //  Resolve a hostname in dotted quad notation or canonical name format
-    //  to an IPv4 address. Fills in dst.sin_addr if succesful
+    //  to an IPv4 address. Fills in dst.sin_addr if succesful.
+    //  socktype = SOCK_STREAM/SOCK_DGRAM/SOCK_RAW
+    //  protocol = IPPROTO_UDP/IPPROTO_TCP
     template <typename EmptyHostPolicy>
     bool resolve_host(std::string const& host, const int socktype, const int protocol, struct sockaddr_in& dst) {
+        // Make sure that we're clear about this
+        dst.sin_family  = AF_INET;
         if( host.empty() )
             return EmptyHostPolicy()(dst);
 
@@ -115,11 +128,9 @@ namespace etdc {
         resultptr = detail::getaddrinfo(host.c_str(), 0, &hints);
 
         // Scan the results for an IPv4 address
-        for(auto rp = resultptr.get(); rp!=0; rp=rp->ai_next )
-            if( rp->ai_family==AF_INET ) {
-                dst.sin_addr = ((struct sockaddr_in const*)rp->ai_addr)->sin_addr, found = true;
-                break;
-            }
+        for(auto rp = resultptr.get(); rp!=0 && !found; rp=rp->ai_next )
+            if( rp->ai_family==AF_INET )
+                dst.sin_addr   = ((struct sockaddr_in const*)rp->ai_addr)->sin_addr, found = true;
         return found;
     }
 }
