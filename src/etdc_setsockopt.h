@@ -153,6 +153,8 @@ namespace etdc {
     using udt_sndbuf    = detail::SimpleUDTOption<UDT_SNDBUF>;
     using udt_rcvbuf    = detail::SimpleUDTOption<UDT_RCVBUF>;
     using udt_reuseaddr = detail::BooleanUDTOption<UDT_REUSEADDR>;
+    using udt_sndsyn    = detail::BooleanUDTOption<UDT_SNDSYN>;
+    using udt_rcvsyn    = detail::BooleanUDTOption<UDT_RCVSYN>;
 
     // UDT Congestion Control
     template <typename T>
@@ -163,6 +165,8 @@ namespace etdc {
     // Translation between system/low level option type/value and high level
     // type-safe API
     namespace detail {
+
+        // The basic native type is just the type itself
         template <typename T>
         struct native_sockopt {
             using type = T;
@@ -174,9 +178,29 @@ namespace etdc {
                 return t;
             }
         };
-        // Pointer types get exchanged through void*
+        // Normally we never support pointer-to-something to be
+        // passed as socket option
         template <typename T>
-        struct native_sockopt<T*> {
+        struct native_sockopt<T*> { };
+
+        /////////////////////////////////////////////////////////////////
+        //
+        // Now we must discriminate between UDT and system socket options
+        // because there are differences in opinion
+        //
+        /////////////////////////////////////////////////////////////////
+
+        // UDT follows the basic  type - bool=bool, int=int etc
+        template <typename T>
+        struct udt_native_sockopt: native_sockopt<T> {
+            using type = typename native_sockopt<T>::type;
+            using native_sockopt<T>::to_native;
+            using native_sockopt<T>::from_native;
+        };
+
+        // but UDT supports passing T* (e.g. for congestion control options)
+        template <typename T>
+        struct udt_native_sockopt<T*> {
             using type = void*;
 
             static type to_native(T* p) {
@@ -186,10 +210,21 @@ namespace etdc {
                 return reinterpret_cast<T*>(p);
             }
         };
-        // Make sure that booleans are really really really only translated
+
+        // "system", Berkely, sockets (TCP, UDP, ssl?) also mostly follow the native 
+        // types, only they don't know about "bool"
+        template <typename T>
+        struct sys_native_sockopt: native_sockopt<T> {
+            using type = typename native_sockopt<T>::type;
+            using native_sockopt<T>::to_native;
+            using native_sockopt<T>::from_native;
+        };
+
+        // "bool" it has to be translated to "int";
+        // make sure that booleans are really really really only translated
         // between 0/1 and false/true
         template <>
-        struct native_sockopt<bool> {
+        struct sys_native_sockopt<bool> {
             using type = int;
 
             static type to_native(bool b) {
@@ -259,10 +294,11 @@ namespace etdc {
 
     inline int setsockopt(int) { return 0; } 
 
+    // UDT option
     template <typename Option, typename... Rest>
     typename std::enable_if<is_udt_option<Option>::value && etdc::has_tag<tags::settable, Option>::value, int>::type
     setsockopt(int s, Option const& ov, Rest... rest) {
-        using native_type = detail::native_sockopt<typename Option::type>;
+        using native_type = detail::udt_native_sockopt<typename Option::type>;
         // All socket options MUST have a level and a name
         const int                  level    = etdc::get_tag_p<has_level_tag, Option>::type::type::value;
         const UDTOpt               opt_name = etdc::get_tag_p<has_name_tag,  Option>::type::type::value;
@@ -277,10 +313,12 @@ namespace etdc {
         // OK, this option done, carry on with rest
         return 1+setsockopt(s, std::forward<Rest>(rest)...);
     }
+
+    // non-UDT option
     template <typename Option, typename... Rest>
     typename std::enable_if<!is_udt_option<Option>::value && etdc::has_tag<tags::settable, Option>::value, int>::type
     setsockopt(int s, Option const& ov, Rest... rest) {
-        using native_type = detail::native_sockopt<typename Option::type>;
+        using native_type = detail::sys_native_sockopt<typename Option::type>;
         // All socket options MUST have a level and a name
         const int                  level    = etdc::get_tag_p<has_level_tag, Option>::type::type::value;
         const int                  opt_name = etdc::get_tag_p<has_name_tag,  Option>::type::type::value;
@@ -305,10 +343,11 @@ namespace etdc {
     ///////////////////////////////////////////////////////////////////////////////////////////////////////
     inline int getsockopt(int) { return 0; } 
 
+    // get UDT option
     template <typename Option, typename... Rest>
     typename std::enable_if<is_udt_option<Option>::value && etdc::has_tag<tags::gettable, Option>::value, int>::type
     getsockopt(int s, Option& ov, Rest&... rest) {
-        using native_type = detail::native_sockopt<typename Option::type>;
+        using native_type = detail::udt_native_sockopt<typename Option::type>;
         // All socket options MUST have a level and a name
         int                        opt_len{ sizeof(typename native_type::type) };
         const int                  level    = etdc::get_tag_p<has_level_tag, Option>::type::type::value;
@@ -332,10 +371,11 @@ namespace etdc {
         return 1+getsockopt(s, std::forward<Rest&>(rest)...);
     }
 
+    // get non-UDT option
     template <typename Option, typename... Rest>
     typename std::enable_if<!is_udt_option<Option>::value && etdc::has_tag<tags::gettable, Option>::value, int>::type
     getsockopt(int s, Option& ov, Rest&... rest) {
-        using native_type = detail::native_sockopt<typename Option::type>;
+        using native_type = detail::sys_native_sockopt<typename Option::type>;
         // All socket options MUST have a level and a name
         socklen_t                  opt_len{ sizeof(typename native_type::type) };
         const int                  level = etdc::get_tag_p<has_level_tag, Option>::type::type::value;
