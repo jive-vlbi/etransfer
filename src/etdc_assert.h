@@ -25,8 +25,7 @@
 #include <stdexcept>
 
 namespace etdc {
-
-    // Simple wrapper around std::ostringstream which allows for 
+    // Simple wrapper that looks like std::ostringstream which allows for 
     // easy construction of temporary stringstream objects, e.g. for
     // creating readable error messages:
     //
@@ -38,6 +37,7 @@ namespace etdc {
     //
     // (Or, as we'll see below, in generating assertion error messages ...
     struct stream {
+        // Yaaah. Struct is public by default. But we also have privates. So thus.
         public:
             // Construct from any number of arguments - they'll be inserted into self
             template <typename... Ts>
@@ -46,9 +46,9 @@ namespace etdc {
             // Provide operator<< for all types
             template <typename T>
             stream& operator<<(T const& t) {
-                __m_stream << t;
-                return *this;
+                return insert(t);
             }
+
             inline std::string str( void ) const {
                 return __m_stream.str();
             }
@@ -67,30 +67,25 @@ namespace etdc {
             // No need to expose these to der Publik
             // This is the only way to do it in c++11 where we don't have 'auto' parameters in lambdas
             // base-case - stop the iteration
-            inline void insert( void ) {}
+            inline stream& insert( void ) { return *this; }
 
             // Strip off one parameter, insert to self and move on to nxt
             template <typename T, typename... Ts>
-            void insert(T const& t, Ts... ts) {
+            stream& insert(T const& t, Ts... ts) {
                 __m_stream << t;
-                insert( std::forward<Ts>(ts)... );
+                return insert( std::forward<Ts>(ts)... );
             }
     };
 
     ////////////////////////////////////////////////////////////////////////////////
     //
-    //     Next up: an assertion_error exception class,
+    //     Next up: assertion_error and syscall_error exception classes,
     //     derived from std::runtime_error
     //
     ////////////////////////////////////////////////////////////////////////////////
     struct assertion_error:
         public std::runtime_error
     {
-        // Allow construction from an arbitrary amount of arguments
-        //template <typename... Ts>
-        //assertion_error(Ts... ts):
-        //    std::runtime_error( stream("assertion error: ", std::forward<Ts>(ts)...).str() )
-        //{}
         assertion_error(std::string const& s):
             std::runtime_error(std::string("assertion error: ")+s)
         {}
@@ -98,51 +93,16 @@ namespace etdc {
         using std::runtime_error::what;
     };
 
-        
-    ////////////////////////////////////////////////////////////////////////////////
-    //
-    //     Next up: an actual variable-argument function that throws 
-    //     a specifiyable exception if the condition does not hold.
-    //     It accepts a boolean and a variable number of arguments
-    //     which will be transformed into the error message
-    //
-    ////////////////////////////////////////////////////////////////////////////////
-    namespace detail {
-        template <typename Exception, typename... Ts>
-        void assert(bool b, Ts... ts) {
-            if( !b )
-                throw Exception( stream(std::forward<Ts>(ts)...).str() );
-        }
-    }
 
-    ////////////////////////////////////////////////////////////////////////////////
-    //
-    //     Nearly there. For /useful/ assertion errors, you want the
-    //     actual source file + line number included.
-    //     So what we'll do is to create an object which can hold
-    //     this information and define an overloaded function call
-    //     operator - which will trigger the *actual* assertion.
-    //     Of course it will be templated on the actual error type such
-    //     that it can be propagated to the assertion proper.
-    //
-    ////////////////////////////////////////////////////////////////////////////////
-    namespace detail {
-        template <typename Error>
-        struct location {
-            // Take any number of arguments that make up the location
-            template <typename... Ts>
-            location(Ts... ts):
-                __m_location( stream(std::forward<Ts>(ts)...).str() ) {}
+    struct syscall_error:
+        public std::runtime_error
+    {
+        syscall_error(std::string const& s):
+            std::runtime_error(std::string("system call failed: ")+s)
+        {}
 
-            // And the functioncall operator takes at least the boolean
-            // condition to test
-            template <typename... Ts>
-            void operator()(bool cond, Ts... ts) const {
-                detail::assert<Error>(cond, __m_location, " ", std::forward<Ts>(ts)...);
-            }
-            const std::string __m_location;
-        };
-    }
+        using std::runtime_error::what;
+    };
 } // namespace etdc
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -165,12 +125,32 @@ namespace etdc {
 //
 ////////////////////////////////////////////////////////////////////////////////
 #define ETDCASSERTX(cond)  \
-    etdc::detail::location<etdc::assertion_error>(__FILE__, ":", __LINE__, " [", #cond, "]")(cond)
+    if( !(cond) ) { throw etdc::assertion_error(etdc::stream(__FILE__, ":", __LINE__, " [", #cond, "] fails").str()); }
 
 // Almost the same but now we only take one extra argument the (stream)
 // formatted message, e.g.: ETDCASSERT(fd>0, "fd=" << fd << " is NOT > 0!");
 #define ETDCASSERT(cond, msg)  \
-    etdc::detail::location<etdc::assertion_error>(__FILE__, ":", __LINE__, " [", #cond, "]")(cond, (etdc::stream() << msg).str())
-    //etdc::detail::location<etdc::assertion_error>(__FILE__, ":", __LINE__, " [", #cond, "]")(cond, (std::ostringstream() << msg).str())
+    if( !(cond) ) { throw etdc::assertion_error((etdc::stream(__FILE__, ":", __LINE__, " [", #cond, "] ") << msg).str()); }
+
+// When calling systemcalls and asserting their return values, most often
+// you don't need (or want) the whole function call in the error, e.g. in a 
+// situation like this:
+//
+// ETDCASSERT(::bind(pSok->__m_fd, reinterpret_cast<struct sockaddr const*>(&sa), socklen_t(...))==0, 
+//            "failing to bind to " << sa << " - " << etdc::strerror());
+//
+// You'd get the "::bind(...........)" string verbatim in the assertion
+// error which might be a bit too verbose. So the SYSCALL macros
+// now do two things:
+//  1. do not add the assertion itself to the message, unless there
+//     is no error message then we DO add the violating code
+//  2. throw a different error
+#define ETDCSYSCALLX(cond)  \
+    if( !(cond) ) { throw etdc::syscall_error(etdc::stream(__FILE__, ":", __LINE__, " [", #cond, "] fails").str()); }
+
+// This version assumes that the msg will explain what failed so we don't
+// have to include the violating code verbatim
+#define ETDCSYSCALL(cond, msg) \
+    if( !(cond) ) { throw etdc::syscall_error((etdc::stream(__FILE__, ":", __LINE__, " ") << msg).str()); }
 
 #endif // ETDC_ASSERT_H
