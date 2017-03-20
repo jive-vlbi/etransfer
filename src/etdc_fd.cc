@@ -3,6 +3,7 @@
 #include <etdc_fd.h>
 #include <reentrant.h>
 #include <etdc_assert.h>
+#include <etdc_nullfn.h>
 
 #include <ios>
 #include <stdexcept>
@@ -56,16 +57,22 @@ namespace etdc {
 
 
     ////////////////////////////////////////////////////////////////////////
-    //           The basic struct - all nullptrs
-    //           gives a nice SIGSEGV if attempt 
-    //           to call one of those functions
-    //           if not initialized!
+    //           The basic struct - initialize them
+    //           with etdc::nullfn such that if they
+    //           accidentally get called the error
+    //           tells you which one was called
+    //           (much better than "std::exception - bad function call"
+    //            with no further information)
     ////////////////////////////////////////////////////////////////////////
     etdc_fd::etdc_fd():
-        read( nullptr ), write( nullptr ), close( nullptr ),
-        lseek( nullptr ), /*connect( nullptr ),*/
-        /*bind( nullptr ), listen( nullptr ),*/ accept( nullptr ),
-        getsockname( nullptr ), getpeername( nullptr )
+        __m_fd( -1 ),
+        read( nullfn(decltype(read)) ),
+        write( nullfn(decltype(write)) ),
+        close( nullfn(decltype(close)) ),
+        lseek( nullfn(decltype(lseek)) ), 
+        accept( nullfn(decltype(accept)) ),
+        getsockname( nullfn(typename decltype(getsockname)::type) ),
+        getpeername( nullfn(typename decltype(getpeername)::type) )
     {}
 
     etdc_fd::~etdc_fd() {
@@ -212,7 +219,5 @@ namespace etdc {
                         );
     }
 
-    etdc_udt::~etdc_udt() {
-        std::cout << "etdc_udt::~etdc_udt()/__m_fd=" << __m_fd << std::endl;
-    }
+    etdc_udt::~etdc_udt() {}
 }

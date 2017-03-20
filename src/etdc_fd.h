@@ -353,10 +353,15 @@ namespace etdc {
                                     "listening on tcp[" << sa << "] - " << etdc::strerror(errno));
 
                         // And we can now actually enable the accept function
-                        pSok->accept = [](int f) {
+                        pSok->accept = [=](int f) {
                             socklen_t           ipl( sizeof(struct sockaddr_in) );
                             struct sockaddr_in  ip;
-                            return std::make_shared<etdc::etdc_tcp>(::accept(f, reinterpret_cast<struct sockaddr*>(&ip), &ipl));
+                            int                 fd = ::accept(f, reinterpret_cast<struct sockaddr*>(&ip), &ipl);
+
+                            // fd<0 is not an error if blocking + errno == EAGAIN || EWOULDBLOCK
+                            ETDCSYSCALL(fd>0 || (!srv.blocking && fd==-1 && (errno==EAGAIN || errno==EWOULDBLOCK)),
+                                        "failed to accept on tcp[" << sa << "] - " << etdc::strerror(errno));
+                            return (fd==-1) ? std::shared_ptr<etdc_fd>() : std::make_shared<etdc::etdc_tcp>(fd);
                         };
                     }},
             ////////// UDT server 
@@ -389,10 +394,17 @@ namespace etdc {
                                      "listening on udt[" << sa << "] - " << UDT::getlasterror().getErrorMessage() );
 
                         // And we can now actually enable the accept function
-                        pSok->accept = [](int f) {
+                        pSok->accept = [=](int f) {
                             int                 ipl( sizeof(struct sockaddr_in) );
                             struct sockaddr_in  ip;
-                            return std::make_shared<etdc::etdc_udt>(UDT::accept(f, reinterpret_cast<struct sockaddr*>(&ip), &ipl));
+                            UDTSOCKET           fd = UDT::accept(f, reinterpret_cast<struct sockaddr*>(&ip), &ipl);
+                            UDT::ERRORINFO      udterr( UDT::getlasterror() );
+
+                            // UDT does things differently ... obviously
+                            ETDCSYSCALL(fd!=UDT::INVALID_SOCK || /* This is never an error - a connection was accepted!*/
+                                        (!srv.blocking && fd==UDT::INVALID_SOCK && udterr.getErrorCode()==CUDTException::EASYNCRCV),
+                                        "failed to accept on udt[" << sa << "] - " << udterr.getErrorMessage());
+                            return (fd==-1) ? std::shared_ptr<etdc_fd>() : std::make_shared<etdc::etdc_udt>(fd);
                         };
                     }}
             /////////// More protocols may follow?
@@ -527,6 +539,16 @@ etdc::etdc_fdptr mk_server(T const& proto, Ts... ts) {
     return pSok;
 }
 
+// Overload for if the user constructed his own serverdefaults
+template <typename T>
+etdc::etdc_fdptr mk_server(T const& proto, etdc::detail::server_settings const& srvSettings) {
+    auto pSok         = mk_socket(proto);
+    // And now transform the server settings + sokkit into a real servert
+    etdc::detail::server_map.find(proto)->second(pSok, srvSettings);
+    return pSok;
+}
+
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //
 //    Canned sequence to create a client connection to a server with
@@ -546,6 +568,15 @@ etdc::etdc_fdptr mk_client(T const& proto, Ts... ts) {
 
     // And now transform the client details + sokkit into a real client
     etdc::detail::client_map.find(proto)->second(pSok, clntDefaults);
+    return pSok;
+}
+
+// Overload for if the user constructed his own clientdefaults
+template <typename T>
+etdc::etdc_fdptr mk_client(T const& proto, etdc::detail::client_settings const& clntSettings) {
+    auto pSok         = mk_socket(proto);
+    // And now transform the client settings + sokkit into a real client
+    etdc::detail::client_map.find(proto)->second(pSok, clntSettings);
     return pSok;
 }
 
