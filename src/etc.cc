@@ -11,7 +11,7 @@ using std::cout;
 using std::endl;
 
 int main(int, char*const*const argv) {
-    auto pClnt = mk_client("udt", host(argv[1] ? argv[1] : "" ), port(2620));
+    auto pClnt = mk_client("udt", host(argv[1] ? argv[1] : "" ), port(8008));
     cout << "connected to " << pClnt->getpeername(pClnt->__m_fd) << " [local " << pClnt->getsockname(pClnt->__m_fd) << "]" << endl;
     const auto data = "012345";
     pClnt->write(pClnt->__m_fd, data, sizeof(data));
