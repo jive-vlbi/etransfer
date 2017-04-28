@@ -22,6 +22,7 @@
 //                         if 0 or more, 1 or more, 0 or 1 or min,max
 //                         applies
 //
+#if 0
 #include "functools.h"
 //#include <utilities.h>
 #include <set>
@@ -43,7 +44,7 @@
 #include <cstdlib>   // for std::free, std::exit
 #include <cstring>
 #include <cxxabi.h>
-
+#endif
 using ignore_t = typename std::decay<decltype(std::ignore)>::type;
 
 // Tests if "std::ostream<<T" is well-formed
@@ -595,6 +596,33 @@ struct count: action_t, Default<unsigned int> {
     mutable type __m_value;
 };
 
+// count into - allow the user to specify a variable to count into
+template <typename T>
+struct count_into_t: action_t {
+    using type         = ignore_t;
+    using element_type = ignore_t;
+    using my_type      = std::reference_wrapper<typename std::decay<T>::type>;
+
+    count_into_t() = delete;
+    count_into_t(my_type t): __m_ref(t) { __m_ref.get() = T(0); }
+
+    template <typename U, typename V>
+    void operator()(U& , V const&) const {
+        __m_ref.get() = __m_ref.get() + 1;
+    }
+    my_type __m_ref;
+};
+
+template <typename T,
+          typename std::enable_if<std::is_arithmetic<T>::value, int>::type = 0>
+auto count_into(T& t) -> count_into_t<T> {
+    return count_into_t<T>( std::ref(t) );
+}
+template <typename T,
+          typename std::enable_if<std::is_arithmetic<T>::value, int>::type = 0>
+auto count_into(std::reference_wrapper<T>& t) -> count_into_t<T> {
+    return count_into_t<T>( t );
+}
 
 // One can set a default for these buggers
 template <typename T, template <typename...> class Container = std::list, typename... Details>
@@ -1063,7 +1091,7 @@ struct type_printer2 {
 
 struct case_insensitive_char_cmp {
     bool operator()(char l, char r) const {
-        return ::toupper(l)==::toupper(r);
+        return ::toupper(l) < ::toupper(r);
     }
 };
 
@@ -1225,6 +1253,12 @@ struct short_name: name_t, value_holder<char, acceptable_short_name> {
 //                            the command line objects
 ///////////////////////////////////////////////////////////////////////////////////////////////
 
+template <typename C, typename Iter>
+void maybe_print(std::string const& topic, C const& c, Iter& iter) {
+    if( !c.empty() )
+        std::copy(std::begin(c), std::end(c), *iter++ = topic);
+}
+
 
 // forward-declarartions so's we can have pointers-to
 struct CmdLineOptionIF;
@@ -1287,6 +1321,23 @@ struct CmdLineOptionIF {
     docstringlist_t  __m_defaults;
     docstringlist_t  __m_constraints;
     docstringlist_t  __m_requirements;
+
+    // Print the help for this option
+    void mini_help(std::ostream& os, bool usage) const {
+        os << __m_usage << std::endl;
+        if( !usage ) {
+            std::ostream_iterator<std::string> lineprinter(std::cout, "\n\t");
+            // Print any documentation
+            maybe_print("\r\t", __m_docstring,    lineprinter);
+            // Print only one default, if there's any
+            if( __m_defaults.size() )
+                os << "\r\tdefault: " << *__m_defaults.begin() << std::endl;
+            // list constraints and requirements
+            maybe_print("\r\t", __m_constraints,  lineprinter);
+            maybe_print("\r\t", __m_requirements, lineprinter);
+        }
+        os << "\n";
+    }
 
     protected:
         // If an option has a default then it can override
@@ -1446,13 +1497,26 @@ struct name_getter_t {
     }
 };
 
+// This function template allows one to get the appropriate "std::endl" for
+// a particular stream. The "std::endl" isn't a thing - it's a template.
+// As such "std::endl" by itself cannot be passed as function argument.
+// But using the ENDL(...) function you can - it'll return a reference to
+// the correctly instantiated version of std::endl.
+// (Not so well done on that one c++!)
+//       See: http://stackoverflow.com/a/10016203
+template <typename... Traits>
+auto ENDL(std::basic_ostream<Traits...> const&) -> decltype( &std::endl<Traits...> ) {
+    return std::endl<Traits...>;
+}
+
+// Note: need to use ENDL(...) to pass endl as argument
+//       See above
 template <typename... Ts>
 void fatal_error(std::ostream& os, std::string const& e, Ts&&... ts) {
     char  dummy[] = {(os << e << " ", 'a'), (os << std::forward<Ts>(ts), 'a')..., (os << std::endl, 'a')};
     (void)dummy;
     std::exit( EXIT_FAILURE );
 }
-
 
 template <typename... Props>
 CmdLineOptionPtr mk_argument(CmdLineBase* cmdline, Props&&... props) {
@@ -1702,17 +1766,12 @@ struct lt_cmdlineoption {
         // We /only/ want lexicographical compare on the names
         auto const&  left  = *std::begin(l->__m_names);
         auto const&  right = *std::begin(r->__m_names);
+
         return std::lexicographical_compare(std::begin(left), std::end(left),
                                             std::begin(right), std::end(right), case_insensitive_char_cmp());
     }
 };
 
-
-template <typename C, typename Iter>
-void maybe_print(std::string const& topic, C const& c, Iter& iter) {
-    if( !c.empty() )
-        std::copy(std::begin(c), std::end(c), *iter++ = topic);
-}
 
 
 
@@ -1759,15 +1818,31 @@ class CmdLine: public CmdLineBase {
             //  through verbatim and is made available as "arguments()"
             while( option && *option ) {
                 // starts with "--"?
-                if( ::strncmp(*option, "--", 2)==0 && ::strlen(*option)>2 ) {
-                    // assume it is either:
+                if( ::strncmp(*option, "--", 2)==0 ) {
+                    // Is there anything following "--" at all?
+                    if( ::strlen(*option)==2 )
+                        ::fatal_error(std::cerr, "Missing option name after --");
+                    // Now we can test if it is either:
                     //    --<long>
                     //    --<long>=<value>
                     char const*const equal = ::strchr((*option)+2, '=');
                     if( equal ) {
-                        *argptr++ = std::string(*option, equal);
-                        *argptr++ = std::string(equal+1);
+                        // only accept long names (length > 1)
+                        // and non-empty values
+                        const std::string opt(*option, equal);
+                        const std::string val(equal+1);
+
+                        if( opt.size()<4 )
+                            ::fatal_error(std::cerr, "Only long-opt names are supported with --XY..., parsing `", *option, "'");
+                        if( val.empty() )
+                            ::fatal_error(std::cerr, "Empty value after `=' not allowed");
+                        *argptr++ = opt;
+                        *argptr++ = val;
                     } else {
+                        // Must have "--xy[....]" - at least 2 characters in
+                        // option name
+                        if( ::strlen(*option)<4 )
+                            ::fatal_error(std::cerr, "Only long-opt names are supported with --XY..., parsing `", *option, "'");
                         *argptr++ = std::string(*option);
                     }
                 // starts with "-"?
@@ -1778,12 +1853,6 @@ class CmdLine: public CmdLineBase {
                     char const*  flags = (*option)+1;
                     while( *flags )
                         *argptr++ = std::string("-")+*flags++;
-#if 0
-                    while( *flags ) {
-                        *argptr++ = std::string(flags, flags+1);
-                        flags++;
-                    }
-#endif
                 } else {
                     // Just add verbatim
                     *argptr++ = std::string(*option);
@@ -1794,6 +1863,7 @@ class CmdLine: public CmdLineBase {
             // Now go through all the expanded thingamabobs
             CmdLineOptionPtr   previous = nullptr;
             for(auto const& opt: options) {
+                CmdLineOptionPtr   current = nullptr;
                 try {
                     // If previous is non-null it means it was waiting for
                     // an argument, now we have it
@@ -1806,7 +1876,7 @@ class CmdLine: public CmdLineBase {
                     // otherwise for the thing with the empty name
                     auto curOpt = (opt[0]=='-' ? __m_option_idx_by_name.find(opt.substr(opt.find_first_not_of('-'))) :
                                                  __m_option_idx_by_name.find(std::string()));
-                    //std::cout << "Looking for '" << opt << "'" << std::endl;
+
                     if( curOpt==__m_option_idx_by_name.end() ) {
                         this->print_help(true);
                         ::fatal_error(std::cerr, "\nUnrecognized command line option ", opt);
@@ -1814,26 +1884,28 @@ class CmdLine: public CmdLineBase {
                     // Check wether the current option requires an argument
                     if( curOpt->second->__m_requires_argument )
                         previous = curOpt->second;
-                    else
-                        curOpt->second->processArgument( opt );
+                    else {
+                        current = curOpt->second;
+                        current->processArgument( opt );
+                    }
                 }
                 catch( std::exception& e ) {
-                    this->print_help(true);
-                    //::fatal_error(std::cerr, "whilst processing", opt, std::endl, e.what(), std::endl);
-                    ::fatal_error(std::cerr, e.what(), opt);
+                    if( previous )
+                        previous->mini_help(std::cerr, false);
+                    else if( current )
+                        current->mini_help(std::cerr, false);
+                    ::fatal_error(std::cerr, e.what(), ENDL(std::cerr),
+                                  "triggered whilst processing '", opt, "'");
                 }
                 catch( ... ) {
-                    this->print_help(true);
-                    //::fatal_error(std::cerr, "unknown exception whilst processing ", opt, std::endl);
-                    ::fatal_error(std::cerr, "unknown exception whilst processing ", opt);
+                    ::fatal_error(std::cerr, "Unknown exception caught", ENDL(std::cerr),
+                                  "triggered whilst processing '", opt, "'");
                 }
             }
             // If we end up here with previous non-null there's a missing
             // argument!
             if( previous ) {
-                this->print_help(true);
-                //::fatal_error(std::cerr, "whilst processing", opt, std::endl, e.what(), std::endl);
-                ::fatal_error(std::cerr, "Missing argument to option ", *previous->__m_names.begin());
+                ::fatal_error(std::cerr, "Missing argument to option '", previous->__m_usage, "'");
             }
             // And finally, test all post conditions!
             for(auto const& opt: __m_option_by_alphabet ) {
@@ -1841,14 +1913,11 @@ class CmdLine: public CmdLineBase {
                     opt->__m_postcondition_f( opt->__m_count );
                 }
                 catch( std::exception& e ) {
-                    this->print_help(true);
-                    //::fatal_error(std::cerr, "whilst processing", opt, std::endl, e.what(), std::endl);
-                    ::fatal_error(std::cerr, e.what(), *opt->__m_names.begin());
+                    ::fatal_error(std::cerr, e.what(), ENDL(std::cerr),
+                                  "whilst verifying post condition for '", opt->__m_usage, "'");
                 }
                 catch( ... ) {
-                    this->print_help(true);
-                    //::fatal_error(std::cerr, "unknown exception whilst processing ", opt, std::endl);
-                    ::fatal_error(std::cerr, "unknown exception whilst verifying post condition for ", *opt->__m_names.begin());
+                    ::fatal_error(std::cerr, "unknown exception whilst verifying post condition for '", opt->__m_usage, "'");
                 }
             }
         }
@@ -1916,7 +1985,7 @@ class CmdLine: public CmdLineBase {
             // this option to the set of options, alphabetically sorted by
             // longest name ...
             if( !__m_option_by_alphabet.insert(new_arg).second )
-                ::fatal_error(std::cerr, "Failed to insert new elemen into alphabetic set", *new_arg->__m_names.begin());
+                ::fatal_error(std::cerr, "Failed to insert new element into alphabetic set", *new_arg->__m_names.begin());
 
             // OK register the option under all its names - we've
             // verified that it doesn't clash
@@ -1970,6 +2039,8 @@ std::size_t stringsize(std::string const& s) {
 
 int main(int argc, char*const*const argv) {
     CmdLine                cmd;
+    char                   cnt;
+    unsigned int           verbose;
     std::list<std::string> experiments;
     auto                   experimentor = std::back_inserter(experiments);
 
@@ -1981,10 +2052,15 @@ int main(int argc, char*const*const argv) {
     cmd.add(set_default(3.14f), long_name("threshold"),
             maximum_value(7.f), store_value<float>(), at_least(2));
 
+    cmd.add(short_name('v'), count(), docstring("verbosity level - add more v's to increase"));
+
     cmd.add(long_name("exp"), collect_into(experimentor),
             minimum_size(4), match("[a-zA-Z]{2}[0-9]{3}[a-zA-Z]?"));
 
-    cmd.add(collect_into(experiments));
+    cmd.add(collect_into(experiments), match("[a-zA-Z]{2}[0-9]{3}[a-zA-Z]?"));
+
+    cmd.add(short_name('c'), count_into(cnt));
+    //cmd.add(short_name('C'), count_into(experiments));
 
     cmd.parse(argc, argv);
 
@@ -1994,9 +2070,12 @@ int main(int argc, char*const*const argv) {
 
     cmd.get("f", f);
     cmd.get("threshold", threshold);
+    cmd.get("v", verbose);
 
     std::cout << "got '-f' = " << f << std::endl;
     std::cout << "got '--threshold' = " << threshold << std::endl;
+    std::cout << "verbosity level = " << verbose << std::endl;
+    std::cout << "cnt = " << (int)cnt << std::endl;
 
     for(auto const& e: experiments)
         std::cout << "Experiment: " << e << std::endl;

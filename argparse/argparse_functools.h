@@ -1,12 +1,12 @@
 // functional programming tools on std::tuple/std::array: head(), tail(), fold[lr](), filter_[ptv], map(), copy()
-
-#ifndef HAAVEE_FUNCTOOLS_H
-#define HAAVEE_FUNCTOOLS_H
+#ifndef ARGPARSE_FUNCTOOLS_H
+#define ARGPARSE_FUNCTOOLS_H
 
 #include <tuple>
 #include <iterator>
 
-namespace functools {
+namespace argparse { namespace functools {
+
     namespace detail {
         // This particular trick found here:
         // http://stackoverflow.com/a/8572595
@@ -432,6 +432,7 @@ namespace functools {
     void copy(T&& t, Iter&& iter) {
         functools::filter_v(detail::always_true(), std::forward<T>(t), std::forward<Iter>(iter));
     }
-}
+
+} }  // namespace argparse { namespace functools {
 
 #endif // include guard
