@@ -34,7 +34,7 @@ namespace argparse { namespace detail {
     struct CmdLineOptionIF {
         using condition_f = std::function<void(unsigned int)>;
 
-        friend class CmdLine;
+        friend class argparse::ArgumentParser;
 
         template <typename... Props>
         friend CmdLineOptionPtr mk_argument(CmdLineBase*, Props&&...);

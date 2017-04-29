@@ -155,9 +155,9 @@ namespace argparse {
                 }
                 // If we end up here with previous non-null there's a missing
                 // argument!
-                if( previous ) {
+                if( previous )
                     fatal_error(std::cerr, "Missing argument to option '", previous->__m_usage, "'");
-                }
+
                 // And finally, test all post conditions!
                 for(auto const& opt: __m_option_by_alphabet ) {
                     try {
@@ -190,10 +190,10 @@ namespace argparse {
 
                     // Print details!
                     std::cout << std::endl;
-                    maybe_print("\r\tDescription:",  opt->__m_docstring, lineprinter);
-                    maybe_print("\r\tDefaults:",     opt->__m_defaults, lineprinter);
-                    maybe_print("\r\tConstraints:",  opt->__m_constraints, lineprinter);
-                    maybe_print("\r\tRequirements:", opt->__m_requirements, lineprinter);
+                    detail::maybe_print("\r\tDescription:",  opt->__m_docstring, lineprinter);
+                    detail::maybe_print("\r\tDefaults:",     opt->__m_defaults, lineprinter);
+                    detail::maybe_print("\r\tConstraints:",  opt->__m_constraints, lineprinter);
+                    detail::maybe_print("\r\tRequirements:", opt->__m_requirements, lineprinter);
                     std::cout << "\r";
                 }
                 if( argument ) {
@@ -201,10 +201,10 @@ namespace argparse {
 
                     if( !usage ) {
                         std::cout << std::endl;
-                        maybe_print("\r\tDescription:",  argument->__m_docstring, lineprinter);
-                        maybe_print("\r\tDefaults:",     argument->__m_defaults, lineprinter);
-                        maybe_print("\r\tConstraints:",  argument->__m_constraints, lineprinter);
-                        maybe_print("\r\tRequirements:", argument->__m_requirements, lineprinter);
+                        detail::maybe_print("\r\tDescription:",  argument->__m_docstring, lineprinter);
+                        detail::maybe_print("\r\tDefaults:",     argument->__m_defaults, lineprinter);
+                        detail::maybe_print("\r\tConstraints:",  argument->__m_constraints, lineprinter);
+                        detail::maybe_print("\r\tRequirements:", argument->__m_requirements, lineprinter);
                     }
                 }
                 std::cout << std::endl;

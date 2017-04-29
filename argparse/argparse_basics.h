@@ -18,6 +18,10 @@
 
 namespace argparse {
 
+    // forward declaration
+    class ArgumentParser;
+
+
     struct CmdLineBase {
         // Print help, short (true) or long (false) format
         virtual void print_help( bool ) const = 0;
