@@ -137,8 +137,20 @@ namespace argparse {
                         // (Or a collection thereof). Expand a single "-XYZ"
                         // into "-X -Y -Z"
                         char const*  flags = (*option)+1;
-                        while( *flags )
-                            *argptr++ = std::string("-")+*flags++;
+
+                        // Ah. If *flags is not an acceptable short name,
+                        // then we pass the whole thing on as argument -
+                        // e.g. to support a negative number "-1" ...
+                        if( ::isalpha(*flags) ) {
+                            // If the first appears to be a flag, then all
+                            // of them should be
+                            while( *flags )
+                                *argptr++ = std::string("-")+*flags++;
+                        } else {
+                            // OK, something else - don't interpret the
+                            // thing as flags so pass on unmodified
+                            *argptr++ = std::string(*option);
+                        }
                     } else {
                         // Just add verbatim
                         *argptr++ = std::string(*option);
@@ -160,8 +172,11 @@ namespace argparse {
                         }
                         // If the thing starts with '-' look for the option "-(-)<stuff",
                         // otherwise for the thing with the empty name
-                        auto curOpt = (opt[0]=='-' ? __m_option_idx_by_name.find(opt.substr(opt.find_first_not_of('-'))) :
-                                                     __m_option_idx_by_name.find(std::string()));
+                        auto curOpt = ((opt[0]=='-' && opt.size()>=2 && ::isalpha(opt[1])) ?
+                                            // OK, looks like we need to look for cmdline option
+                                            __m_option_idx_by_name.find(opt.substr(opt.find_first_not_of('-'))) :
+                                            // .. otherwise look for the entry that takes arguments
+                                            __m_option_idx_by_name.find(std::string()));
 
                         if( curOpt==__m_option_idx_by_name.end() ) {
                             this->print_help(true);

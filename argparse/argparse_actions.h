@@ -11,6 +11,9 @@
 //    (i.e. anything that is not an option).
 //
 //      short_name(char)      A simple -X command line option
+//                            Note: digits are not allowed, otherwise there
+//                                  would be no telling negative numbers
+//                                  apart from command line options ...
 //      long_name(string)     A longer name --XY... command line option
 //
 //  Actions:
@@ -1029,10 +1032,10 @@ namespace argparse {
             using constraint_impl::constraint_impl;
         };
 
-        // short name options may only be alphanumeric, at the moment
+        // short name options may only be alpha, at the moment
         struct acceptable_short_name: constraint_fn<char, value_constraint_t> {
             acceptable_short_name():
-                constraint_fn<char, value_constraint_t>([](char const& c) { return ::isalnum(c); }, "short name character ::isalnum(...)")
+                constraint_fn<char, value_constraint_t>([](char const& c) { return ::isalpha(c); }, "short name character ::isalpha(...)")
             {}
         };
 
