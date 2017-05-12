@@ -5,6 +5,11 @@
 #include <argparse_cmdlineoption.h>
 #include <map>
 
+#include <cstdlib>
+#include <cerrno>
+#include <climits>
+#include <libgen.h>
+
 namespace argparse {
 
     namespace detail {
@@ -35,12 +40,31 @@ namespace argparse {
     /////////////////////////////////////////////////////////////////////////////////////
 
     class ArgumentParser: public CmdLineBase {
+        using version_f = std::function<std::ostream&(std::ostream&)>;
 
         public:
             // Collect version + docstr(explanation of program)
-            ArgumentParser():
-                __m_parsed( false )
-            {}
+            template <typename... Props>
+            ArgumentParser(Props&&... props):
+                __m_parsed( false ), __m_program("<unknown>")
+            {
+                // Extract all docstrings - they go into the description
+                auto allDocstr     = detail::get_all<detail::docstring_t>( std::forward_as_tuple(props...) );
+                auto docstrbuilder = std::inserter(__m_description, __m_description.end());
+
+                functools::copy(functools::map(allDocstr, detail::docstr_getter_t()), docstrbuilder);
+
+                // Check if there's a version?
+                // We append our no-version object so if the usert didnae
+                // specify a version we automatically fall back to that
+                auto allVersion    = std::tuple_cat(detail::get_all<detail::version_t>(std::forward_as_tuple(props...)),
+                                                    std::make_tuple(detail::NullVersion()));
+
+                static_assert( std::tuple_size<decltype(allVersion)>::value<=2, "You may specify at most one version" );
+
+                // OK now we can generate a function to print the version
+                __m_version_f = [=](std::ostream& os) -> std::ostream& { return os << std::get<0>(allVersion); };
+            }
 
             template <typename T>
             bool get(std::string const& opt, T& t) const {
@@ -57,6 +81,17 @@ namespace argparse {
                 if( __m_parsed )
                     fatal_error(std::cerr, "Cannot double parse a command line");
                 __m_parsed = true;
+
+                // Step 0. Program name
+                if( argv ) {
+                    char    buf[PATH_MAX+1], *bn;
+                    if( ::realpath(*argv, buf)==nullptr )
+                        fatal_error(std::cerr, "realpath() fails on '", buf, "' - ", ::strerror(errno));
+                    bn = ::basename(buf);
+                    if( bn==nullptr )
+                        fatal_error(std::cerr, "basename() fails on '", buf, "' - ", ::strerror(errno));
+                    __m_program = ::basename(buf);
+                }
 
                 // Step 1. Transform into list of strings 
                 char const*const*       option( argv ? argv+1 : nullptr);
@@ -176,8 +211,12 @@ namespace argparse {
             virtual void print_help( bool usage ) const {
                 std::ostream_iterator<std::string> printer(std::cout, " ");
                 std::ostream_iterator<std::string> lineprinter(std::cout, "\n\t\t");
-                std::cout << "Print " << (usage ? "usage" : "help") << std::endl;
-                detail::ConstCmdLineOptionPtr   argument = nullptr;
+                detail::ConstCmdLineOptionPtr      argument = nullptr;
+
+                // First line is always:
+                // <program> <USAGE>
+                *printer++ = "Usage: ";
+                *printer++ = __m_program;
 
                 for(auto const& opt: __m_option_by_alphabet) {
                     if( opt->__m_names.begin()->empty() ) {
@@ -185,32 +224,45 @@ namespace argparse {
                         continue;
                     }
                     *printer++ = opt->__m_usage;
-                    if( usage )
-                        continue;
-
-                    // Print details!
-                    std::cout << std::endl;
-                    detail::maybe_print("\r\tDescription:",  opt->__m_docstring, lineprinter);
-                    detail::maybe_print("\r\tDefaults:",     opt->__m_defaults, lineprinter);
-                    detail::maybe_print("\r\tConstraints:",  opt->__m_constraints, lineprinter);
-                    detail::maybe_print("\r\tRequirements:", opt->__m_requirements, lineprinter);
-                    std::cout << "\r";
                 }
-                if( argument ) {
+                if( argument )
                     *printer++ = argument->__m_usage;
 
-                    if( !usage ) {
+                // If we're printing help ("long version") we start by
+                // printing the description
+                if( !usage ) {
+                    std::ostream_iterator<std::string> dp(std::cout, "\n");
+                    *dp++ = "";
+                    detail::maybe_print("",  __m_description, dp);
+
+                    // And append the detailed help for all the options
+                    for(auto const& opt: __m_option_by_alphabet) {
+                        // skip the unnamed option (the command's arguments)
+                        if( opt==argument )
+                            continue;
+
+                        // Print details!
                         std::cout << std::endl;
+                        *lineprinter++ = opt->__m_usage;
+                        detail::maybe_print("\r\tDescription:",  opt->__m_docstring, lineprinter);
+                        detail::maybe_print("\r\tDefaults:",     opt->__m_defaults, lineprinter);
+                        detail::maybe_print("\r\tConstraints:",  opt->__m_constraints, lineprinter);
+                        detail::maybe_print("\r\tRequirements:", opt->__m_requirements, lineprinter);
+                        std::cout << "\r";
+                    }
+                    if( argument ) {
+                        std::cout << std::endl;
+                        *lineprinter++ = argument->__m_usage;
                         detail::maybe_print("\r\tDescription:",  argument->__m_docstring, lineprinter);
                         detail::maybe_print("\r\tDefaults:",     argument->__m_defaults, lineprinter);
                         detail::maybe_print("\r\tConstraints:",  argument->__m_constraints, lineprinter);
                         detail::maybe_print("\r\tRequirements:", argument->__m_requirements, lineprinter);
                     }
+                    fatal_error<EXIT_SUCCESS>(std::cout, "");
                 }
-                std::cout << std::endl;
             }
             virtual void print_version( void ) const {
-                std::cout << "Version: " << 0 << std::endl;
+                fatal_error<EXIT_SUCCESS>( __m_version_f(std::cout), "");
             }
 
             template <typename... Props>
@@ -258,6 +310,9 @@ namespace argparse {
             using option_by_alphabet = std::set<detail::CmdLineOptionPtr, detail::lt_cmdlineoption>;
 
             bool                  __m_parsed;
+            version_f             __m_version_f;
+            std::string           __m_program;
+            docstringlist_t       __m_description;
             option_idx_by_name    __m_option_idx_by_name;
             option_by_alphabet    __m_option_by_alphabet;
     };

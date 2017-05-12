@@ -4,15 +4,15 @@
 
 #include <argparse_functools.h>
 
+#include <set>
+#include <list>
 #include <tuple>
 #include <memory>
 #include <sstream>
 #include <iostream>
 #include <type_traits>
 
-//#include <ctype.h>
 #include <cstdlib>   // for std::free, std::exit
-//#include <cstring>
 #include <cxxabi.h>
 
 namespace argparse { namespace detail {
@@ -48,6 +48,35 @@ namespace argparse { namespace detail {
 
         static constexpr bool value = (sizeof(test<T>(std::declval<std::ostream&>(), std::declval<T const&>()))==sizeof(yes));
     };
+
+    ////////////////////////////////////////////////////////////////////////////
+    //
+    //        Shorthand for checking if Container is one of the standard
+    //        containers we care about (list, set, basically)
+    //
+    ////////////////////////////////////////////////////////////////////////////
+   
+    // These filter on template-template types; by default they're not
+    // recognized as containers unless for specific types ... 
+    template <template <typename...> class Container, typename T, typename... Details>
+    struct is_recognized_container_impl : std::false_type {};
+
+    // ... like std::list<...> and std::set<...>
+    template <typename T, typename... Details>
+    struct is_recognized_container_impl<std::list, T, Details...>: std::true_type {};
+
+    template <typename T, typename... Details>
+    struct is_recognized_container_impl<std::set, T, Details...>: std::true_type {};
+
+    // This is the main interface: anything that's not a template-template
+    // thing can't be std container at all ...
+    template <typename T>
+    struct is_recognized_container: std::false_type {};
+
+    // ... but types that are X<T, ...> /may/ be a recognized container, so
+    // we delegate to the next level
+    template <template <typename...> class Container, typename T, typename... Details>
+    struct is_recognized_container<Container<T, Details...>>: is_recognized_container_impl<Container, T, Details...> {};
 
     ////////////////////////////////////////////////////////////////////////////
     //
@@ -238,6 +267,18 @@ namespace argparse { namespace detail {
     struct maybe_container<T, typename enable_if_type<typename T::value_type>::type> : std::true_type {};
 
 
+    ////////////////////////////////////////////////////////////////////////////////////
+    //
+    //  template for a constraint to see if value is element of a set of discrete values
+    //
+    ////////////////////////////////////////////////////////////////////////////////////
+    template <typename U, typename Container>
+    struct member_of_t {
+        bool operator()(U const& u, Container const& s) const {
+            return s.find(u)!=s.end();
+        }
+    };
+
 
     ////////////////////////////////////////////////////////////////////////////
     //
@@ -260,7 +301,6 @@ namespace argparse { namespace detail {
         return (status==0) ? res.get() : name ;
     }
 
-
     ////////////////////////////////////////////////////////////////////////////
     //  For usage we don't want "std::string" printed
     //  so we'll overload the demangling of std::string to just "string"
@@ -273,7 +313,6 @@ namespace argparse { namespace detail {
     std::string optiontype<std::string>( void ) {
         return "string";
     }
-
 
     ////////////////////////////////////////////////////////////////////////////
     //
@@ -296,6 +335,16 @@ namespace argparse { namespace detail {
         std::string operator()(T const& t) const {
             std::ostringstream oss;
             oss << t;
+            return oss.str();
+        }
+        // If it's a std container of streamable things, we can output it
+        // in human readable format
+        template <template <typename...> class Container, typename T, typename... Details,
+                  typename std::enable_if<is_recognized_container<Container<T, Details...>>::value, int>::type = 0,
+                  typename std::enable_if<is_streamable<T>::value, int>::type = 0>
+        std::string operator()(Container<T, Details...> const& t) const {
+            std::ostringstream       oss;
+            std::copy(std::begin(t), std::end(t), std::ostream_iterator<T>(oss, ","));
             return oss.str();
         }
         // Otherwise we just output the (demangled) type name
@@ -350,7 +399,10 @@ namespace argparse { namespace detail {
     std::string op2str<std::equal_to>( void ) {
         return "equal to";
     }
-
+    template <>
+    std::string op2str<member_of_t>( void ) {
+        return "member of";
+    }
 
     ////////////////////////////////////////////////////////////////////////////
     //

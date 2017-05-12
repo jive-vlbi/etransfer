@@ -16,8 +16,9 @@
 //  Actions:
 //
 //      store_true()          Simple true/false flags. They do what they 
-//      store_false()         say on the tin. Provide a default which is 
-//                            the opposite of the action's result
+//      store_false()         say on the tin. They automatically provide 
+//                            a default which is the opposite of the
+//                            action's result
 //
 //      store_const(T t)      If command line option is present, stores
 //                            the value t of type T. May or may not be 
@@ -51,18 +52,26 @@
 //                            type "T":
 //                            1. T is an output_iterator. The type of
 //                               value(s) to be collected is inferred from the
-//                               type of the output_iterator.
+//                               output_iterator.
 //                               Uses "*t++ = <converted value>"
 //
 //                            2. T is a container. The type of the value(s)
-//                               to be collected is inferred from the type
-//                               of the container.
+//                               to be collected is inferred from the
+//                               container.
 //                               Uses "t.insert(t.end(), <converted value>)"
 //
 //
 //      print_help()          If these action(s) are triggered they print
 //      print_usage()         usage (short help) or the full help (long
 //                            help).
+//
+//      print_version()       Guess what. Note that it displays the 
+//                            version object that was passed to the
+//                            c'tor of the ArgumentParser object, if any.
+//                            The code will happily print a version
+//                            (nothing, actually) if you've added this
+//                            option but not provided a version(...) to the
+//                            c'tor.
 //
 // Constraints:
 //    It is possible to make the code (automatically) test + fail loudly if
@@ -129,6 +138,9 @@
 //                            Should support any constructor that
 //                            std::string supports.
 //
+//      version(T t)          T must be streamable to std::ostream 
+//                            so feel free to give it anything you like
+//
 //      convert(F)            Allow user defined conversion of std::string
 //                            to stored type. F is a callable object with
 //                            signature:
@@ -156,9 +168,10 @@ namespace argparse {
         // any one of these
         ////////////////////////////////////////////////
 
-        struct action_t              {};
         struct name_t                {};
+        struct action_t              {};
         struct default_t             {};
+        struct version_t             {};
         struct docstring_t           {};
         struct conversion_t          {};
         struct constraint_template_t {};
@@ -177,6 +190,18 @@ namespace argparse {
             using constraint_impl::constraint_impl;
         };
 
+        template <>
+        std::string demangle_f<argparse::detail::constraint>( void ) {
+            return "constraint";
+        }
+        template <>
+        std::string demangle_f<argparse::detail::precondition>( void ) {
+            return "precondition";
+        }
+        template <>
+        std::string demangle_f<argparse::detail::postcondition>( void ) {
+            return "postcondition";
+        }
 
         //////////////////////////////////////////////////////////
         //
@@ -693,6 +718,11 @@ namespace argparse {
         return detail::mk_methodcaller( std::bind(std::mem_fn(&CmdLineBase::print_help), std::placeholders::_1, false));
     }
 
+    auto print_version( void ) ->
+        decltype( detail::mk_methodcaller( std::bind(std::mem_fn(&CmdLineBase::print_version), std::placeholders::_1)) ) {
+        return detail::mk_methodcaller( std::bind(std::mem_fn(&CmdLineBase::print_version), std::placeholders::_1));
+    }
+
 
     ///////////////////////////////////////////////////////////////////////////////////
     //
@@ -725,15 +755,20 @@ namespace argparse {
         //
         // Constraint factory - can separate left/right types as long
         // as "OP<Left>(left, Right())" is defined ...
+        //
         template <typename L, typename Category, template <typename...> class OP,
                   typename Left = typename std::decay<L>::type>
         struct constraint_op: Category {
             using Result = wrap_category<Left, Category>;
 
-            template <typename Right>
+            // "::mk(...)  can now be passed more template arguments, if necessary:
+            //       constraint_op<...>::template mk<X, Y, Z>(X const&, std::string const&)
+            //         which will instantiate OP<X, Y, Z> in stead of the
+            //         default "OP<Left>"
+            template <typename Right, typename... Rest>
             static Result mk(Right const& right, std::string const& descr = std::string()) {
                 return Result(build_string(descr, " ", op2str<OP>(), " ", right),
-                              Constraint<Left>([=](Left const& left) { return OP<Left>()(left, right); }));
+                              Constraint<Left>([=](Left const& left) { return OP<Left, Rest...>()(left, right); }));
             }
         };
 
@@ -754,18 +789,6 @@ namespace argparse {
             static Self mk(F&& f, std::string const& descr) {
                 return Self(Constraint<Left>([=](Left const& left) { return (bool)(f(left)); }), descr);
             }
-        };
-
-        // Holder for a constraint to see if value is element of a
-        // set of discrete values
-        template <typename Container>
-        struct member_of_t {
-            template <typename U>
-            struct member_of_t_impl {
-                bool operator()(U const& u, Container const& s) const {
-                    return s.find(u)!=s.end();
-                }
-            };
         };
 
         // Put a constraint on the size (length) of a value
@@ -811,9 +834,16 @@ namespace argparse {
 
     template <typename T>
     auto is_member_of(std::initializer_list<T> il) ->
-        typename detail::constraint_op<T, detail::constraint, detail::member_of_t<std::set<T>>::template member_of_t_impl>::Result {
+        typename detail::constraint_op<T, detail::constraint, detail::member_of_t>::Result {
       return detail::constraint_op<T, detail::constraint,
-                                   detail::member_of_t<std::set<T>>::template member_of_t_impl>::mk(std::set<T>(il), "member of");
+                                   detail::member_of_t>::template mk<std::set<T>, std::set<T>>(std::set<T>(il), "value");
+    }
+
+    auto is_member_of(std::initializer_list<char const* const> il) -> 
+        typename detail::constraint_op<std::string, detail::constraint, detail::member_of_t>::Result {
+      return detail::constraint_op<std::string, detail::constraint,
+                                   detail::member_of_t>::template mk<std::set<std::string>, std::set<std::string>>(std::set<std::string>(
+                                               std::begin(il), std::end(il)), "value");
     }
 
     using minimum_size = detail::size_constrain<detail::constraint, std::greater_equal>;
@@ -949,7 +979,7 @@ namespace argparse {
         std::regex    rx( std::forward<T>(t), std::forward<Ts>(ts)... );
         return detail::constraint_fn<std::string, detail::constraint>(
                         [=](std::string const& s) { return std::regex_match(s, rx); },
-                        std::string("match <<")+t+">>");
+                        std::string("match ")+t);
     }
 
     
@@ -1163,6 +1193,46 @@ namespace argparse {
         using value_holder::value_holder;
     };
 
+
+    ///////////////////////////////////////////////////////////////////////////////////////////
+    //
+    // Describe the version of the program
+    //
+    ///////////////////////////////////////////////////////////////////////////////////////////
+    namespace detail {
+        //////////////////////////////////////////////////////////////////
+        //  A struct holding something that describes the version
+        //////////////////////////////////////////////////////////////////
+        template <typename T>
+        struct Version: version_t, value_holder<T> {
+            using value_holder<T>::value_holder;
+
+            Version() = delete;
+        };
+        template <typename T, typename... Details>
+        std::basic_ostream<Details...>& operator<<(std::basic_ostream<Details...>& os, Version<T> const& v) {
+            return os << v.value_holder<T>::__m_value;
+        }
+
+        struct NullVersion: version_t { };
+        template <typename... Details>
+        std::basic_ostream<Details...>& operator<<(std::basic_ostream<Details...>& os, NullVersion const&) {
+            return os;
+        }
+    }
+
+    // Constraints on construction a version object is that it
+    // must be streamable
+    template <typename T, typename Type = typename std::decay<T>::type,
+              typename std::enable_if<detail::is_streamable<Type>::value, int>::type = 0>
+    auto version(T const& t) -> detail::Version<Type> {
+        return detail::Version<Type>(t);
+    }
+
+    // specialization for char const* => silently transform to std::string
+    auto version(char const* const s) -> detail::Version<std::string> {
+        return detail::Version<std::string>(s);
+    }
 
 
 } // namespace argparse

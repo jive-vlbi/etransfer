@@ -124,11 +124,12 @@ namespace argparse {
 
     // Note: need to use ENDL(...) to pass endl as argument
     //       See above
-    template <typename... Ts>
+    template <int exit_code = EXIT_FAILURE, typename... Ts,
+              typename std::enable_if<exit_code==EXIT_FAILURE || exit_code==EXIT_SUCCESS, int>::type = 0>
     void fatal_error(std::ostream& os, std::string const& e, Ts&&... ts) {
         char  dummy[] = {(os << e << " ", 'a'), (os << std::forward<Ts>(ts), 'a')..., (os << std::endl, 'a')};
         (void)dummy;
-        std::exit( EXIT_FAILURE );
+        std::exit( exit_code );
     }
 
 } // namespace argparse {
