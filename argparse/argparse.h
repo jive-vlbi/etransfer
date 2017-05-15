@@ -172,7 +172,7 @@ namespace argparse {
                         }
                         // If the thing starts with '-' look for the option "-(-)<stuff",
                         // otherwise for the thing with the empty name
-                        auto curOpt = ((opt[0]=='-' && opt.size()>=2 && ::isalpha(opt[1])) ?
+                        auto curOpt = ((opt[0]=='-' && ((opt.size()>=2 && ::isalpha(opt[1])) || (opt.size()>=3 && opt[1]=='-'))) ?
                                             // OK, looks like we need to look for cmdline option
                                             __m_option_idx_by_name.find(opt.substr(opt.find_first_not_of('-'))) :
                                             // .. otherwise look for the entry that takes arguments
