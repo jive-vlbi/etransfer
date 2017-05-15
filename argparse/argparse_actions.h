@@ -566,12 +566,30 @@ namespace argparse {
     //
     //////////////////////////////////////////////////////////////////////////
     namespace detail {
-        // The collector which accumulates into an output_iterator
+        // Some output iterators have member "::container_type", some don't.
+        // If they have it, we should take element type from
+        // "::container_type::value_type", otherwise we should just use
+        // "::value_type"
         template <typename T>
+        struct has_container_type {
+            using   no  = char;
+            using   yes = unsigned long;
+
+            template <typename U>
+            static no  test(U*);
+
+            template <typename U>
+            static yes test(typename U::container_type*);
+
+            static const bool value = (sizeof(test<T>(nullptr))==sizeof(yes));
+        };
+
+        // The collector which accumulates into an output_iterator
+        template <typename T, typename Element>
         struct Collector: action_t, Default<ignore_t> {
             using my_type      = std::reference_wrapper<T>;
             using type         = ignore_t;
-            using element_type = typename std::decay<typename T::container_type::value_type>::type;
+            using element_type = typename std::decay<Element>::type;
 
             Collector() = delete;
             Collector(my_type t): __m_ref(t) {}
@@ -583,7 +601,6 @@ namespace argparse {
 
             my_type __m_ref;
         };
-
         // The collector which accumulates into a container directly
         template <typename T>
         struct ContainerCollector: action_t, Default<ignore_t> {
@@ -604,18 +621,41 @@ namespace argparse {
     } //namespace detail
 
     // These are exposed to the user
+
+    // Some output iterators have "::container_type" as member typedef - if
+    // they do, take the element type from there ...
     template <typename T,
-              typename std::enable_if<functools::detail::is_output_iterator<T>::value, int>::type = 0>
-    auto collect_into(T& t) -> detail::Collector<T> {
-        return detail::Collector<T>(std::ref(t));
+              typename std::enable_if<functools::detail::is_output_iterator<T>::value, int>::type = 0,
+              typename std::enable_if<detail::has_container_type<T>::value, int>::type = 0>
+    auto collect_into(T& t) -> detail::Collector<T, typename T::container_type::value_type> {
+        return detail::Collector<T, typename T::container_type::value_type>(std::ref(t));
     }
 
+    // Also, ppl could be passing a reference wrapper to an output iterator
     template <typename T,
-              typename std::enable_if<functools::detail::is_output_iterator<T>::value, int>::type = 0>
-    auto collect_into(std::reference_wrapper<T> t) -> detail::Collector<T> {
-        return detail::Collector<T>(t);
+              typename std::enable_if<functools::detail::is_output_iterator<T>::value, int>::type = 0,
+              typename std::enable_if<detail::has_container_type<T>::value, int>::type = 0>
+    auto collect_into(std::reference_wrapper<T> t) -> detail::Collector<T, typename T::container_type::value_type> {
+        return detail::Collector<T, typename T::container_type::value_type>(t);
     }
 
+    // ... and for those iterators who *don't* have ::container_type, just use the
+    // ::value_type as element type
+    template <typename T,
+              typename std::enable_if<functools::detail::is_output_iterator<T>::value, int>::type = 0,
+              typename std::enable_if<!detail::has_container_type<T>::value, int>::type = 0>
+    auto collect_into(T& t) -> detail::Collector<T, typename T::value_type> {
+        return detail::Collector<T, typename T::value_type>(std::ref(t));
+    }
+    template <typename T,
+              typename std::enable_if<functools::detail::is_output_iterator<T>::value, int>::type = 0,
+              typename std::enable_if<!detail::has_container_type<T>::value, int>::type = 0>
+    auto collect_into(std::reference_wrapper<T> t) -> detail::Collector<T, typename T::value_type> {
+        return detail::Collector<T, typename T::value_type>(t);
+    }
+
+
+    // Sometimes ppl say they prefer to collect into a container directly
     template <typename T,
               typename std::enable_if<detail::can_insert<T>::value, int>::type = 0>
     auto collect_into(T& t) -> detail::ContainerCollector<T> {
