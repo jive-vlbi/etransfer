@@ -76,6 +76,16 @@ namespace argparse {
                     fatal_error(std::cerr, std::string("No option by the name of '")+opt+"' defined.");
                 return option->second->get(t);
             }
+            template <typename T>
+            T const& get(std::string const& opt) const {
+                if( !__m_parsed )
+                    fatal_error(std::cerr, "Cannot request value if no command line options have been parsed yet.");
+
+                auto option = __m_option_idx_by_name.find(opt);
+                if( option==__m_option_idx_by_name.end() )
+                    fatal_error(std::cerr, std::string("No option by the name of '")+opt+"' defined.");
+                return option->second->get<T>();
+            }
 
             void parse(int, char const*const*const argv) {
                 if( __m_parsed )

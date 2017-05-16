@@ -61,6 +61,16 @@ namespace argparse { namespace detail {
                 throw std::runtime_error("Bad cast - requested option type is not actual type");
             return upcast->get(t);
         }
+        template <typename T>
+        T const& get( void ) const {
+            // See if we can fulfill the request
+            using theType                               = typename std::decay<T>::type;
+            CmdLineOptionStorage<theType> const* upcast = dynamic_cast<CmdLineOptionStorage<theType> const*>(this);
+
+            if( !upcast )
+                throw std::runtime_error("Bad cast - requested option type is not actual type");
+            return upcast->get();
+        }
 
         // Process an actual command line argument
         virtual void processArgument(std::string const&) = 0;
@@ -149,6 +159,16 @@ namespace argparse { namespace detail {
             if( this->__m_count )
                 t = this->holder_type::__m_value;
             return this->__m_count>0;
+        }
+        type const& get( void ) const {
+            if( __m_count==0 ) {
+                if( __m_default_f )
+                    __m_default_f();
+            }
+            // not specified and no default? cannot get the thing!
+            if( this->__m_count==0 )
+                throw std::runtime_error("get(): Option was not set on the command line and no default was specified.");
+            return this->holder_type::__m_value;
         }
 
         default_f   __m_default_f;
