@@ -192,6 +192,16 @@ namespace argparse {
         struct postcondition: public constraint_impl {
             using constraint_impl::constraint_impl;
         };
+        // 4. Precondition on the actual command line argument's string
+        //    representation. Especially for pre-verification of arguments
+        //    that will be transformed into non-POD types
+        //    [e.g. user-defined converters could be simplified if they know
+        //    the string that they'll be passed matches some specific
+        //    format]
+        struct formatcondition: public constraint_impl {
+            using constraint_impl::constraint_impl;
+        };
+
 
         template <>
         std::string demangle_f<argparse::detail::constraint>( void ) {
@@ -204,6 +214,10 @@ namespace argparse {
         template <>
         std::string demangle_f<argparse::detail::postcondition>( void ) {
             return "postcondition";
+        }
+        template <>
+        std::string demangle_f<argparse::detail::formatcondition>( void ) {
+            return "format";
         }
 
         //////////////////////////////////////////////////////////
@@ -1018,9 +1032,9 @@ namespace argparse {
 
     // And a cooked regex match constraint for string values
     template <typename T, typename... Ts>
-    auto match(T&& t, Ts&&... ts) -> detail::constraint_fn<std::string, detail::constraint> {
+    auto match(T&& t, Ts&&... ts) -> detail::constraint_fn<std::string, detail::formatcondition> {
         std::regex    rx( std::forward<T>(t), std::forward<Ts>(ts)... );
-        return detail::constraint_fn<std::string, detail::constraint>(
+        return detail::constraint_fn<std::string, detail::formatcondition>(
                         [=](std::string const& s) { return std::regex_match(s, rx); },
                         std::string("match ")+t);
     }

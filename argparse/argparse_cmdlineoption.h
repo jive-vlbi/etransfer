@@ -211,21 +211,22 @@ namespace argparse { namespace detail {
     struct ignore_both_t {
         using type = std::function<void(Value&, std::string const&)>;
 
-        template <typename Object, typename Action, typename Convert, typename Constrain>
-        static type mk(const Object* o, Action const& action, Convert const&, Constrain const&) {
+        template <typename Object, typename Action, typename Convert, typename Constrain, typename PreConstrain>
+        static type mk(const Object* o, Action const& action, Convert const&, Constrain const&, PreConstrain const&) {
             return [=](Value&, std::string const&) {
                         // these actions ignore everything
                         action(o, std::cref(std::ignore));
                     };
         }
+        static constexpr bool usesArgument = false;
     };
 
     template <typename Value>
     struct ignore_argument_t {
         using type = std::function<void(Value&, std::string const&)>;
 
-        template <typename Object, typename Action, typename Convert, typename Constrain>
-        static type mk(const Object*, Action const& action, Convert const&, Constrain const& constrain) {
+        template <typename Object, typename Action, typename Convert, typename Constrain, typename PreConstrain>
+        static type mk(const Object*, Action const& action, Convert const&, Constrain const& constrain, PreConstrain const&) {
             return [=](Value& v, std::string const&) {
                         // these actions ingnore the value passed in but rather,
                         // they'll do something with the value stored in them
@@ -236,21 +237,25 @@ namespace argparse { namespace detail {
                         action(v, std::cref(std::ignore));
                     };
         }
+
+        static constexpr bool usesArgument = false;
     };
 
     template <typename Value, typename Element>
     struct use_argument_t {
         using type = std::function<void(Value&, std::string const&)>;
 
-        template <typename Object, typename Action, typename Convert, typename Constrain>
-        static type mk(const Object*, Action const& action, Convert const& convert, Constrain const& constrain) {
+        template <typename Object, typename Action, typename Convert, typename Constrain, typename PreConstrain>
+        static type mk(const Object*, Action const& action, Convert const& convert, Constrain const& constrain, PreConstrain const& preconstrain) {
             return [=](Value& v, std::string const& s) {
+                        preconstrain(s); 
                         Element tmp;
                         convert(tmp, s);
                         constrain(tmp);
                         action(v, tmp);
                     };
         }
+        static constexpr bool usesArgument = true;
     };
 
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -311,6 +316,27 @@ namespace argparse { namespace detail {
         // i.e. the option /is/ the value
         functools::copy(functools::map(allNames, name_getter_t()),
                         std::inserter(optionIF->__m_names, optionIF->__m_names.end()));
+
+        /////////////////// Pre-Constraint handling //////////////////////////
+        //
+        // This one operates at the string-representation level on the
+        // command line; i.e. before conversion is attempted
+        // Here we count the preconstraints and make the function. Later on
+        // - when we've decided what the 'actionmaker' is - we can test
+        // wether the action actually uses the string on the command line
+        // and thus wether it actually makes sense to try to execute such a
+        // constraint
+        auto allPreconstraints          = get_all<formatcondition>( std::forward_as_tuple(props...) );
+        constexpr bool hasPreconstraint = (std::tuple_size< decltype(allPreconstraints) >::value > 0);
+
+        auto DoPreConstrain =
+            constraint_maker<formatcondition, std::string, ExecuteConstraints>::mk( optionIF->__m_constraints,
+                                                                                    allPreconstraints /*std::forward_as_tuple(props...)*/ );
+        auto preconstrain_f = Constraint<std::string>(
+                [=](std::string const& value) {
+                    DoPreConstrain(value);
+                    return true;
+                });
 
         /////////////////// Constraint handling /////////////////////////////
         //
@@ -463,9 +489,15 @@ namespace argparse { namespace detail {
                                                       >::type
                             >::type;
 
+        // Time to check wether there are pre-constraints and if it makes
+        // sense to enforce those
+        static_assert( !hasPreconstraint || actionMaker::usesArgument,
+                       "You have specified constraint(s) on the command line string but the action does not use it." );
+
         // Pass the zeroth element of the converters into the processing
         // function - it's either the user's one or our default one
-        optionPtr->__m_process_arg_f = actionMaker::mk(cmdline, theAction, std::get<0>(allConverters), optionPtr->__m_constraint_f);
+        optionPtr->__m_process_arg_f = actionMaker::mk(cmdline, theAction, std::get<0>(allConverters),
+                                                       optionPtr->__m_constraint_f, preconstrain_f);
         return optionPtr;
     }
 
