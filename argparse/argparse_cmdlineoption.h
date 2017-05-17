@@ -19,8 +19,11 @@ namespace argparse { namespace detail {
 
     template <typename C, typename Iter>
     void maybe_print(std::string const& topic, C const& c, Iter& iter) {
-        if( !c.empty() )
-            std::copy(std::begin(c), std::end(c), *iter++ = topic);
+        if( !c.empty() ) {
+            if( !topic.empty() )
+                *iter++ = topic;
+            std::copy(std::begin(c), std::end(c), iter);
+        }
     }
 
     // forward-declarartions so's we can have pointers-to

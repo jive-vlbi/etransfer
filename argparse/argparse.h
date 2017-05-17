@@ -10,6 +10,7 @@
 #include <climits>
 #include <libgen.h>
 
+
 namespace argparse {
 
     namespace detail {
@@ -236,6 +237,7 @@ namespace argparse {
             virtual void print_help( bool usage ) const {
                 std::ostream_iterator<std::string> printer(std::cout, " ");
                 std::ostream_iterator<std::string> lineprinter(std::cout, "\n\t\t");
+                std::ostream_iterator<std::string> indent1(std::cout, "\n\t");
                 detail::ConstCmdLineOptionPtr      argument = nullptr;
 
                 // First line is always:
@@ -258,7 +260,7 @@ namespace argparse {
                 if( !usage ) {
                     std::ostream_iterator<std::string> dp(std::cout, "\n");
                     *dp++ = "";
-                    detail::maybe_print("",  __m_description, dp);
+                    detail::maybe_print("\n",  __m_description, dp);
 
                     // And append the detailed help for all the options
                     for(auto const& opt: __m_option_by_alphabet) {
@@ -268,8 +270,9 @@ namespace argparse {
 
                         // Print details!
                         std::cout << std::endl;
-                        *lineprinter++ = opt->__m_usage;
-                        detail::maybe_print("\r\tDescription:",  opt->__m_docstring, lineprinter);
+                        *printer++ = opt->__m_usage;
+
+                        detail::maybe_print("\r\t",              opt->__m_docstring, indent1);
                         detail::maybe_print("\r\tDefaults:",     opt->__m_defaults, lineprinter);
                         detail::maybe_print("\r\tConstraints:",  opt->__m_constraints, lineprinter);
                         detail::maybe_print("\r\tRequirements:", opt->__m_requirements, lineprinter);
@@ -278,13 +281,14 @@ namespace argparse {
                     if( argument ) {
                         std::cout << std::endl;
                         *lineprinter++ = argument->__m_usage;
-                        detail::maybe_print("\r\tDescription:",  argument->__m_docstring, lineprinter);
+                        //detail::maybe_print("\r\tDescription:",  argument->__m_docstring, lineprinter);
+                        detail::maybe_print("\r\t",  argument->__m_docstring, indent1);
                         detail::maybe_print("\r\tDefaults:",     argument->__m_defaults, lineprinter);
                         detail::maybe_print("\r\tConstraints:",  argument->__m_constraints, lineprinter);
                         detail::maybe_print("\r\tRequirements:", argument->__m_requirements, lineprinter);
                     }
-                    fatal_error<EXIT_SUCCESS>(std::cout, "");
                 }
+                fatal_error<EXIT_SUCCESS>(std::cout, "");
             }
             virtual void print_version( void ) const {
                 fatal_error<EXIT_SUCCESS>( __m_version_f(std::cout), "");
@@ -346,5 +350,19 @@ namespace argparse {
 } //namespace argparse
 
 
+// Macro to allow user data types to be demangled to a human readable type
+// The default for argparse is to give you the actual, demangled, full C++
+// type name, which may be less informative/significantly harder to read ...
+// The library already has some of the standard types covered (like transforming
+// "std::_1::basic_string<char, CharTraits<...>....>" into "string").
+//
+// The (demangled) type name(s) are typically used for generating the
+// documentation - telling the user the actual type expected.
+//
+// But we don't know about user data types. 
+#define HUMANREADABLE(Type, Text) \
+    namespace argparse { namespace detail { \
+        template <> std::string demangle_f<Type>( void ) { return Text; } \
+    }}
 
 #endif
