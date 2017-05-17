@@ -54,8 +54,10 @@ namespace argparse { namespace functools {
                 f(std::forward<Args>(args)...);
                 return __m_void;
             }
-            static constexpr type __m_void{};
+            //static constexpr type __m_void{};
+            static  type __m_void;
         };
+        void_call::type  void_call::__m_void{};
 
         template <typename T>
         struct nonvoid_call {
