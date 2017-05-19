@@ -46,8 +46,8 @@ else
 	BUILD =  opt
 endif
 
-
-INCD+=-I$(shell pwd)/src
+#### The include path(s)
+INCD+=-I$(shell pwd)/src -I$(shell pwd)/argparse11
 
 PLATFORMLIBS=
 ifeq ($(shell uname),Linux)
