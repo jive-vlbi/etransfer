@@ -4,6 +4,7 @@
 
 #include <tuple>
 #include <iterator>
+#include <algorithm>
 
 namespace argparse { namespace functools {
 
@@ -309,14 +310,14 @@ namespace argparse { namespace functools {
             static char test_category(std::output_iterator_tag);
 
             template <typename U>
-            static long long test_category(U);
+            static unsigned int test_category(U);
 
             template <typename U>
             static auto test(typename std::iterator_traits<U>::pointer*) ->
                 decltype( test_category<U>(std::declval<typename std::iterator_traits<U>::iterator_category>()) );
 
             template <typename U>
-            static long long test(U* x);
+            static unsigned int test(U* x);
 
             static const bool value = sizeof(test<T>(nullptr)) == sizeof(char);
         };

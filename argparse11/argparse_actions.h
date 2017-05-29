@@ -1,6 +1,6 @@
 // Define the actions and support types to actually make command line options
-#ifndef ARGPARSE_ACTIONS_H
-#define ARGPARSE_ACTIONS_H
+#ifndef ARGPARSE11_ACTIONS_H
+#define ARGPARSE11_ACTIONS_H
 //
 //  The building blocks that are exposed to the user for building command
 //  line options:
@@ -161,7 +161,11 @@
 #include <argparse_functools.h>
 #include <argparse_basics.h>
 
+#include <set>
 #include <regex>
+#include <limits>
+#include <string>
+#include <utility>
 #include <functional>
 
 namespace argparse { 
@@ -249,7 +253,7 @@ namespace argparse {
 
         struct docstr_getter_t {
             docstr_getter_t() {}
-            docstr_getter_t(std::string const& pfx):
+            explicit docstr_getter_t(std::string const& pfx):
                 __m_prefix(pfx)
             {}
             template <typename U>
@@ -270,7 +274,7 @@ namespace argparse {
         struct Default: default_t {
             using type = typename std::decay<T>::type;
 
-            Default(type const& t):
+            explicit Default(type const& t):
                 __m_default(t)
             {}
 
@@ -512,7 +516,7 @@ namespace argparse {
             using my_type      = std::reference_wrapper<typename std::decay<T>::type>;
 
             count_into_t() = delete;
-            count_into_t(my_type t): __m_ref(t) { __m_ref.get() = T(0); }
+            explicit count_into_t(my_type t): __m_ref(t) { __m_ref.get() = T(0); }
 
             template <typename U, typename V>
             void operator()(U& , V const&) const {
@@ -587,7 +591,7 @@ namespace argparse {
         template <typename T>
         struct has_container_type {
             using   no  = char;
-            using   yes = unsigned long;
+            using   yes = unsigned int;
 
             template <typename U>
             static no  test(U*);
@@ -606,7 +610,7 @@ namespace argparse {
             using element_type = typename std::decay<Element>::type;
 
             Collector() = delete;
-            Collector(my_type t): __m_ref(t) {}
+            explicit Collector(my_type t): __m_ref(t) {}
 
             template <typename U>
             void operator()(type& , U const& u) const {
@@ -623,7 +627,7 @@ namespace argparse {
             using element_type = typename std::decay<typename T::value_type>::type;
 
             ContainerCollector() = delete;
-            ContainerCollector(my_type t): __m_ref(t) {}
+            explicit ContainerCollector(my_type t): __m_ref(t) {}
 
             template <typename U>
             void operator()(type& , U const& u) const {
@@ -714,7 +718,7 @@ namespace argparse {
             using element_type = typename std::decay<T>::type;
 
             StoreInto() = delete;
-            StoreInto(my_type t): __m_ref(t) {}
+            explicit StoreInto(my_type t): __m_ref(t) {}
 
             template <typename U>
             void operator()(type& , U const& u) const {
@@ -748,7 +752,7 @@ namespace argparse {
             using type         = ignore_t;
             using element_type = ignore_t;
 
-            methodcaller_t(Function const& f): __m_value( f ) {}
+            explicit methodcaller_t(Function const& f): __m_value( f ) {}
 
             template <typename T, typename U>
             void operator()(T t, U const&) const {
@@ -844,7 +848,7 @@ namespace argparse {
 
             template <typename F>
             static Self mk(F&& f, std::string const& descr) {
-                return Self(Constraint<Left>([=](Left const& left) { return (bool)(f(left)); }), descr);
+                return Self(Constraint<Left>([=](Left const& left) { return static_cast<bool>(f(left)); }), descr);
             }
         };
 
@@ -1052,7 +1056,7 @@ namespace argparse {
             using type = std::function<Ret(std::string const&)>;
 
             user_conversion_t() = delete;
-            user_conversion_t(type const& t): __m_cvt(t) {}
+            explicit user_conversion_t(type const& t): __m_cvt(t) {}
 
             void operator()(Ret& r, std::string const& s) const {
                 r = __m_cvt(s);
@@ -1229,7 +1233,7 @@ namespace argparse {
         struct value_holder {
             // default c'tor is present but does not actually initialize
             value_holder() {}
-            value_holder(T const& t): __m_value( t ) {
+            explicit value_holder(T const& t): __m_value( t ) {
                 // Apply the __m_value to all compile-time constraints
                 docstringlist_t  tmp;
                 auto constraintf = constraint_maker<value_constraint_t, T, ExecuteConstraints>::mk(tmp, std::tuple<Props...>() );

@@ -1,6 +1,6 @@
 // Support utilities like tests and types
-#ifndef ARGPARSE_DETAIL_H
-#define ARGPARSE_DETAIL_H
+#ifndef ARGPARSE11_DETAIL_H
+#define ARGPARSE11_DETAIL_H
 
 #include <argparse_functools.h>
 
@@ -8,8 +8,11 @@
 #include <list>
 #include <tuple>
 #include <memory>
+#include <string>
 #include <sstream>
 #include <iostream>
+#include <algorithm>
+#include <functional>
 #include <type_traits>
 
 #include <cstdlib>   // for std::free, std::exit
@@ -36,7 +39,7 @@ namespace argparse { namespace detail {
     template <typename T>
     struct is_streamable {
         using yes = char;
-        using no  = long long int;
+        using no  = unsigned int;
 
         template <typename U>
         static auto test(std::ostream& os, U const& u) -> decltype(os << u, yes()) {}
@@ -90,7 +93,7 @@ namespace argparse { namespace detail {
     template <template <typename...> class Match, typename T, typename Ret, typename... Args>
     struct has_operator {
         using yes = char;
-        using no  = unsigned long;
+        using no  = unsigned int;
 
         // Test if V matches the requested Ret according to Match specification
         template <typename V,
@@ -130,7 +133,7 @@ namespace argparse { namespace detail {
         template <typename C>
         struct reverse_wrapper {
             C& c_;   // could use std::reference_wrapper, maybe?
-            reverse_wrapper(C& c) :  c_(c) {}
+            explicit reverse_wrapper(C& c) :  c_(c) {}
 
             // container.rbegin()/container.rend() is fine - these have existed for long
             typename C::reverse_iterator begin() { return c_.rbegin(); }
@@ -171,8 +174,8 @@ namespace argparse { namespace detail {
     //
     ////////////////////////////////////////////////////////////////////////////
     template <typename T> struct can_insert {
-        // Only works if sizeof(char)!=sizeof(unsigned long)
-        using yes = char; using no  = unsigned long;
+        // Only works if sizeof(char)!=sizeof(unsigned int)
+        using yes = char; using no  = unsigned int;
 
 
         // Test if ".insert(iterator, value)" is well-defined

@@ -1,9 +1,14 @@
 // This is the toplevel include file. Including this should be enough.
-#ifndef ARGPARSE_ARGPARSE_H
-#define ARGPARSE_ARGPARSE_H
+#ifndef ARGPARSE11_ARGPARSE_H
+#define ARGPARSE11_ARGPARSE_H
 
 #include <argparse_cmdlineoption.h>
 #include <map>
+#include <set>
+#include <list>
+#include <string>
+#include <algorithm>
+#include <functional>
 
 #include <cstdlib>
 #include <cerrno>
@@ -194,9 +199,9 @@ namespace argparse {
                             fatal_error(std::cerr, "\nUnrecognized command line option ", opt);
                         }
                         // Check wether the current option requires an argument
-                        if( curOpt->second->__m_requires_argument )
+                        if( curOpt->second->__m_requires_argument ) {
                             previous = curOpt->second;
-                        else {
+                        } else {
                             current = curOpt->second;
                             current->processArgument( opt );
                         }

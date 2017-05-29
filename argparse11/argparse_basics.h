@@ -1,6 +1,6 @@
 // We need some classes and types defined before others
-#ifndef ARGPARSE_BASICS_H
-#define ARGPARSE_BASICS_H
+#ifndef ARGPARSE11_BASICS_H
+#define ARGPARSE11_BASICS_H
 
 #include <argparse_detail.h>
 

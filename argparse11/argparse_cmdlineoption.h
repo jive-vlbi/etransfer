@@ -1,10 +1,11 @@
 // Deal with a single command line option
-#ifndef ARGPARSE_CMDLINEOPTION_H
-#define ARGPARSE_CMDLINEOPTION_H
+#ifndef ARGPARSE11_CMDLINEOPTION_H
+#define ARGPARSE11_CMDLINEOPTION_H
 
 #include <argparse_basics.h>
 #include <argparse_actions.h>
 
+#include <string>
 #include <memory>
 #include <iterator>
 #include <iostream>
