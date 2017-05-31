@@ -5,6 +5,7 @@
 #include <argparse_basics.h>
 #include <argparse_actions.h>
 
+#include <tuple>
 #include <string>
 #include <memory>
 #include <iterator>
@@ -42,6 +43,8 @@ namespace argparse { namespace detail {
 
         template <typename... Props>
         friend CmdLineOptionPtr mk_argument(CmdLineBase*, Props&&...);
+        template <typename... Props>
+        friend CmdLineOptionPtr mk_argument(CmdLineBase*, std::tuple<Props...>&&);
 
         CmdLineOptionIF(): 
             __m_requires_argument( false ),
@@ -294,8 +297,14 @@ namespace argparse { namespace detail {
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////
     template <typename... Props>
     CmdLineOptionPtr mk_argument(CmdLineBase* cmdline, Props&&... props) {
+        // Make a tuple out of the args and process that
+        return mk_argument(cmdline, std::forward_as_tuple(props...));
+    }
+
+    template <typename... Props>
+    CmdLineOptionPtr mk_argument(CmdLineBase* cmdline, std::tuple<Props...>&& props) {
         // get the action!
-        auto allAction = get_all<action_t>( std::forward_as_tuple(props...) );
+        auto allAction = get_all<action_t>( props );
         static_assert( std::tuple_size<decltype(allAction)>::value==1, "You must specify exactly one Action" );
 
         // Once we know what the action is, we know:
@@ -308,7 +317,7 @@ namespace argparse { namespace detail {
 
         // From the amount of names (short and/or long ones) we can infer wether
         // this is a command line option or an argument
-        auto allNames                   = get_all<name_t>( std::forward_as_tuple(props...) );
+        auto allNames                   = get_all<name_t>( props );
         constexpr bool isArgument       = (std::tuple_size< decltype(allNames) >::value == 0);
 
         // Remember if the option takes an argument or not (element type == ignore_t)
@@ -350,7 +359,7 @@ namespace argparse { namespace detail {
         // wether the action actually uses the string on the command line
         // and thus wether it actually makes sense to try to execute such a
         // constraint
-        auto allPreconstraints          = get_all<formatcondition>( std::forward_as_tuple(props...) );
+        auto allPreconstraints          = get_all<formatcondition>( props );
         constexpr bool hasPreconstraint = (std::tuple_size< decltype(allPreconstraints) >::value > 0);
 
         auto DoPreConstrain =
@@ -368,8 +377,8 @@ namespace argparse { namespace detail {
         // We must do this such that we can verify if e.g. a specified 
         // default violates these constraints
         auto DoConstrain =
-            constraint_maker<constraint, actionArgument, ExecuteConstraints>::mk( optionIF->__m_constraints,
-                                                                                    std::forward_as_tuple(props...) );
+            constraint_maker<constraint, actionArgument, ExecuteConstraints>::mk( optionIF->__m_constraints, props );
+
         optionPtr->__m_constraint_f = Constraint<actionArgument>(
                 [=](actionArgument const& value) {
                     DoConstrain(value);
@@ -381,10 +390,8 @@ namespace argparse { namespace detail {
         // Allow for setting pre- and/or post conditions on the amount of
         // times the option is allowed
         using argcount_t = decltype(optionIF->__m_count);
-        auto DoPreCond  = constraint_maker<precondition,  argcount_t, ExecuteConstraints>::mk( optionIF->__m_requirements,
-                                                                                                 std::forward_as_tuple(props...) );
-        auto DoPostCond = constraint_maker<postcondition, argcount_t, ExecuteConstraints>::mk( optionIF->__m_requirements,
-                                                                                                 std::forward_as_tuple(props...) );
+        auto DoPreCond  = constraint_maker<precondition,  argcount_t, ExecuteConstraints>::mk( optionIF->__m_requirements, props );
+        auto DoPostCond = constraint_maker<postcondition, argcount_t, ExecuteConstraints>::mk( optionIF->__m_requirements, props );
 
         optionIF->__m_precondition_f  = [=](argcount_t v) { DoPreCond(v);  };
         optionIF->__m_postcondition_f = [=](argcount_t v) { DoPostCond(v); };
@@ -416,7 +423,7 @@ namespace argparse { namespace detail {
         // Make sure that at most one was given ...
         // Note that the default applies to the action's stored type not the 
         // action's argument type
-        auto allDefaults     = get_all<default_t>( std::forward_as_tuple(props...) );
+        auto allDefaults     = get_all<default_t>( props );
         static_assert( std::tuple_size<decltype(allDefaults)>::value<=1, "You may specify one default at most" );
 
         // Now filter the ones whose actual default type is not ignore_t, which
@@ -455,7 +462,7 @@ namespace argparse { namespace detail {
         // Allow users to specify their own converter for string -> element
         // We append the built-in default conversion and take the first
         // element from the tuple, which is guaranteed to exists
-        auto allConverters   = std::tuple_cat(get_all<conversion_t>( std::forward_as_tuple(props...) ),
+        auto allConverters   = std::tuple_cat(get_all<conversion_t>( props ),
                                               std::make_tuple(std_conversion_t()));
 
         // The user may specify up to one converter so the total number
@@ -475,7 +482,7 @@ namespace argparse { namespace detail {
         optionPtr->__m_requires_argument = requiresArgument;
 
         // Deal with documentation - we may add to this later
-        auto allDocstr     = get_all<docstring_t>( std::forward_as_tuple(props...) );
+        auto allDocstr     = get_all<docstring_t>( props );
         auto docstrbuilder = std::inserter(optionIF->__m_docstring, optionIF->__m_docstring.end());
 
         functools::copy(functools::map(allDocstr, docstr_getter_t()), docstrbuilder);
