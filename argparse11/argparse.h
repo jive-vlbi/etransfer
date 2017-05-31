@@ -270,9 +270,17 @@ namespace argparse {
                     if( argument ) {
                         std::cout << std::endl << "positional arguments:" << std::endl;
                         *lineprinter++ = argument->__m_usage;
-                        //detail::maybe_print("\r\tDescription:",  argument->__m_docstring, lineprinter);
-                        detail::maybe_print("\r\t",  argument->__m_docstring, indent1);
-                        detail::maybe_print("\r\tDefaults:",     argument->__m_defaults, lineprinter);
+
+                        if( !argument->__m_docstring.empty() ) {
+                            *printer++ = "\r\t\b";
+                            std::copy(std::begin(argument->__m_docstring), std::end(argument->__m_docstring), indent1);
+                        }
+
+                        if( !argument->__m_defaults.empty() ) {
+                            *printer++ = "\r\tDefault: ";
+                            *printer++ = *argument->__m_defaults.begin();
+                            *printer++ = "\n";
+                        }
                         detail::maybe_print("\r\tConstraints:",  argument->__m_constraints, lineprinter);
                         detail::maybe_print("\r\tRequirements:", argument->__m_requirements, lineprinter);
                     }
@@ -285,10 +293,17 @@ namespace argparse {
 
                         // Print details!
                         std::cout << std::endl;
-                        *printer++ = opt->__m_usage;
+                        *lineprinter++ = opt->__m_usage;
 
-                        detail::maybe_print("\r\t",              opt->__m_docstring, indent1);
-                        detail::maybe_print("\r\tDefaults:",     opt->__m_defaults, lineprinter);
+                        if( !opt->__m_docstring.empty() ) {
+                            *printer++ = "\r\t\b";
+                            std::copy(std::begin(opt->__m_docstring), std::end(opt->__m_docstring), indent1);
+                        }
+                        if( !opt->__m_defaults.empty() ) {
+                            *printer++ = "\r\tDefault: ";
+                            *printer++ = *opt->__m_defaults.begin();
+                            *printer++ = "\n";
+                        }
                         detail::maybe_print("\r\tConstraints:",  opt->__m_constraints, lineprinter);
                         detail::maybe_print("\r\tRequirements:", opt->__m_requirements, lineprinter);
                         std::cout << "\r";
