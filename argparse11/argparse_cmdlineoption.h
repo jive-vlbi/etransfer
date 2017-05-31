@@ -37,7 +37,7 @@ namespace argparse { namespace detail {
 
     // Non-templated baseclass
     struct CmdLineOptionIF {
-        using condition_f = std::function<void(unsigned int)>;
+        using condition_f = std::function<void(unsigned int, CmdLineOptionIF const*)>;
 
         friend class argparse::ArgumentParser;
 
@@ -196,7 +196,7 @@ namespace argparse { namespace detail {
         {}
 
         void processArgument(std::string const& v) {
-            this->CmdLineOptionIF::__m_precondition_f( this->CmdLineOptionIF::__m_count );
+            this->CmdLineOptionIF::__m_precondition_f( this->CmdLineOptionIF::__m_count, this );
             // Request the action to do it's thing
             __m_process_arg_f(this->holder_type::__m_value, v);
             // Chalk up another entry of this command line option
@@ -393,13 +393,13 @@ namespace argparse { namespace detail {
         auto DoPreCond  = constraint_maker<precondition,  argcount_t, ExecuteConstraints>::mk( optionIF->__m_requirements, props );
         auto DoPostCond = constraint_maker<postcondition, argcount_t, ExecuteConstraints>::mk( optionIF->__m_requirements, props );
 
-        optionIF->__m_precondition_f  = [=](argcount_t v) { DoPreCond(v);  };
-        optionIF->__m_postcondition_f = [=](argcount_t v) { DoPostCond(v); };
+        optionIF->__m_precondition_f  = [=](argcount_t v, CmdLineOptionIF const*) { DoPreCond(v);  };
+        optionIF->__m_postcondition_f = [=](argcount_t v, CmdLineOptionIF const*) { DoPostCond(v); };
 
         // a commandline option/argument is required if there is (at least one)
         // postcondition that fails with a count of 0
         try {
-            optionIF->__m_postcondition_f(0);
+            optionIF->__m_postcondition_f(0, nullptr);
             optionIF->__m_required = false;
         }
         catch( std::exception const& ) {
@@ -412,7 +412,7 @@ namespace argparse { namespace detail {
         // than once
         std::string ellipsis;
         try {
-            optionIF->__m_precondition_f(1);
+            optionIF->__m_precondition_f(1, nullptr);
             ellipsis = "...";
         }
         catch( std::exception const& ) { }

@@ -158,11 +158,43 @@
 //                            Using this functionality it is possible to
 //                            convert-and-store user defined data types :-)
 //
+//
+//  XOR grouping support:
+//
+//  In order to support exclusive-or, or mutually exclusive, options,
+//  the addXOR(...) function on the command line object must be used.
+//
+//  That interface function expects >1 command line option objects so
+//  something needs to be done to transform ".add(...)" into something that
+//  can be passed multiple of these.
+//
+//  This can be constructed using the following function template:
+//
+//      option(...)           Inside the option(...) put the actions,
+//                            constraints &cet you'd normally give to the 
+//                            ".add(...)" command line object interface.
+//
+//                            So:
+//                              .add(short_name('x'), store_true())
+//                              .add(long_name('foo'), store_const(42), default(-1))
+//
+//                            Becomes, if they require to be mutually exclusive:
+//                              .addXOR( option(short_name('x'), store_true()),
+//                                       option(long_name('foo'), store_const(42), default(-1)),
+//                                       /* more options, if desired*/ ... )
+//                            Beware that it cannot be guaranteed that all
+//                            pre- or postconditions will be honoured; e.g.
+//                            an option being non-optional in this mutually
+//                            exclusive situation is nonsense. The code will
+//                            attempt to detect + complain loudly/bitterly
+//                            about this.
+//
 #include <argparse_functools.h>
 #include <argparse_basics.h>
 
 #include <set>
 #include <regex>
+#include <tuple>
 #include <limits>
 #include <string>
 #include <utility>
@@ -1295,6 +1327,13 @@ namespace argparse {
         return detail::Version<std::string>(s);
     }
 
+
+    // Take a number of arguments and turn them into a tuple ...
+    // really this is just shorthand for std::make_tuple ... :-)
+    template <typename... Props>
+    auto option(Props&&... props) -> std::tuple<Props...> {
+        return std::make_tuple(std::forward<Props>(props)...);
+    }
 
 } // namespace argparse
 

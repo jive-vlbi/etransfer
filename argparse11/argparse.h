@@ -227,7 +227,7 @@ namespace argparse {
                 // And finally, test all post conditions!
                 for(auto const& opt: __m_option_by_alphabet ) {
                     try {
-                        opt->__m_postcondition_f( opt->__m_count );
+                        opt->__m_postcondition_f( opt->__m_count, opt.get() );
                     }
                     catch( std::exception& e ) {
                         fatal_error(std::cerr, e.what(), ENDL(std::cerr),
@@ -241,7 +241,7 @@ namespace argparse {
 
             virtual void print_help( bool usage ) const {
                 std::ostream_iterator<std::string> printer(std::cout, " ");
-                std::ostream_iterator<std::string> lineprinter(std::cout, "\n\t\t");
+                std::ostream_iterator<std::string> lineprinter(std::cout, "\n\t  ");
                 std::ostream_iterator<std::string> indent1(std::cout, "\n\t");
                 detail::ConstCmdLineOptionPtr      argument = nullptr;
 
@@ -320,8 +320,123 @@ namespace argparse {
                 if( __m_parsed )
                     fatal_error(std::cerr, "Cannot add command line arguments after having already parsed one.");
 
-                auto new_arg = detail::mk_argument(this, std::forward<Props>(props)...);
+                //auto new_arg = detail::mk_argument(this, std::forward<Props>(props)...);
+                this->add_argument( detail::mk_argument(this, std::forward<Props>(props)...) );
+            }
 
+
+
+            // XOR groups are created slightly different
+            // this is the main entry point. Options... are supposed to be
+            // >1 instances of 
+            template <typename... Options>
+            void addXOR(Options&&... options) {
+                using condmap_type = std::map<detail::CmdLineOptionIF const*, detail::CmdLineOptionIF::condition_f>;
+
+                // we start a new xor group
+                condmap_type        previousPreConditions, previousPostConditions;
+                option_list_type    xorGroup;
+
+                // Sanity pre-condition
+                if( __m_parsed )
+                    fatal_error(std::cerr, "Cannot add command line arguments after having already parsed one.");
+
+                // Let's first create the list of option pointers
+                this->addXOR_impl(xorGroup, std::forward<Options>(options)...);
+
+                // Collect all old pre- and postcondition functions
+                for(auto& p: xorGroup) {
+                    previousPreConditions[p.get()]  = p->__m_precondition_f;
+                    previousPostConditions[p.get()] = p->__m_postcondition_f;
+                }
+
+                // Now that we have /that/ we can add a precondition for all
+                // options in this group: only one can have non-zero
+                // precondition count
+                detail::CmdLineOptionIF::condition_f xorPreCond = [=](unsigned int c, detail::CmdLineOptionIF const* ptr) {
+                    detail::CmdLineOptionIF* alreadyPresent = nullptr;
+                    for(auto const& p: xorGroup) {
+                        if( p->__m_count ) {
+                            alreadyPresent = &(*p);
+                            break;
+                        }
+                    }
+                    // Assert that IF there is an option with a non-zero
+                    // count that it is the same as the some that we're
+                    // testing now
+                    if( alreadyPresent && alreadyPresent!=ptr )
+                        fatal_error(std::cerr, "The options '", alreadyPresent->__m_usage, "' and '", ptr->__m_usage, "' are mutually exclusive");
+                    // Now verify any precondition(s) for the option that we're looking at
+                    previousPreConditions.find(ptr)->second(c, ptr);
+                };
+
+                // The new post-condition function will only check the
+                // postcondition IF the option has been set
+                detail::CmdLineOptionIF::condition_f xorPostCond = [=](unsigned int c, detail::CmdLineOptionIF const* ptr) {
+                    if( c )
+                        previousPostConditions.find(ptr)->second(c, ptr);
+                };
+
+                // And replace the precondition function in all of them,
+                // add a bit of text explaining that this option is mutex
+                // wrt to the other options in this group,
+                // then add to the command line object
+                for(auto& p: xorGroup) {
+                    p->__m_precondition_f  = xorPreCond;
+                    p->__m_postcondition_f = xorPostCond;
+
+                    unsigned int        nExcl = 0;
+                    std::ostringstream  exclusive;
+                    exclusive << "xor:mutually exclusive with { ";
+                    for(auto pp: xorGroup)
+                        if( pp!=p )
+                            exclusive << (nExcl++ ? ", " : "") << pp->__m_usage;
+                    exclusive << " }";
+                    p->__m_constraints.push_back( exclusive.str() );
+                    this->add_argument( p );
+                }
+            }
+
+        private:
+            // Keep the command line options in a number of data structures.
+            // Depending on use case - listing the options or finding the
+            // correct option - some data structures are better than others.
+            // 1. In a simple set<options> sorted alphabetically on the longest
+            //    name so printing usage/help is easy
+            // 2. in an associative array mapping name -> option such that
+            //    irrespective of under how many names an option was registered
+            //    we can quickly find it
+            using option_idx_by_name = std::map<std::string, detail::CmdLineOptionPtr>;
+            using option_by_alphabet = std::set<detail::CmdLineOptionPtr, detail::lt_cmdlineoption>;
+            using option_list_type   = std::list<detail::CmdLineOptionPtr>;
+
+            bool                  __m_parsed;
+            version_f             __m_version_f;
+            std::string           __m_program;
+            docstringlist_t       __m_description;
+            option_idx_by_name    __m_option_idx_by_name;
+            option_by_alphabet    __m_option_by_alphabet;
+
+
+            // Base-case: stop the recursion (no more options to add to group)
+            template <typename...>
+            void addXOR_impl(option_list_type&) { }
+
+            // Strip off one option and recurse to next
+            template <typename... Props, typename... Rest>
+            void addXOR_impl(option_list_type& options, std::tuple<Props...>&& option, Rest... rest) {
+                auto new_arg = detail::mk_argument(this, std::forward<std::tuple<Props...>>(option));
+                // We cannot have an option being required!
+                if( new_arg->__m_required )
+                    fatal_error(std::cerr, "In an XOR group, option '", new_arg->__m_usage, "' cannot be required!");
+                options.push_back( new_arg );
+                this->addXOR_impl(options, std::forward<Rest>(rest)...);
+            }
+
+
+            // If a new cmdline option has been created, we must add it to
+            // our indices
+            void add_argument(detail::CmdLineOptionPtr new_arg) {
                 // Verify that none of the names of the new option conflict with
                 // already defined names. If the option has no names at all it
                 // is an argument. 
@@ -347,24 +462,6 @@ namespace argparse {
                         fatal_error(std::cerr, "Failed to insert new element into index by name", *new_arg->__m_names.begin());
             }
 
-        private:
-            // Keep the command line options in a number of data structures.
-            // Depending on use case - listing the options or finding the
-            // correct option - some data structures are better than others.
-            // 1. In a simple set<options> sorted alphabetically on the longest
-            //    name so printing usage/help is easy
-            // 2. in an associative array mapping name -> option such that
-            //    irrespective of under how many names an option was registered
-            //    we can quickly find it
-            using option_idx_by_name = std::map<std::string, detail::CmdLineOptionPtr>;
-            using option_by_alphabet = std::set<detail::CmdLineOptionPtr, detail::lt_cmdlineoption>;
-
-            bool                  __m_parsed;
-            version_f             __m_version_f;
-            std::string           __m_program;
-            docstringlist_t       __m_description;
-            option_idx_by_name    __m_option_idx_by_name;
-            option_by_alphabet    __m_option_by_alphabet;
     };
 
 
