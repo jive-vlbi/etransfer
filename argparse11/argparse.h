@@ -233,7 +233,13 @@ namespace argparse {
                         // e.g. to support a negative number "-1" ...
                         if( ::isalpha(*flags) ) {
                             // If the first appears to be a flag, then all
-                            // of them should be
+                            // of them should be.
+                            const size_t nflag = ::strlen(flags);
+                            // expansion of "-xy..." to "-x -y -..."
+                            // only valid if all elements are flags
+                            if( nflag>1 && !std::all_of(flags, flags+nflag, [&](char f) { return __m_flagset.count(std::string::value_type(f))>0; }) )
+                                fatal_error(std::cerr, "At least one flag from the set `", *option, "' requires an argument and thus cannot be packed");
+                            // OK to expand
                             while( *flags )
                                 *argptr++ = std::string("-")+*flags++;
                         } else {
@@ -522,6 +528,7 @@ namespace argparse {
             // 2. in an associative array mapping name -> option such that
             //    irrespective of under how many names an option was registered
             //    we can quickly find it
+            using flagset_type       = std::set<std::string::value_type>;
             using option_idx_by_name = std::map<std::string, detail::CmdLineOptionPtr>;
             using option_by_alphabet = std::set<detail::CmdLineOptionPtr, detail::lt_cmdlineoption>;
             using option_list_type   = std::list<detail::CmdLineOptionPtr>;
@@ -529,6 +536,7 @@ namespace argparse {
             bool                  __m_parsed;
             version_f             __m_version_f;
             std::string           __m_program;
+            flagset_type          __m_flagset;
             docstringlist_t       __m_description;
             option_idx_by_name    __m_option_idx_by_name;
             option_by_alphabet    __m_option_by_alphabet;
@@ -569,13 +577,21 @@ namespace argparse {
                 // this option to the set of options, alphabetically sorted by
                 // longest name ...
                 if( !__m_option_by_alphabet.insert(new_arg).second )
-                    fatal_error(std::cerr, "Failed to insert new element into alphabetic set", *new_arg->__m_names.begin());
+                    fatal_error(std::cerr, "Failed to insert new element into alphabetic set ", *new_arg->__m_names.begin());
 
                 // OK register the option under all its names - we've
                 // verified that it doesn't clash
-                for(auto const& nm: new_arg->__m_names )
+                for(auto const& nm: new_arg->__m_names ) {
                     if( !__m_option_idx_by_name.emplace(nm, new_arg).second )
-                        fatal_error(std::cerr, "Failed to insert new element into index by name", *new_arg->__m_names.begin());
+                        fatal_error(std::cerr, "Failed to insert new element into index by name ", *new_arg->__m_names.begin());
+                    // if this is a short-name option and does not require
+                    // an argument, it's a flag. We keep this so it's easier
+                    // whilst parsing to test if expansion of "-xyz" to "-x -y -z"
+                    // is valid or not [only valid if "x", "y" and "z" are flags]
+                    if( nm.size()==1 && new_arg->__m_requires_argument==false )
+                        if( !__m_flagset.insert(nm.at(0)).second )
+                            fatal_error(std::cerr, "Failed to insert name in flag set for name ", nm, " [", *new_arg->__m_names.begin(), "]");
+                }
             }
 
     };
