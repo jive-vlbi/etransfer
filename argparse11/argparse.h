@@ -49,7 +49,13 @@ namespace argparse {
         using version_f = std::function<std::ostream&(std::ostream&)>;
 
         public:
-            // Collect version + docstr(explanation of program)
+            //////////////////////////////////////////////////////////////////////
+            //
+            // Construct the parser.
+            // Collect version + docstr(explanation of program), if any.
+            // Other arguments are ignored.
+            //
+            //////////////////////////////////////////////////////////////////////
             template <typename... Props>
             ArgumentParser(Props&&... props):
                 __m_parsed( false ), __m_program("<unknown>")
@@ -72,6 +78,33 @@ namespace argparse {
                 __m_version_f = [=](std::ostream& os) -> std::ostream& { return os << std::get<0>(allVersion); };
             }
 
+            //////////////////////////////////////////////////////////////////////
+            //
+            // Extract the value of command line option named "<opt>" -
+            // without leading "-"(s) - so short-name options are accessed
+            // through "x", long-name options through "name"
+            //
+            // If an option was not specified on the command line and no
+            // default was set, then a ".get()" of that option will result
+            // in a fatal error.
+            //
+            // Two flavours:
+            //
+            //   .get("name", T& t)
+            //      copies the value associated with "name" into "t"
+            //      (the type 'T' must literally match the type connected to
+            //      the option "name" when it was ".add(...)"'ed to the parser.
+            //
+            //          int m;
+            //          cmd.get("name", m);
+            //
+            //   .get<T>("name")
+            //      returns the value associated with "name". this one is
+            //      here so you don't have to construct a 'temporary':
+            //
+            //          auto m = cmd.get<int>("name")
+            //
+            //////////////////////////////////////////////////////////////////////
             template <typename T>
             bool get(std::string const& opt, T& t) const {
                 if( !__m_parsed )
@@ -82,6 +115,7 @@ namespace argparse {
                     fatal_error(std::cerr, std::string("No option by the name of '")+opt+"' defined.");
                 return option->second->get(t);
             }
+
             template <typename T>
             T const& get(std::string const& opt) const {
                 if( !__m_parsed )
@@ -93,6 +127,46 @@ namespace argparse {
                 return option->second->get<T>();
             }
 
+            //////////////////////////////////////////////////////////////////////
+            //
+            // Allow testing wether the command line option with name
+            // "opt" was actually passed on the command line.
+            //
+            // This can be used to prevent ".get()" being called on options
+            // that have no default [because that would lead to fatal error]:
+            //
+            //    // option with no default, type int inferred from the literal
+            //    // and no requirements, hence it's optional
+            //    cmd.add(short_name('x'), store_const(42));
+            //
+            //    // check command line
+            //    cmd.parse(argc, argv);
+            //
+            //    int maybe_x;
+            //
+            //    // without the "if(...)" the cmd.get<int>("x") would fatal
+            //    // error if "-x" wasn't given (at least once) on the
+            //    // command line
+            //    if( cmd("x") )
+            //      x = cmd.get<int>("x");
+            //      
+            //////////////////////////////////////////////////////////////////////
+            unsigned int operator()(std::string const& opt) const {
+                if( !__m_parsed )
+                    fatal_error(std::cerr, "Cannot test presence if no command line options have been parsed yet.");
+
+                auto option = __m_option_idx_by_name.find(opt);
+                if( option==__m_option_idx_by_name.end() )
+                    fatal_error(std::cerr, std::string("No option by the name of '")+opt+"' defined.");
+                return option->second->__m_count;
+            }
+
+            //////////////////////////////////////////////////////////////////////
+            //
+            //  Parse the command line - typically pass in (argc, argv)
+            //  You can call this one exactly once
+            //
+            //////////////////////////////////////////////////////////////////////
             void parse(int, char const*const*const argv) {
                 if( __m_parsed )
                     fatal_error(std::cerr, "Cannot double parse a command line");
@@ -239,6 +313,16 @@ namespace argparse {
                 }
             }
 
+            //////////////////////////////////////////////////////////////////////
+            //
+            //  The print_help() implementation; called if an option with
+            //  action argparse::print_help() is triggered.
+            //
+            //  Note that this also doubles as implementation of the
+            //  "argparse::print_usage()" action; the difference is in 
+            //  the boolean argument passed by the triggered action
+            //
+            //////////////////////////////////////////////////////////////////////
             virtual void print_help( bool usage ) const {
                 std::ostream_iterator<std::string> printer(std::cout, " ");
                 std::ostream_iterator<std::string> lineprinter(std::cout, "\n\t  ");
@@ -311,10 +395,28 @@ namespace argparse {
                 }
                 fatal_error<EXIT_SUCCESS>(std::cout, "");
             }
+
+            //////////////////////////////////////////////////////////////////////
+            //
+            //  The print_version() implementation; called if an option with
+            //  action argparse::print_version() is triggered.
+            //
+            //  Note that if the parser was constructed without
+            //  argparse::version(...) and yet this is triggered a fatal
+            //  error is triggered.
+            //
+            //////////////////////////////////////////////////////////////////////
             virtual void print_version( void ) const {
                 fatal_error<EXIT_SUCCESS>( __m_version_f(std::cout), "");
             }
 
+            //////////////////////////////////////////////////////////////////////
+            //
+            //  THE main method: add a command line argument to the parser.
+            //  The command line option is (attempted to) created from the
+            //  properties given to the function call
+            //
+            //////////////////////////////////////////////////////////////////////
             template <typename... Props>
             void add(Props&&... props) {
                 if( __m_parsed )
@@ -324,11 +426,25 @@ namespace argparse {
                 this->add_argument( detail::mk_argument(this, std::forward<Props>(props)...) );
             }
 
-
-
-            // XOR groups are created slightly different
-            // this is the main entry point. Options... are supposed to be
-            // >1 instances of 
+            //////////////////////////////////////////////////////////////////////
+            //
+            // Add a set of command line options that are mutually
+            // exclusive.
+            //
+            // You must use argparse::option(....) to construct the
+            // individual options that are to be mutually exclusive:
+            //
+            // .addXOR( argparse::option(....), argparse::option(...), ...)
+            //
+            // At most one of the options may appear and if the option has
+            // extra pre/post conditions then those are only enforced if the
+            // command line option was actually present on the command line.
+            //
+            // NOTE: the code does not prevent you from adding 0 or 1 XOR'ed
+            //       options - although the usefulness of that might be
+            //       subject to debate.
+            //
+            //////////////////////////////////////////////////////////////////////
             template <typename... Options>
             void addXOR(Options&&... options) {
                 using condmap_type = std::map<detail::CmdLineOptionIF const*, detail::CmdLineOptionIF::condition_f>;
@@ -477,7 +593,7 @@ namespace argparse {
 // The (demangled) type name(s) are typically used for generating the
 // documentation - telling the user the actual type expected.
 //
-// But we don't know about user data types. 
+// But we don't know about user data types; therefore this.
 #define HUMANREADABLE(Type, Text) \
     namespace argparse { namespace detail { \
         template <> std::string demangle_f<Type>( void ) { return Text; } \
