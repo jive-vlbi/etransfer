@@ -1,16 +1,27 @@
-// Own includes
+// etransfer server program/etdc=etransfer daemon + client
 #include <version.h>
 #include <etdc_fd.h>
-#include <streamutil.h>
+#include <etdc_thread.h>
+#include <etdc_stringutil.h>
+#include <argparse.h>
+
+#include <map>
+#include <thread>
+#include <string>
+#include <vector>
+#include <iterator>
+#include <iostream>
+#include <functional>
 
 // C++ standard headers
 #include <map>
 #include <iostream>
 
-using std::cout;
-using std::endl;
+using     namespace     std;
+namespace AP =          argparse;
 
-int main(int, char*const*const argv) {
+
+int main(int, char const*const*const argv) {
     auto pClnt = mk_client("udt", host(argv[1] ? argv[1] : "" ), port(8008));
     cout << "connected to " << pClnt->getpeername(pClnt->__m_fd) << " [local " << pClnt->getsockname(pClnt->__m_fd) << "]" << endl;
     const auto data = "012345";

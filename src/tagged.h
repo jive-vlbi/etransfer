@@ -181,11 +181,101 @@ namespace etdc {
         }
 
         template <typename U>
-        operator U() {
+        operator U() const {
             return static_cast<U>( __m_value );
         }
-
         T   __m_value {};
+    };
+
+    // Specialization: tag a function pointer!
+    template <typename T, typename... Args, typename... Tags>
+    struct tagged<T(*)(Args...), Tags...> {
+        using type    = T(*)(Args...);
+        using my_tags = detail::typelist_type<Tags...>;
+
+        tagged(): __m_value( nullptr ) {}
+        explicit constexpr tagged(type t): __m_value(t) {}
+
+        // Prevent construction from somethat that does not have the same tags
+        template <typename U, typename... UArgs, typename... UTags>
+        tagged(tagged<U(*)(UArgs...), UTags...> const& ut): __m_value(ut.__m_value) {
+            static_assert( std::is_same<type, typename tagged<U(*)(UArgs...), UTags...>::type>::value &&
+                           my_tags::template is_equal<UTags...>::value, "Tagged types don't match" );
+        }
+
+        // Support output to any type of ostream
+        template <class CharT, class Traits>
+        friend std::basic_ostream<CharT, Traits>& 
+               operator<<(std::basic_ostream<CharT, Traits>& os, 
+                          tagged<T(*)(Args...), Tags...> const& w) {
+                   return os << etdc::type2str<T(*)(Args...)>() << " @" << (void*)w.__m_value;
+               }
+
+        // Allow assignments
+        // 1. From raw function pointer with same prototype
+        tagged<T(*)(Args...), Tags...> const& operator=(T(*t)(Args...)) {
+            __m_value = t;
+            return *this;
+        }
+
+        // We allow function call operator!
+        T operator()(Args... args) const {
+            return this->__m_value(std::forward<Args>(args)...);
+        }
+
+        T(*__m_value)(Args...);
+    };
+
+    // Specialization: tag a std::function<...> object
+    template <typename T, typename... Args, typename... Tags>
+    struct tagged<std::function<T(Args...)>, Tags...> {
+        using self    = tagged<std::function<T(Args...)>, Tags...>;
+        using type    = std::function<T(Args...)>;
+        using my_tags = detail::typelist_type<Tags...>;
+
+        tagged(): __m_value( nullptr ) {}
+
+        // Can construct from raw pointer-to-function
+        //explicit tagged(T(*ptr)(Args...)): __m_value( ptr ) {}
+        // or from function object
+        //explicit tagged(type const& ptr): __m_value( ptr ) {}
+
+        // Let the compilert figure out if this is OK?
+        template <typename U>
+        explicit tagged(U u): __m_value( u ) {}
+
+        // Prevent construction from somethat that does not have the same tags
+        template <typename U, typename... UTags>
+        tagged(tagged<U, UTags...> const& ut): __m_value(ut.__m_value) {
+            static_assert( my_tags::template is_equal<UTags...>::value, "Tagged types don't match" );
+        }
+
+        // Support output to any type of ostream
+        template <class CharT, class Traits>
+        friend std::basic_ostream<CharT, Traits>& 
+               operator<<(std::basic_ostream<CharT, Traits>& os, self const&) {
+                   return os << etdc::type2str<type>();
+               }
+
+        // Allow assignments
+        // 1. From raw function pointer with same prototype
+        // 2. From std::function with same prototype
+        self const& operator=(T(*t)(Args...)) {
+            __m_value = t;
+            return *this;
+        }
+
+        self const& operator=(type const& t) {
+            __m_value = t;
+            return *this;
+        }
+
+        // We allow function call operator!
+        T operator()(Args... args) const {
+            return this->__m_value(std::forward<Args>(args)...);
+        }
+
+        type __m_value;
     };
 
 

@@ -188,11 +188,9 @@ namespace etdc {
     }
 
     etdc_udt::etdc_udt() {
-        std::cout << "etdc_udt::etdc_udt()" << std::endl;
         auto proto = etdc::getprotobyname("tcp");
         if( (__m_fd=UDT::socket(PF_INET, SOCK_STREAM, proto.p_proto))==-1 )
             throw std::runtime_error( "etdc_udt: " + etdc::strerror(errno) );
-        std::cout << "  __m_fd=" << __m_fd << std::endl;
 
         setup_basic_fns();
     }

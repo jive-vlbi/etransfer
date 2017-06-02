@@ -24,6 +24,7 @@
 #include <utilities.h>
 #include <streamutil.h>
 #include <reentrant.h>
+#include <etdc_assert.h>
 #include <etdc_thread_local.h>
 
 // std c++
@@ -205,9 +206,32 @@ namespace etdc {
     using DelMask    = scoped_signal_mask<sigemptyset, sigaddset, MaskOp::delMask>;
     using GetMask    = scoped_signal_mask<nullptr    , nullptr,   MaskOp::getMask>;
     using Block      = scoped_signal_mask<sigemptyset, sigaddset, MaskOp::setMask>;
-    using UnBlock    = scoped_signal_mask<sigemptyset, sigaddset, MaskOp::setMask>;
+    using UnBlock    = scoped_signal_mask<sigfillset,  sigdelset, MaskOp::setMask>;
     using BlockAll   = scoped_signal_mask<sigfillset , nullptr ,  MaskOp::setMask>;
     using UnBlockAll = scoped_signal_mask<sigemptyset, nullptr ,  MaskOp::setMask>;
+
+
+    // Install signalhandler for the indicated signal(s) in the current thread
+    template <typename... Signals>
+    void install_handler(void(*handler_fn)(int), Signals&&... sigs) {
+        struct sigaction    sa;
+        const std::set<int> signalset( std::forward<Signals>(sigs)... );
+
+        // Fill in the sigaction struct
+        sa.sa_flags   = 0;
+        sa.sa_handler = handler_fn;
+        // The mask
+        sigfillset(&sa.sa_mask);
+        for(auto const& sig: signalset)
+            sigdelset(&sa.sa_mask, sig);
+        // Install the handler for each signal
+        for(auto const& sig: signalset)
+            ETDCASSERT(::sigaction(sig, &sa, 0)==0, "failed to install signal handler for signal#" << sig << " - " << etdc::strerror(errno));
+    }
+    template <typename T>
+    void install_handler(void(*handler_fn)(int), std::initializer_list<T> t) {
+        install_handler(handler_fn, std::begin(t), std::end(t));
+    }
 }
 
 // As a convenience - define output operator for "sigset_t" but only if sigset_t

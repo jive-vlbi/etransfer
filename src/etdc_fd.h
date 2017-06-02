@@ -26,6 +26,7 @@
 #include <etdc_setsockopt.h>
 #include <etdc_resolve.h>
 #include <etdc_assert.h>
+#include <etdc_debug.h>
 #include <construct.h>
 #include <reentrant.h>
 #include <tagged.h>
@@ -224,7 +225,7 @@ typename std::enable_if<etdc::is_integer_number_type<T>::value, etdc::port_type>
 // For everything else we attempt string => number [so we can also accept wstring and god knows what
 template <typename T>
 typename std::enable_if<!etdc::is_integer_number_type<T>::value, etdc::port_type>::type port(T const& s) {
-    return mk_port( std::stoi(s) );
+    return port( std::stoi(s) );
 }
 
 
@@ -354,10 +355,12 @@ namespace etdc {
 
                         // And we can now actually enable the accept function
                         pSok->accept = [=](int f) {
+                            ETDCDEBUG(2, "waiting for incoming TCP connection ..." << std::endl);
                             socklen_t           ipl( sizeof(struct sockaddr_in) );
                             struct sockaddr_in  ip;
                             int                 fd = ::accept(f, reinterpret_cast<struct sockaddr*>(&ip), &ipl);
 
+                            ETDCDEBUG(2, "OK accept returned fd=" << fd << std::endl);
                             // fd<0 is not an error if blocking + errno == EAGAIN || EWOULDBLOCK
                             ETDCSYSCALL(fd>0 || (!srv.blocking && fd==-1 && (errno==EAGAIN || errno==EWOULDBLOCK)),
                                         "failed to accept on tcp[" << sa << "] - " << etdc::strerror(errno));

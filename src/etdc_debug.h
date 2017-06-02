@@ -40,7 +40,7 @@
 #define ETDCDBG_FUNC ""
 #endif
 
-// The ETDC_DEBUG(...) macro is defined at the end of this file - it is the
+// The ETDCDEBUG(...) macro is defined at the end of this file - it is the
 // vehicle for most output
 
 
@@ -286,7 +286,7 @@ namespace etdc {
 //       so it would be possible for another thread to change
 //       the dbglev between the two loads but that's just bummer
 //
-#define ETDC_DEBUG(a, b) \
+#define ETDCDEBUG(a, b) \
     do {\
         if( a<=etdc::detail::__m_dbglev.load(std::memory_order_acquire) ) {\
             std::ostringstream OsS_ZyP;\
