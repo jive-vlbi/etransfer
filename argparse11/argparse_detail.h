@@ -54,6 +54,7 @@ namespace argparse { namespace detail {
     struct is_streamable {
         using yes = char;
         using no  = unsigned int;
+        using DT  = typename std::decay<T>::type;
 
         template <typename U>
         static auto test(std::ostream& os, U const& u) -> decltype(os << u, yes()) {}
@@ -63,7 +64,7 @@ namespace argparse { namespace detail {
         template <typename U>
         static no test(...);
 
-        static constexpr bool value = (sizeof(test<T>(std::declval<std::ostream&>(), std::declval<T const&>()))==sizeof(yes));
+        static constexpr bool value = (sizeof(test<DT>(std::declval<std::ostream&>(), std::declval<DT const&>()))==sizeof(yes));
     };
 
     ////////////////////////////////////////////////////////////////////////////
