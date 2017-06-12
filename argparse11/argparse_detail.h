@@ -352,7 +352,7 @@ namespace argparse { namespace detail {
                   typename std::enable_if<is_streamable<T>::value, int>::type = 0>
         std::string operator()(T const& t) const {
             std::ostringstream oss;
-            oss << t;
+            oss << std::boolalpha << t;
             return oss.str();
         }
         // If it's a std container of streamable things, we can output it
@@ -362,6 +362,7 @@ namespace argparse { namespace detail {
                   typename std::enable_if<is_streamable<T>::value, int>::type = 0>
         std::string operator()(Container<T, Details...> const& t) const {
             std::ostringstream       oss;
+            oss << std::boolalpha;
             std::copy(std::begin(t), std::end(t), std::ostream_iterator<T>(oss, ","));
             return oss.str();
         }
