@@ -143,6 +143,7 @@ namespace etdc {
     using so_reuseaddr  = detail::BooleanSocketOption<SO_REUSEADDR>;
     using so_rcvtimeo   = detail::SocketOption<struct timeval, detail::Level<SOL_SOCKET>, tags::settable, detail::Name<SO_RCVTIMEO>>;
     using tcp_nodelay   = detail::SocketOption<bool, detail::Name<TCP_NODELAY>, detail::Level<IPPROTO_TCP>, tags::gettable, tags::settable>;
+    using ipv6_only     = detail::SocketOption<bool, detail::Name<IPV6_V6ONLY>, detail::Level<IPPROTO_IPV6>, tags::gettable, tags::settable>;
 
     // The SO_REUSEPORT may or may not be available. 
 #ifdef SO_REUSEPORT

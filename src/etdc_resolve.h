@@ -70,8 +70,14 @@ namespace etdc {
     //    Policies about how to interpret an empty host name
     /////////////////////////////////////////////////////////////
     struct EmptyMeansAny {
+        // IPv4 version
         bool operator()(struct sockaddr_in& dst) const {
             dst.sin_addr.s_addr = INADDR_ANY;
+            return true;
+        }
+        // IPv6 version
+        bool operator()(struct sockaddr_in6& dst) const {
+            dst.sin6_addr = ::in6addr_any;
             return true;
         }
     };
@@ -84,13 +90,23 @@ namespace etdc {
     // connect to so that should be good enough. But it means that EmptyMeansAny and
     // EmptyMeansNone actually resolve to the same sentinel value ... oh well.
     struct EmptyMeansNone {
+        // IPv4
         bool operator()(struct sockaddr_in& dst) const {
             dst.sin_addr.s_addr = INADDR_ANY;
+            return true;
+        }
+        // IPv6 version
+        bool operator()(struct sockaddr_in6& dst) const {
+            // make it the unspecified address
+            ETDCASSERT(::inet_pton(AF_INET6, "::/128", &dst.sin6_addr)==1, " IPv6 pton failed - " << etdc::strerror(errno));
             return true;
         }
     };
     struct EmptyMeansInvalid {
         bool operator()(struct sockaddr_in&) const {
+            return false;
+        }
+        bool operator()(struct sockaddr_in6&) const {
             return false;
         }
     };
@@ -131,6 +147,42 @@ namespace etdc {
         for(auto rp = resultptr.get(); rp!=0 && !found; rp=rp->ai_next )
             if( rp->ai_family==AF_INET )
                 dst.sin_addr   = ((struct sockaddr_in const*)rp->ai_addr)->sin_addr, found = true;
+        return found;
+    }
+
+    // And resolve into an IPv6 sockaddr
+    template <typename EmptyHostPolicy>
+    bool resolve_host(std::string const& host, const int socktype, const int protocol, struct sockaddr_in6& dst) {
+        // Make sure that we're clear about this
+        dst.sin6_family  = AF_INET6;
+        if( host.empty() )
+            return EmptyHostPolicy()(dst);
+
+        // First try the simple conversion, otherwise we need to do a lookup
+        // inet_pton is POSIX and returns 0 or -1 if the string is
+        // NOT in 'presentation' format or a system error occurs (which we ignore).
+        // Then we fall back to getaddrinfo(3)
+        if( ::inet_pton(AF_INET6, host.c_str(), &dst.sin6_addr)==1 )
+            return true;
+
+        // OK. Give getaddrinfo(3) a try
+        bool                 found( false );
+        struct addrinfo      hints;
+        detail::addrinfo_ptr resultptr;
+
+        // Provide some hints to the address resolver about
+        // what it is what we're looking for
+        ::memset(&hints, 0, sizeof(struct addrinfo));
+        hints.ai_family   = AF_INET6;    // IPv6 at the moment
+        hints.ai_socktype = socktype;    // only the socket type we require
+        hints.ai_protocol = protocol;    // Id. for the protocol
+
+        resultptr = detail::getaddrinfo(host.c_str(), 0, &hints);
+
+        // Scan the results for an IPv4 address
+        for(auto rp = resultptr.get(); rp!=0 && !found; rp=rp->ai_next )
+            if( rp->ai_family==AF_INET6 )
+                dst.sin6_addr   = ((struct sockaddr_in6 const*)rp->ai_addr)->sin6_addr, found = true;
         return found;
     }
 }

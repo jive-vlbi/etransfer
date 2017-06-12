@@ -53,6 +53,23 @@ namespace etdc {
                         "inet_ntop() fails - "<< etdc::strerror(errno) );
             return mk_sockname(proto(p), host(addr_s), port(etdc::ntohs_(saddr.sin_port)));
         }
+
+
+        // Id. for IPv6 - we need different sockaddr + addrstrlen and address family
+        template <int (*fptr)(int, struct sockaddr*, socklen_t*)>
+        sockname_type ipv6_sockname(int fd, std::string const& p, std::string const& s) {
+            socklen_t           len( sizeof(struct sockaddr_in6) );
+            struct sockaddr_in6 saddr;
+
+            ETDCASSERT( fptr(fd, reinterpret_cast<struct sockaddr*>(&saddr), &len)==0,
+                        s << " for protocol=" << p << " fails - " << etdc::strerror(errno) );
+            // transform the IPv6 address to string
+            char    addr_s[ INET6_ADDRSTRLEN+1 ];
+
+            ETDCASSERT( ::inet_ntop(AF_INET6, &saddr.sin6_addr, addr_s, len)!=nullptr,
+                        "inet_ntop() fails - "<< etdc::strerror(errno) );
+            return mk_sockname(proto(p), host(addr_s), port(etdc::ntohs_(saddr.sin6_port)));
+        }
     }
 
 
@@ -109,6 +126,40 @@ namespace etdc {
     }
 
     etdc_tcp::~etdc_tcp() {}
+
+    ////////////////////////////////////////////////////////////////////////
+    //                        TCP/IPv6 sockets
+    ////////////////////////////////////////////////////////////////////////
+    etdc_tcp6::etdc_tcp6() {
+        ETDCSYSCALL( (__m_fd=::socket(PF_INET6, SOCK_STREAM, etdc::getprotobyname("tcp").p_proto))!=-1,
+                     "failed to create TCP6 socket - " << etdc::strerror(errno) );
+        // Update basic read/write/close functions
+        setup_basic_fns();
+    }
+    etdc_tcp6::etdc_tcp6(int fd) {
+        ETDCASSERT(fd>=0, "constructing TCP6 file descriptor from invalid fd#" << fd);
+        __m_fd = fd;
+        // Update basic read/write/close functions
+        setup_basic_fns();
+    }
+
+    void etdc_tcp6::setup_basic_fns( void ) {
+        // Most of the functions we can share with IPv4, only some need
+        // overriding for IPv6:
+        // http://long.ccaba.upc.es/long/045Guidelines/eva/ipv6.html
+        
+        // Get all IPv4 versions
+        this->etdc_tcp::setup_basic_fns();
+
+        // And override the ones we need to
+        etdc::update_fd(*this, getsockname_fn( [](int fd) {
+                                    return detail::ipv6_sockname<::getsockname>(fd, "tcp6", "getsockname"); } ),
+                               getpeername_fn( [](int fd) {
+                                    return detail::ipv6_sockname<::getpeername>(fd, "tcp6", "getpeername"); } )
+        );
+    }
+
+    etdc_tcp6::~etdc_tcp6() {}
 
     ////////////////////////////////////////////////////////////////////////
     //                        UDT sockets
@@ -187,6 +238,7 @@ namespace etdc {
         }
     }
 
+    // UDT over IPv4
     etdc_udt::etdc_udt() {
         auto proto = etdc::getprotobyname("tcp");
         if( (__m_fd=UDT::socket(PF_INET, SOCK_STREAM, proto.p_proto))==-1 )
@@ -218,4 +270,38 @@ namespace etdc {
     }
 
     etdc_udt::~etdc_udt() {}
+
+    // UDT over IPv6
+    etdc_udt6::etdc_udt6() {
+        auto proto = etdc::getprotobyname("tcp");
+        if( (__m_fd=UDT::socket(PF_INET6, SOCK_STREAM, proto.p_proto))==-1 )
+            throw std::runtime_error( "etdc_udt6: " + etdc::strerror(errno) );
+
+        setup_basic_fns();
+    }
+    etdc_udt6::etdc_udt6(int fd) {
+        std::cout << "etdc_udt6::etdc_udt6(int " << fd << ")" << std::endl;
+        ETDCASSERT(fd>=0, "constructing UDT6 file descriptor from invalid fd#" << fd);
+        __m_fd = fd;
+        // Update basic read/write/close functions
+        setup_basic_fns();
+    }
+
+    void etdc_udt6::setup_basic_fns( void ) {
+        // Most of the functions we can share with IPv4, only some need
+        // overriding for IPv6:
+        // http://long.ccaba.upc.es/long/045Guidelines/eva/ipv6.html
+        
+        // Get all IPv4 versions
+        this->etdc_udt::setup_basic_fns();
+
+        // Override the ones we need to for IPv6
+        etdc::update_fd(*this, getsockname_fn( [](int fd) {
+                                    return detail::ipv6_sockname<detail::udt_sockname>(fd, "udt6", "getsockname"); } ),
+                               getpeername_fn( [](int fd) {
+                                    return detail::ipv6_sockname<detail::udt_peername>(fd, "udt6", "getpeername"); } )
+                        );
+    }
+
+    etdc_udt6::~etdc_udt6() {}
 }

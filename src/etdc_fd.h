@@ -43,11 +43,13 @@
 #include <sys/socket.h>
 
 
-// Define global ostream operator for struct sockaddr_in, dat's handy
+// Define global ostream operator for struct sockaddr_in[6], dat's handy
 // (forward declaration) - implementation at end of file
 template <class CharT, class Traits>
 std::basic_ostream<CharT, Traits>& operator<<(std::basic_ostream<CharT, Traits>& os, struct sockaddr_in const& sa);
 
+template <class CharT, class Traits>
+std::basic_ostream<CharT, Traits>& operator<<(std::basic_ostream<CharT, Traits>& os, struct sockaddr_in6 const& sa);
 
 
 // Make <host> and <protocol> constructible from std::string (and usable as ~)
@@ -164,13 +166,25 @@ namespace etdc {
     //
     //////////////////////////////////////////////////////////////////
 
-    // A TCP socket
+    // A TCP socket for IPv4
     struct etdc_tcp:
         public etdc_fd
     {
         etdc_tcp();
         etdc_tcp(int fd); // take over a file descriptor e.g. from ::accept()
         virtual ~etdc_tcp();
+
+        protected:
+            void setup_basic_fns( void );
+    };
+
+    // id. for IPv6
+    struct etdc_tcp6:
+        public etdc_tcp
+    {
+        etdc_tcp6();
+        etdc_tcp6(int fd); // take over a file descriptor e.g. from ::accept()
+        virtual ~etdc_tcp6();
 
         private:
             void setup_basic_fns( void );
@@ -185,10 +199,20 @@ namespace etdc {
 
         virtual ~etdc_udt();
 
-        private:
+        protected:
             void setup_basic_fns( void );
     };
 
+    struct etdc_udt6:
+        public etdc_udt
+    {
+        etdc_udt6();
+        etdc_udt6(int fd); // take over a file descriptor e.g. from ::accept()
+        virtual ~etdc_udt6();
+
+        private:
+            void setup_basic_fns( void );
+    };
 
 // End of the etdc namespace
 }
@@ -278,8 +302,10 @@ namespace etdc {
         using protocol_map_type = std::map<std::string, std::function<etdc_fdptr(void)>>;
 
         static const  protocol_map_type protocol_map = { 
-            {"tcp", []() { return std::make_shared<etdc_tcp>(); }},
-            {"udt", []() { return std::make_shared<etdc_udt>(); }}
+            {"tcp",  []() { return std::make_shared<etdc_tcp>();  }},
+            {"tcp6", []() { return std::make_shared<etdc_tcp6>(); }},
+            {"udt",  []() { return std::make_shared<etdc_udt>();  }},
+            {"udt6", []() { return std::make_shared<etdc_udt6>(); }}
         };
 
 
@@ -291,6 +317,7 @@ namespace etdc {
             etdc::udt_mss    udtMSS     {};
             etdc::so_rcvbuf  rcvBufSize {};
             etdc::udt_rcvbuf udtBufSize {};
+            etdc::ipv6_only  ipv6_only  {};
         };
         const etdc::construct<server_settings>  update_srv( &server_settings::blocking,
                                                             &server_settings::backLog,
@@ -298,7 +325,8 @@ namespace etdc {
                                                             &server_settings::srvPort,
                                                             &server_settings::rcvBufSize,
                                                             &server_settings::udtBufSize,
-                                                            &server_settings::udtMSS );
+                                                            &server_settings::udtMSS,
+                                                            &server_settings::ipv6_only );
 
         using server_defaults_map = std::map<std::string, std::function<server_settings(void)>>;
 
@@ -308,10 +336,20 @@ namespace etdc {
                                                 any_port,
                                                 blocking_type{true} );
                          }},
+            {"tcp6", []() { return update_srv.mk(backlog_type{4},
+                                                any_port, etdc::ipv6_only{true},
+                                                blocking_type{true} );
+                         }},
             {"udt", []() { return update_srv.mk(backlog_type{4},
                                                 blocking_type{true},
                                                 etdc::udt_rcvbuf{defaultUDTBufSize},
                                                 any_port,
+                                                etdc::udt_mss{1500});
+                         }},
+            {"udt6", []() { return update_srv.mk(backlog_type{4},
+                                                blocking_type{true},
+                                                etdc::udt_rcvbuf{defaultUDTBufSize},
+                                                any_port, etdc::ipv6_only{true},
                                                 etdc::udt_mss{1500});
                          }}
         };
@@ -322,14 +360,15 @@ namespace etdc {
         // Default set of actions to turn a socket into a server socket
         //server_map_type server_map = {
         static const std::map<std::string, std::function<void(etdc_fdptr, detail::server_settings const&)>> server_map = {
-            ////////// TCP server 
+            ////////// TCP server (IPv4)
             {"tcp", [](etdc_fdptr pSok, detail::server_settings const& srv) -> void {
                         // Bind to ipport
                         socklen_t          sl( sizeof(struct sockaddr_in) );
                         struct sockaddr_in sa;
                        
                         // Need to resolve? For here we assume empty host means any
-                        ETDCSYSCALL(etdc::resolve_host<etdc::EmptyMeansAny>(srv.srvHost, SOCK_STREAM, IPPROTO_TCP, sa),
+                        //ETDCSYSCALL(etdc::resolve_host<etdc::EmptyMeansAny>(srv.srvHost, SOCK_STREAM, IPPROTO_TCP, sa),
+                        ETDCSYSCALL(etdc::resolve_host<etdc::EmptyMeansAny>(srv.srvHost, SOCK_STREAM, IPPROTO_IP, sa),
                                     "Failed to resolve/tcp '" << srv.srvHost << "'");
 
                         // Set socket options 
@@ -355,19 +394,64 @@ namespace etdc {
 
                         // And we can now actually enable the accept function
                         pSok->accept = [=](int f) {
-                            ETDCDEBUG(2, "waiting for incoming TCP connection ..." << std::endl);
                             socklen_t           ipl( sizeof(struct sockaddr_in) );
                             struct sockaddr_in  ip;
                             int                 fd = ::accept(f, reinterpret_cast<struct sockaddr*>(&ip), &ipl);
 
-                            ETDCDEBUG(2, "OK accept returned fd=" << fd << std::endl);
                             // fd<0 is not an error if blocking + errno == EAGAIN || EWOULDBLOCK
                             ETDCSYSCALL(fd>0 || (!srv.blocking && fd==-1 && (errno==EAGAIN || errno==EWOULDBLOCK)),
                                         "failed to accept on tcp[" << sa << "] - " << etdc::strerror(errno));
                             return (fd==-1) ? std::shared_ptr<etdc_fd>() : std::make_shared<etdc::etdc_tcp>(fd);
                         };
                     }},
-            ////////// UDT server 
+            ////////// TCP server (IPv6)
+            {"tcp6", [](etdc_fdptr pSok, detail::server_settings const& srv) -> void {
+                        // Bind to ipport
+                        socklen_t           sl( sizeof(struct sockaddr_in6) );
+                        struct sockaddr_in6 sa;
+                       
+                        // Need to resolve? For here we assume empty host means any
+                        ETDCSYSCALL(etdc::resolve_host<etdc::EmptyMeansAny>(srv.srvHost, SOCK_STREAM, IPPROTO_IPV6, sa),
+                                    "Failed to resolve/tcp6 '" << srv.srvHost << "'");
+
+                        // Set socket options 
+                        etdc::setsockopt(pSok->__m_fd, etdc::so_reuseaddr{true}, srv.ipv6_only);
+
+                        // Override rcvbufsize only if actually set
+                        if( srv.rcvBufSize )
+                            etdc::setsockopt(pSok->__m_fd, srv.rcvBufSize);
+
+                        // Get the port info
+                        // See "etdc_resolve.h" for FFS glibc shit why we
+                        // have to fucking manually wrap htons!!
+                        sa.sin6_port = etdc::htons_( srv.srvPort );
+
+                        // Make sure sokkit is in correct blocking mode
+                        pSok->setblocking(pSok->__m_fd, etdc::untag(srv.blocking));
+
+                        // Now we can bind(2)
+                        ETDCSYSCALL(::bind(pSok->__m_fd, reinterpret_cast<const struct sockaddr*>(&sa), sl)==0,
+                                    "binding to tcp6[" << sa << "] - " << etdc::strerror(errno) );
+
+                        // And also lissen(2)
+                        ETDCSYSCALL(::listen(pSok->__m_fd, etdc::untag(srv.backLog))==0,
+                                    "listening on tcp6[" << sa << "] - " << etdc::strerror(errno));
+
+                        // And we can now actually enable the accept function
+                        pSok->accept = [=](int f) {
+                            ETDCDEBUG(2, "waiting for incoming TCP6 connection ..." << std::endl);
+                            socklen_t            ipl( sizeof(struct sockaddr_in6) );
+                            struct sockaddr_in6  ip;
+                            int                  fd = ::accept(f, reinterpret_cast<struct sockaddr*>(&ip), &ipl);
+
+                            ETDCDEBUG(2, "OK accept6 returned fd=" << fd << std::endl);
+                            // fd<0 is not an error if blocking + errno == EAGAIN || EWOULDBLOCK
+                            ETDCSYSCALL(fd>0 || (!srv.blocking && fd==-1 && (errno==EAGAIN || errno==EWOULDBLOCK)),
+                                        "failed to accept on tcp6[" << sa << "] - " << etdc::strerror(errno));
+                            return (fd==-1) ? std::shared_ptr<etdc_fd>() : std::make_shared<etdc::etdc_tcp6>(fd);
+                        };
+                    }},
+            ////////// UDT server  (IPv4)
             {"udt", [](etdc_fdptr pSok, detail::server_settings const& srv) -> void {
                         // Bind to ipport
                         int                sl( sizeof(struct sockaddr_in) );
@@ -409,6 +493,50 @@ namespace etdc {
                                         "failed to accept on udt[" << sa << "] - " << udterr.getErrorMessage());
                             return (fd==-1) ? std::shared_ptr<etdc_fd>() : std::make_shared<etdc::etdc_udt>(fd);
                         };
+                    }},
+            ////////// UDT server  (IPv6)
+            {"udt6", [](etdc_fdptr pSok, detail::server_settings const& srv) -> void {
+                        // Bind to ipport
+                        int                 sl( sizeof(struct sockaddr_in6) );
+                        struct sockaddr_in6 sa;
+                        
+                        // Set a couple of socket options
+                        // Note: we cannot set the IPv6 only option through the UDT library at the moment
+                        etdc::setsockopt(pSok->__m_fd, etdc::udt_reuseaddr{true}, srv.udtBufSize, srv.udtMSS/*, srv.ipv6_only*/);
+
+                        // Need to resolve? For here we assume empty host means any
+                        ETDCSYSCALL(etdc::resolve_host<etdc::EmptyMeansAny>(srv.srvHost, SOCK_STREAM, IPPROTO_IPV6, sa),
+                                    "Failed to resolve/udt '" << srv.srvHost << "'");
+
+                        // Get the port info
+                        // See "etdc_resolve.h" for FFS glibc shit why we
+                        // have to fucking manually wrap htons!!
+                        sa.sin6_port = etdc::htons_( srv.srvPort );
+
+                        // Make sure sokkit is in correct blocking mode
+                        pSok->setblocking(pSok->__m_fd, etdc::untag(srv.blocking));
+
+                        // Now we can bind(2)
+                        ETDCSYSCALL( UDT::bind(pSok->__m_fd, reinterpret_cast<const struct sockaddr*>(&sa), sl)!=UDT::ERROR,
+                                     "binding to udt6[" << sa << "] - " << UDT::getlasterror().getErrorMessage() );
+
+                        // And also lissen(2)
+                        ETDCSYSCALL( UDT::listen(pSok->__m_fd, etdc::untag(srv.backLog))!=UDT::ERROR,
+                                     "listening on udt6[" << sa << "] - " << UDT::getlasterror().getErrorMessage() );
+
+                        // And we can now actually enable the accept function
+                        pSok->accept = [=](int f) {
+                            int                  ipl( sizeof(struct sockaddr_in6) );
+                            struct sockaddr_in6  ip;
+                            UDTSOCKET            fd = UDT::accept(f, reinterpret_cast<struct sockaddr*>(&ip), &ipl);
+                            UDT::ERRORINFO       udterr( UDT::getlasterror() );
+
+                            // UDT does things differently ... obviously
+                            ETDCSYSCALL(fd!=UDT::INVALID_SOCK || /* This is never an error - a connection was accepted!*/
+                                        (!srv.blocking && fd==UDT::INVALID_SOCK && udterr.getErrorCode()==CUDTException::EASYNCRCV),
+                                        "failed to accept on udt6[" << sa << "] - " << udterr.getErrorMessage());
+                            return (fd==-1) ? std::shared_ptr<etdc_fd>() : std::make_shared<etdc::etdc_udt6>(fd);
+                        };
                     }}
             /////////// More protocols may follow?
         };
@@ -427,13 +555,15 @@ namespace etdc {
             etdc::udt_mss    udtMSS     {};
             etdc::so_sndbuf  sndBufSize {};
             etdc::udt_sndbuf udtBufSize {};
+            etdc::ipv6_only  ipv6_only  {};
         };
         const etdc::construct<client_settings>  update_clnt( &client_settings::blocking,
                                                              &client_settings::clntPort,
                                                              &client_settings::clntHost,
                                                              &client_settings::sndBufSize,
                                                              &client_settings::udtMSS,
-                                                             &client_settings::udtBufSize );
+                                                             &client_settings::udtBufSize,
+                                                             &client_settings::ipv6_only );
 
         using client_defaults_map = std::map<std::string, std::function<client_settings(void)>>;
 
@@ -442,8 +572,18 @@ namespace etdc {
             {"tcp", []() { return update_clnt.mk(blocking_type{true},
                                                  any_port );
                          }},
+            {"tcp6", []() { return update_clnt.mk(blocking_type{true}, etdc::ipv6_only{true},
+                                                 any_port );
+                         }},
             {"udt", []() { return update_clnt.mk(etdc::udt_mss{1500},
                                                  any_port,
+                                                 etdc::udt_sndbuf{defaultUDTBufSize},
+                                                 blocking_type{true});
+                         }},
+            {"udt6", []() { return update_clnt.mk(etdc::udt_mss{1500},
+                                                 // UDT does not allow direct access to the real socket so we can't really
+                                                 // set an option at the IPPROTO_IPV6 level.
+                                                 any_port, /*etdc::ipv6_only{true},*/ 
                                                  etdc::udt_sndbuf{defaultUDTBufSize},
                                                  blocking_type{true});
                          }}
@@ -457,7 +597,7 @@ namespace etdc {
                         struct sockaddr_in sa;
                         
                         // Need to resolve? For clients we assume empty host means not OK!
-                        ETDCSYSCALL(etdc::resolve_host<etdc::EmptyMeansInvalid>(clnt.clntHost, SOCK_STREAM, IPPROTO_TCP, sa),
+                        ETDCSYSCALL(etdc::resolve_host<etdc::EmptyMeansInvalid>(clnt.clntHost, SOCK_STREAM, IPPROTO_IP, sa),
                                     "Failed to resolve/tcp '" << clnt.clntHost << "'");
 
                         // Get the port info
@@ -477,13 +617,41 @@ namespace etdc {
                                     "connecting to tcp[" << sa << "] - " << etdc::strerror(errno));
                         // Not much else to do ...
                     }},
+            {"tcp6", [](etdc_fdptr pSok, detail::client_settings const& clnt) {
+                        // connect to ipport
+                        socklen_t           sl( sizeof(struct sockaddr_in6) );
+                        struct sockaddr_in6 sa;
+                        
+                        // Need to resolve? For clients we assume empty host means not OK!
+                        ETDCSYSCALL(etdc::resolve_host<etdc::EmptyMeansInvalid>(clnt.clntHost, SOCK_STREAM, IPPROTO_IPV6, sa),
+                                    "Failed to resolve/tcp6 '" << clnt.clntHost << "'");
+
+                        // Get the port info
+                        // See "etdc_resolve.h" for FFS glibc shit why we
+                        // have to fucking manually wrap htons!!
+                        sa.sin6_port = etdc::htons_( clnt.clntPort );
+
+                        // Set socket options
+                        etdc::setsockopt(pSok->__m_fd, clnt.ipv6_only);
+
+                        if( clnt.sndBufSize )
+                            etdc::setsockopt(pSok->__m_fd, clnt.sndBufSize);
+
+                        // Make sure sokkit is in correct blocking mode
+                        pSok->setblocking(pSok->__m_fd, etdc::untag(clnt.blocking));
+
+                        // Connect
+                        ETDCSYSCALL(::connect(pSok->__m_fd, reinterpret_cast<struct sockaddr const*>(&sa), sl)==0,
+                                    "connecting to tcp6[" << sa << "] - " << etdc::strerror(errno));
+                        // Not much else to do ...
+                    }},
             {"udt", [](etdc_fdptr pSok, detail::client_settings const& clnt) {
                         // connect to ipport
                         int                sl( sizeof(struct sockaddr_in) );
                         struct sockaddr_in sa;
                         
                         // Need to resolve? For clients we assume empty host means not OK!
-                        ETDCSYSCALL(etdc::resolve_host<etdc::EmptyMeansInvalid>(clnt.clntHost, SOCK_STREAM, IPPROTO_TCP, sa),
+                        ETDCSYSCALL(etdc::resolve_host<etdc::EmptyMeansInvalid>(clnt.clntHost, SOCK_STREAM, IPPROTO_IP, sa),
                                     "Failed to resolve/udt '" << clnt.clntHost << "'");
 
                         // Get the port info
@@ -500,6 +668,32 @@ namespace etdc {
                         // Connect
                         ETDCSYSCALL(UDT::connect(pSok->__m_fd, reinterpret_cast<struct sockaddr const*>(&sa), sl)!=UDT::ERROR,
                                     "connecting to udt[" << sa << "] - " << UDT::getlasterror().getErrorMessage());
+                        // Not much else to do ...
+                    }},
+            {"udt6", [](etdc_fdptr pSok, detail::client_settings const& clnt) {
+                        // connect to ipport
+                        int                 sl( sizeof(struct sockaddr_in6) );
+                        struct sockaddr_in6 sa;
+                        
+                        // Need to resolve? For clients we assume empty host means not OK!
+                        ETDCSYSCALL(etdc::resolve_host<etdc::EmptyMeansInvalid>(clnt.clntHost, SOCK_STREAM, IPPROTO_IPV6, sa),
+                                    "Failed to resolve/udt6 '" << clnt.clntHost << "'");
+
+                        // Get the port info
+                        // See "etdc_resolve.h" for FFS glibc shit why we
+                        // have to fucking manually wrap htons!!
+                        sa.sin6_port = etdc::htons_( clnt.clntPort );
+
+                        // Set socket options
+                        // Note: we cannot currently set the IPv6 only option through the UDT library
+                        etdc::setsockopt(pSok->__m_fd, clnt.udtBufSize, clnt.udtMSS/*, clnt.ipv6_only*/);
+
+                        // Make sure sokkit is in correct blocking mode
+                        pSok->setblocking(pSok->__m_fd, etdc::untag(clnt.blocking));
+
+                        // Connect
+                        ETDCSYSCALL(UDT::connect(pSok->__m_fd, reinterpret_cast<struct sockaddr const*>(&sa), sl)!=UDT::ERROR,
+                                    "connecting to udt6[" << sa << "] - " << UDT::getlasterror().getErrorMessage());
                         // Not much else to do ...
                     }}
         };
@@ -594,6 +788,16 @@ std::basic_ostream<CharT, Traits>& operator<<(std::basic_ostream<CharT, Traits>&
     ETDCSYSCALL(::inet_ntop(sa.sin_family, reinterpret_cast<const void*>(&sa.sin_addr.s_addr), buf, socklen_t(sizeof(buf))),
                 "::inet_ntop() fails because of " << etdc::strerror(errno));
     return os << buf << ":" << etdc::ntohs_(sa.sin_port);
+}
+
+template <class CharT, class Traits>
+std::basic_ostream<CharT, Traits>& operator<<(std::basic_ostream<CharT, Traits>& os, struct sockaddr_in6 const& sa) {
+    char           buf[ INET6_ADDRSTRLEN ];
+
+    ETDCASSERTX(sa.sin6_family==AF_INET6); // otherwise we don't know what!
+    ETDCSYSCALL(::inet_ntop(sa.sin6_family, reinterpret_cast<const void*>(&sa.sin6_addr), buf, socklen_t(sizeof(buf))),
+                "::inet_ntop6() fails because of " << etdc::strerror(errno));
+    return os << buf << ":" << etdc::ntohs_(sa.sin6_port);
 }
 
 #endif

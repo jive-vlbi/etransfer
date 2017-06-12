@@ -44,7 +44,7 @@ struct string2socket_type:
         std::vector<std::string>    addr;
 
         etdc::string_split(s,        '/', std::back_inserter(proto), false);
-        etdc::string_split(proto[1], ':', std::back_inserter(addr), false);
+        etdc::string_split(proto[1], '@', std::back_inserter(addr),  false);
 
         fd = mk_server(proto[0], port(addr[0]), etdc::udt_rcvbuf{2*1024*1024},
                        etdc::host_type(addr.size()>1 ? addr[1] : std::string()),
@@ -52,7 +52,7 @@ struct string2socket_type:
         return;
     }
 };
-const std::string string2socket_type::fmt{"(tcp|udt)/[0-9]+(:[-\\.a-zA-Z0-9]+)?"};
+const std::string string2socket_type::fmt{"(tcp|udt)6?/[0-9]+(@[-\\.a-zA-Z0-9]+)?"};
 
 
 ////////////////////////////////////////////////////////////////////////////////////
@@ -199,10 +199,21 @@ static std::map<std::string, std::function<void(etdc::etdc_fdptr, std::string co
                             etdc::getsockopt(pSok->__m_fd, rcv);
                             ETDCDEBUG(1, s << "/UDT rcvbuf = " << rcv << endl);
                         }},
+              {"udt6", [](etdc::etdc_fdptr pSok, std::string const& s) {
+                            etdc::udt_rcvbuf  rcv;
+                            etdc::getsockopt(pSok->__m_fd, rcv);
+                            ETDCDEBUG(1, s << "/UDT6 rcvbuf = " << rcv << endl);
+                        }},
               {"tcp", [](etdc::etdc_fdptr pSok, std::string const& s) {
                             etdc::so_rcvbuf  rcv;
                             etdc::getsockopt(pSok->__m_fd, rcv);
                             ETDCDEBUG(1, s << "/TCP rcvbuf = " << rcv << endl);
+                        }},
+              {"tcp6", [](etdc::etdc_fdptr pSok, std::string const& s) {
+                            etdc::so_rcvbuf  rcv;
+                            etdc::ipv6_only  ipv6;
+                            etdc::getsockopt(pSok->__m_fd, rcv, ipv6);
+                            ETDCDEBUG(1, s << "/TCP6 rcvbuf = " << rcv << ", ipv6 only = " << ipv6 << endl);
                         }}
             };
 
