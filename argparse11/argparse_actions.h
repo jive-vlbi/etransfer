@@ -43,6 +43,13 @@
 //                            combined with a default; up to you.
 //                            Note: "char const*" is silently converted
 //                                  to std::string
+//      store_const_into(T t, T& v)
+//                            If command line option is present, stores
+//                            the const t in the variable referenced by v.
+//                            This cannot be combined with a default (you
+//                            should default-init v yourself).
+//                            Note: t = "char const*", v = std::string&
+//                                  should work and behave as expected
 //
 //      store_value<T>()      Converts option argument to type T and stores it
 //
@@ -501,7 +508,7 @@ namespace argparse {
     namespace detail {
         template <typename T>
         struct StoreConst: action_t {
-            // We convert values to type T and also store those types
+            // We don't convert types but we do keep 'm
             using type         = typename std::decay<T>::type;
             using element_type = ignore_t;
 
@@ -514,6 +521,25 @@ namespace argparse {
             }
             const T __m_value;
         };
+
+        // When storing into something we don't allow setting a default
+        template <typename T>
+        struct StoreConstInto: action_t, Default<ignore_t> {
+            // We don't convert types but we do keep 'm
+            using type         = typename std::decay<T>::type;
+            using element_type = ignore_t;
+            using my_type      = std::reference_wrapper<type>;
+
+            StoreConstInto() = delete;
+            StoreConstInto(type const& t, my_type tr): __m_value(t), __m_ref(tr) {}
+
+            template <typename U>
+            void operator()(type&, U const&) const {
+                __m_ref.get() = __m_value;
+            }
+            const T __m_value;
+            my_type __m_ref;
+        };
     } // namespace detail
 
     // These are the API functions exposed to the user.
@@ -524,6 +550,14 @@ namespace argparse {
     }
     auto store_const(char const *const t) -> detail::StoreConst<std::string> {
         return detail::StoreConst<std::string>( std::string(t) );
+    }
+
+    template <typename T>
+    auto store_const_into(T const& t, T& tref) -> detail::StoreConstInto<T> {
+        return detail::StoreConstInto<T>(t, std::ref(tref));
+    }
+    auto store_const_into(char const *const t, std::string& tref) -> detail::StoreConstInto<std::string> {
+        return detail::StoreConstInto<std::string>(std::string(t), tref);
     }
 
     //////////////////////////////////////////////////////////////////////////
@@ -578,11 +612,6 @@ namespace argparse {
               typename std::enable_if<std::is_arithmetic<T>::value, int>::type = 0>
     auto count_into(T& t) -> detail::count_into_t<T> {
         return detail::count_into_t<T>( std::ref(t) );
-    }
-    template <typename T,
-              typename std::enable_if<std::is_arithmetic<T>::value, int>::type = 0>
-    auto count_into(std::reference_wrapper<T>& t) -> detail::count_into_t<T> {
-        return detail::count_into_t<T>( t );
     }
 
     //////////////////////////////////////////////////////////////////////////
@@ -652,7 +681,7 @@ namespace argparse {
         // The collector which accumulates into an output_iterator
         template <typename T, typename Element>
         struct Collector: action_t, Default<ignore_t> {
-            using my_type      = std::reference_wrapper<T>;
+            using my_type      = std::reference_wrapper<typename std::decay<T>::type>;
             using type         = ignore_t;
             using element_type = typename std::decay<Element>::type;
 
@@ -669,7 +698,7 @@ namespace argparse {
         // The collector which accumulates into a container directly
         template <typename T>
         struct ContainerCollector: action_t, Default<ignore_t> {
-            using my_type      = std::reference_wrapper<T>;
+            using my_type      = std::reference_wrapper<typename std::decay<T>::type>;
             using type         = ignore_t;
             using element_type = typename std::decay<typename T::value_type>::type;
 
@@ -696,14 +725,6 @@ namespace argparse {
         return detail::Collector<T, typename T::container_type::value_type>(std::ref(t));
     }
 
-    // Also, ppl could be passing a reference wrapper to an output iterator
-    template <typename T,
-              typename std::enable_if<functools::detail::is_output_iterator<T>::value, int>::type = 0,
-              typename std::enable_if<detail::has_container_type<T>::value, int>::type = 0>
-    auto collect_into(std::reference_wrapper<T> t) -> detail::Collector<T, typename T::container_type::value_type> {
-        return detail::Collector<T, typename T::container_type::value_type>(t);
-    }
-
     // ... and for those iterators who *don't* have ::container_type, just use the
     // ::value_type as element type
     template <typename T,
@@ -712,13 +733,6 @@ namespace argparse {
     auto collect_into(T& t) -> detail::Collector<T, typename T::value_type> {
         return detail::Collector<T, typename T::value_type>(std::ref(t));
     }
-    template <typename T,
-              typename std::enable_if<functools::detail::is_output_iterator<T>::value, int>::type = 0,
-              typename std::enable_if<!detail::has_container_type<T>::value, int>::type = 0>
-    auto collect_into(std::reference_wrapper<T> t) -> detail::Collector<T, typename T::value_type> {
-        return detail::Collector<T, typename T::value_type>(t);
-    }
-
 
     // Sometimes ppl say they prefer to collect into a container directly
     template <typename T,
@@ -726,12 +740,6 @@ namespace argparse {
     auto collect_into(T& t) -> detail::ContainerCollector<T> {
         return detail::ContainerCollector<T>(std::ref(t));
     }
-    template <typename T,
-              typename std::enable_if<detail::can_insert<T>::value, int>::type = 0>
-    auto collect_into(std::reference_wrapper<T> t) -> detail::ContainerCollector<T> {
-        return detail::ContainerCollector<T>(t);
-    }
-
 
     //////////////////////////////////////////////////////////////////////////
     //
@@ -760,9 +768,9 @@ namespace argparse {
     namespace detail {
         template <typename T>
         struct StoreInto: action_t, Default<ignore_t> {
-            using my_type      = std::reference_wrapper<T>;
             using type         = ignore_t;
             using element_type = typename std::decay<T>::type;
+            using my_type      = std::reference_wrapper<element_type>;
 
             StoreInto() = delete;
             explicit StoreInto(my_type t): __m_ref(t) {}
@@ -780,11 +788,6 @@ namespace argparse {
     template <typename T>
     auto store_into(T& t) -> detail::StoreInto<T> {
         return detail::StoreInto<T>(std::ref(t));
-    }
-
-    template <typename T>
-    auto store_into(std::reference_wrapper<T> t) -> detail::StoreInto<T> {
-        return detail::StoreInto<T>(t);
     }
 
     ///////////////////////////////////////////////////////////////////////////////////
