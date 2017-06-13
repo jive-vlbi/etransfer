@@ -564,9 +564,7 @@ namespace argparse {
             template <typename... Props, typename... Rest>
             void addXOR_impl(option_list_type& options, std::tuple<Props...>&& option, Rest... rest) {
                 auto new_arg = detail::mk_argument(this, std::forward<std::tuple<Props...>>(option));
-                // We cannot have an option being required!
-                if( new_arg->__m_required )
-                    fatal_error(std::cerr, "In an XOR group, option '", new_arg->__m_usage, "' cannot be required!");
+
                 options.push_back( new_arg );
                 this->addXOR_impl(options, std::forward<Rest>(rest)...);
             }
