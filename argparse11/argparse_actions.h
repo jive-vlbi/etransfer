@@ -150,6 +150,15 @@
 //                              attempting to process the n+1'th occurrence
 //
 //      exactly(unsigned n)     Your guess.
+//      
+//      required()              Almost, but not quite, entirely short-hand
+//                              for "exactly(1)".
+//                              This is the /only/ requirement that can be
+//                              added to an XOR group to indicate that, as
+//                              you'd imagine, at least one of the options
+//                              in the XOR group must be present.
+//                              In normal .add(...) options, acts exactly
+//                              like "exactly(n)".
 //
 //
 // Extra:
@@ -1051,7 +1060,8 @@ namespace argparse {
             }
         };
         
-        using exactly_t = wrap_many<unsigned int, precondition, postcondition>;
+        using exactly_t  = wrap_many<unsigned int, precondition, postcondition>;
+        using required_t = wrap_many<unsigned int, postcondition, precondition>;
     } // namespace detail
 
 
@@ -1059,7 +1069,11 @@ namespace argparse {
         // Exactly "0" makes as much sense as something that doesn't make sense at all
         if( n<1 )
             throw std::logic_error("exactly() with requirement < 1 makes no sense at all.");
-        return detail::exactly_t::mk<std::less, std::equal_to>("argument count", n);
+        return detail::exactly_t::mk<std::less, std::equal_to>("option count", n);
+    }
+
+    auto required( void ) -> detail::required_t {
+        return detail::required_t::mk<std::equal_to, std::less>("option count", 1);
     }
 
     /////////////////////////////////////////////////////////////////////////////////////////

@@ -470,21 +470,35 @@ namespace argparse {
                 using condmap_type = std::map<detail::CmdLineOptionIF const*, detail::CmdLineOptionIF::condition_f>;
 
                 // we start a new xor group
-                condmap_type        previousPreConditions, previousPostConditions;
-                option_list_type    xorGroup;
+                condmap_type     previousPreConditions, previousPostConditions;
+                option_list_type xorGroup;
 
                 // Sanity pre-condition
                 if( __m_parsed )
                     fatal_error(std::cerr, "Cannot add command line arguments after having already parsed one.");
 
+                // Check if there's a requirement specification
+                // For this particular use case, we only need to know if the
+                // required thing is present or not. 
+                // The requirement is only tested in the post condition;
+                // each of the elements in the xor group may or may not have
+                // their own pre/post conditions.
+                const auto required  = (std::tuple_size<decltype(detail::get_all<detail::required_t>(std::forward_as_tuple(options...)))>::value > 0);
+
                 // Let's first create the list of option pointers
                 this->addXOR_impl(xorGroup, std::forward<Options>(options)...);
 
                 // Collect all old pre- and postcondition functions
+                unsigned int        nCount = 0;
+                std::ostringstream  alloptions;
+                alloptions << "{ ";
                 for(auto& p: xorGroup) {
+                    alloptions << (nCount++ ? ", " : "") << p->__m_usage;
                     previousPreConditions[p.get()]  = p->__m_precondition_f;
                     previousPostConditions[p.get()] = p->__m_postcondition_f;
                 }
+                alloptions << " }";
+                const std::string allOpts( alloptions.str() );
 
                 // Now that we have /that/ we can add a precondition for all
                 // options in this group: only one can have non-zero
@@ -509,6 +523,15 @@ namespace argparse {
                 // The new post-condition function will only check the
                 // postcondition IF the option has been set
                 detail::CmdLineOptionIF::condition_f xorPostCond = [=](unsigned int c, detail::CmdLineOptionIF const* ptr) {
+                    // If the required flag was set, at least one of the
+                    // options in the xor group has to be present
+                    if( required ) {
+                        auto rptr = xorGroup.begin();
+                        while( rptr!=xorGroup.end() && (*rptr)->__m_count==0 )
+                            rptr++;
+                        if( rptr==xorGroup.end() )
+                            fatal_error(std::cerr, "None of the options of the required group ", allOpts, " are present");
+                    }
                     if( c )
                         previousPostConditions.find(ptr)->second(c, ptr);
                 };
@@ -529,6 +552,8 @@ namespace argparse {
                             exclusive << (nExcl++ ? ", " : "") << pp->__m_usage;
                     exclusive << " }";
                     p->__m_constraints.push_back( exclusive.str() );
+                    if( required )
+                        p->__m_constraints.push_back( "xor:at least one of these options must be given" );
                     this->add_argument( p );
                 }
             }
@@ -559,6 +584,13 @@ namespace argparse {
             // Base-case: stop the recursion (no more options to add to group)
             template <typename...>
             void addXOR_impl(option_list_type&) { }
+
+            // If we encounter a 'required' marker we skip it silently.
+            // Anything else had better be a required marker or an option
+            template <typename... Rest>
+            void addXOR_impl(option_list_type& options, detail::required_t const&, Rest... rest) {
+                this->addXOR_impl(options, std::forward<Rest>(rest)...);
+            }
 
             // Strip off one option and recurse to next
             template <typename... Props, typename... Rest>
