@@ -27,32 +27,53 @@ using signallist_type = std::vector<int>;
 // Introduce a readable overload for a fdptr
 HUMANREADABLE(etdc::etdc_fdptr, "address")
 
+// Let's make the URL syntax at least somewhat similar to that of the client ...
+// The digits under the '(' are the submatch indices of that group
+static const std::regex rxURL{
+    /* protocol */
+    "((tcp|udt)6?)://"
+//   12 
+    /* optional host name or IPv6 'coloned hex' (with optional interface suffix) in literal []'s*/
+    "([-a-z0-9\\.]+|\\[[:0-9a-f]+(/[0-9]{1,3})?(%[a-z0-9\\.]+)?\\])?" 
+//   3                           4             5
+    /* port number - maybe default? */
+    "(:([0-9]+))?"
+//   6 7
+    , std::regex_constants::ECMAScript | std::regex_constants::icase
+};
+
+// the host name may be surrounded by '[' ... ']' for a literal
+// "coloned hex" IPv6 address
+static std::string unbracket(std::string const& h) {
+    static const std::regex rxBracket("\\[([:0-9a-f]+(/[0-9]{1,3})?(%[a-z0-9]+)?)\\]",
+                                      std::regex_constants::ECMAScript | std::regex_constants::icase);
+    return std::regex_replace(h, rxBracket, "$1");
+}
+
+// The template argument is the default port number
+template <unsigned short DefPort>
 struct string2socket_type:
     // we pretend to be a converter!
     public AP::detail::conversion_t {
 
-    // We let the command line parser validate the format on the command
-    // line for us, such that we already know the string adheres to this
-    // format (grmbl - 'static constexpr std::string fmt = "...." don't work
-    // so we must initialize outside the definition FFS)
-    static const std::string fmt;
-
     // to be a converter we must have "void (<target type>&, std::string const&) const"
     // The string is guaranteed to match the regex above :-)
     void operator()(etdc::etdc_fdptr& fd, std::string const& s) const {
-        std::vector<std::string>    proto;
-        std::vector<std::string>    addr;
+        // We're going to repeat the matching: we need the submatches now.
+        // The cmdline has already verified the match so we can do this
+        // unchecked.
+        std::match_results<std::string::const_iterator> m;
 
-        etdc::string_split(s,        '/', std::back_inserter(proto), false);
-        etdc::string_split(proto[1], '@', std::back_inserter(addr),  false);
+        std::regex_match(s, m, rxURL);
 
-        fd = mk_server(proto[0], port(addr[0]), etdc::udt_rcvbuf{2*1024*1024},
-                       etdc::host_type(addr.size()>1 ? addr[1] : std::string()),
-                       etdc::so_rcvbuf{2*1024}, etdc::blocking_type{true});
+        fd = mk_server(etdc::protocol_type(m[1]), etdc::host_type(unbracket(m[3])), // protocol + local addres (if any)
+                       (m[7].length() ? port(m[7]) : port(DefPort) ), // port
+                       etdc::udt_rcvbuf{2*1024*1024}, etdc::so_rcvbuf{2*1024},  // some socket options
+                       etdc::blocking_type{true});
         return;
-    }
+   }
 };
-const std::string string2socket_type::fmt{"(tcp|udt)6?/[0-9]+(@[-\\.a-zA-Z0-9]+)?"};
+
 
 
 ////////////////////////////////////////////////////////////////////////////////////
@@ -99,7 +120,13 @@ int main(int argc, char const*const*const argv) {
     fdlist_type         commandServers, dataServers;
     AP::ArgumentParser  cmd( AP::version( buildinfo() ),
                              AP::docstring("'ftp' like etransfer server daemon, to be used with etransfer client for "
-                                           "high speed file/directory transfers.") );
+                                           "high speed file/directory transfers."),
+                             AP::docstring("addresses are given like (tcp|udt)[6]://[local address][:port]\n"
+                                           "where:\n"
+                                           "    [local address] defaults to all interfaces\n"
+                                           "    [port]          defaults to 4004 (command) or 8008 (data)\n"),
+                             AP::docstring("IPv6 coloned-hex format is supported for [local address] by "
+                                           "enclosing the IPv6 address in square brackets: [fe80::1/64%enp4]") );
 
     // What does our command line look like?
     //
@@ -108,7 +135,7 @@ int main(int argc, char const*const*const argv) {
     //        [-h] [--help] [--version]
     //        [-m <int>]
     //
-    // <address> = [udt|tcp]:<port>[:<local IP>]
+    // <address> = [udt|tcp]/[<local IP>]/<port>
     //             (if <local IP> not given, listen on all interfaces)
 
     cmd.add( AP::long_name("help"), AP::print_help(),
@@ -126,26 +153,20 @@ int main(int argc, char const*const*const argv) {
     // command servers; we require at least one of 'm
     cmd.add( AP::collect_into(commandServers), AP::long_name("command"),
              // Make the system automatically convert the address string into a real sokkit
-             string2socket_type(),
+             string2socket_type<4004>(),
              // Constraints on the number + form of the argument
-             AP::at_least(1), AP::match(string2socket_type::fmt),
+             AP::at_least(1), AP::match(rxURL),
              // And some useful info
-             AP::docstring("Listen on this(these) address(es) for incoming client control connections. "
-                           "At least the protocol and port number must be specified. A local "
-                           "interface address may be given (in host or ip format) to restrict "
-                           "where clients can connect to. The default is to listen on all interfaces.") );
+             AP::docstring("Listen on this(these) address(es) for incoming client control connections.") );
 
     // data servers; we require at least one of those
     cmd.add( AP::collect_into(dataServers), AP::long_name("data"),
              // Make the system automatically convert the address string into a real sokkit
-             string2socket_type(),
+             string2socket_type<8008>(),
              // Constraints on the number + form of the argument
-             AP::at_least(1), AP::match(string2socket_type::fmt),
+             AP::at_least(1), AP::match(rxURL),
              // And some useful info
-             AP::docstring("Listen on this(these) address(es) for incoming client data connections. "
-                           "At least the protocol and port number must be specified. A local "
-                           "interface address may be given (in host or ip format) to restrict "
-                           "where clients can connect to. The default is to listen on all interfaces.") );
+             AP::docstring("Listen on this(these) address(es) for incoming client data connections.") );
 
     // OK Let's check that mother
     cmd.parse(argc, argv);
