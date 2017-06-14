@@ -76,7 +76,7 @@ namespace argparse {
             {
                 // Extract all docstrings - they go into the description
                 auto allDocstr     = detail::get_all<detail::docstring_t>( std::forward_as_tuple(props...) );
-                auto docstrbuilder = std::inserter(__m_description, __m_description.end());
+                auto docstrbuilder = std::back_inserter(__m_description);
 
                 functools::copy(functools::map(allDocstr, detail::docstr_getter_t()), docstrbuilder);
 
