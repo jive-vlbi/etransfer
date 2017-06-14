@@ -34,6 +34,7 @@
 
 // C++
 #include <map>
+#include <regex>
 #include <tuple>
 #include <memory>
 #include <string>
@@ -41,6 +42,8 @@
 #include <functional>
 
 #include <sys/socket.h>
+#include <sys/types.h>
+#include <net/if.h>
 
 
 // Define global ostream operator for struct sockaddr_in[6], dat's handy
@@ -93,11 +96,11 @@ namespace etdc {
 
     template <class CharT, class Traits>
     std::basic_ostream<CharT, Traits>& operator<<(std::basic_ostream<CharT, Traits>& os, ipport_type const& ipport) {
-        return os << std::get<0>(ipport) << ":" << std::get<1>(ipport);
+        return os << std::get<0>(ipport) << "/" << std::get<1>(ipport);
     }
     template <class CharT, class Traits>
     std::basic_ostream<CharT, Traits>& operator<<(std::basic_ostream<CharT, Traits>& os, sockname_type const& sn) {
-        return os << "<" << std::get<0>(sn) << "/" << std::get<1>(sn) << ":" << std::get<2>(sn) << ">";
+        return os << "<" << std::get<0>(sn) << "/" << std::get<1>(sn) << "/" << std::get<2>(sn) << ">";
     }
     // Forward declare
     struct etdc_fd;
@@ -288,6 +291,10 @@ etdc::protocol_type get_protocol(Ts... t) {
 
 
 namespace etdc {
+    // For IPv6 we must be able to extract a scope id to fill in the
+    // sin6_scope_id
+    const std::regex    rxScope("%([a-z0-9\\.]+)", std::regex::ECMAScript | std::regex::icase);
+
     //////////////////////////////////////////////////////////////////
     //
     //                  Factories
@@ -367,8 +374,7 @@ namespace etdc {
                         struct sockaddr_in sa;
                        
                         // Need to resolve? For here we assume empty host means any
-                        //ETDCSYSCALL(etdc::resolve_host<etdc::EmptyMeansAny>(srv.srvHost, SOCK_STREAM, IPPROTO_TCP, sa),
-                        ETDCSYSCALL(etdc::resolve_host<etdc::EmptyMeansAny>(srv.srvHost, SOCK_STREAM, IPPROTO_IP, sa),
+                        ETDCSYSCALL(etdc::resolve_host<etdc::EmptyMeansAny>(srv.srvHost, SOCK_STREAM, IPPROTO_TCP, sa),
                                     "Failed to resolve/tcp '" << srv.srvHost << "'");
 
                         // Set socket options 
@@ -409,10 +415,16 @@ namespace etdc {
                         // Bind to ipport
                         socklen_t           sl( sizeof(struct sockaddr_in6) );
                         struct sockaddr_in6 sa;
-                       
+              
                         // Need to resolve? For here we assume empty host means any
-                        ETDCSYSCALL(etdc::resolve_host<etdc::EmptyMeansAny>(srv.srvHost, SOCK_STREAM, IPPROTO_IPV6, sa),
+                        ETDCSYSCALL(etdc::resolve_host<etdc::EmptyMeansAny>(srv.srvHost, SOCK_STREAM, IPPROTO_TCP, sa),
                                     "Failed to resolve/tcp6 '" << srv.srvHost << "'");
+                        // Support scope id
+                        std::smatch scope;
+                        if( std::regex_search(srv.srvHost, scope, rxScope) )
+                            sa.sin6_scope_id = ::if_nametoindex(scope[1].str().c_str());
+                        else
+                            sa.sin6_scope_id = 0;
 
                         // Set socket options 
                         etdc::setsockopt(pSok->__m_fd, etdc::so_reuseaddr{true}, srv.ipv6_only);
@@ -505,8 +517,14 @@ namespace etdc {
                         etdc::setsockopt(pSok->__m_fd, etdc::udt_reuseaddr{true}, srv.udtBufSize, srv.udtMSS/*, srv.ipv6_only*/);
 
                         // Need to resolve? For here we assume empty host means any
-                        ETDCSYSCALL(etdc::resolve_host<etdc::EmptyMeansAny>(srv.srvHost, SOCK_STREAM, IPPROTO_IPV6, sa),
+                        ETDCSYSCALL(etdc::resolve_host<etdc::EmptyMeansAny>(srv.srvHost, SOCK_STREAM, IPPROTO_TCP, sa),
                                     "Failed to resolve/udt '" << srv.srvHost << "'");
+                        // Support scope id
+                        std::smatch scope;
+                        if( std::regex_search(srv.srvHost, scope, rxScope) )
+                            sa.sin6_scope_id = ::if_nametoindex(scope[1].str().c_str());
+                        else
+                            sa.sin6_scope_id = 0;
 
                         // Get the port info
                         // See "etdc_resolve.h" for FFS glibc shit why we
@@ -567,6 +585,7 @@ namespace etdc {
 
         using client_defaults_map = std::map<std::string, std::function<client_settings(void)>>;
 
+
         // client defaults per protocol type
         static const client_defaults_map client_defaults = {
             {"tcp", []() { return update_clnt.mk(blocking_type{true},
@@ -597,7 +616,7 @@ namespace etdc {
                         struct sockaddr_in sa;
                         
                         // Need to resolve? For clients we assume empty host means not OK!
-                        ETDCSYSCALL(etdc::resolve_host<etdc::EmptyMeansInvalid>(clnt.clntHost, SOCK_STREAM, IPPROTO_IP, sa),
+                        ETDCSYSCALL(etdc::resolve_host<etdc::EmptyMeansInvalid>(clnt.clntHost, SOCK_STREAM, IPPROTO_TCP, sa),
                                     "Failed to resolve/tcp '" << clnt.clntHost << "'");
 
                         // Get the port info
@@ -621,10 +640,20 @@ namespace etdc {
                         // connect to ipport
                         socklen_t           sl( sizeof(struct sockaddr_in6) );
                         struct sockaddr_in6 sa;
-                        
+                       
                         // Need to resolve? For clients we assume empty host means not OK!
-                        ETDCSYSCALL(etdc::resolve_host<etdc::EmptyMeansInvalid>(clnt.clntHost, SOCK_STREAM, IPPROTO_IPV6, sa),
+                        ETDCSYSCALL(etdc::resolve_host<etdc::EmptyMeansInvalid>(clnt.clntHost, SOCK_STREAM, IPPROTO_TCP, sa),
                                     "Failed to resolve/tcp6 '" << clnt.clntHost << "'");
+                        // Support scope id
+                        std::smatch scope;
+                        if( std::regex_search(clnt.clntHost, scope, rxScope) )
+                            sa.sin6_scope_id = ::if_nametoindex(scope[1].str().c_str());
+                        else
+                            sa.sin6_scope_id = 0;
+                        // If there was a scope (%<interface>) suffix we
+                        // should honour that and fill in the sin6_scope_id
+                        // [getaddrinfo doesn't seem to do that?]
+                        ETDCDEBUG(2, "tcp6/resolve_host yields sin6_scope_id=" << sa.sin6_scope_id << std::endl);
 
                         // Get the port info
                         // See "etdc_resolve.h" for FFS glibc shit why we
@@ -651,7 +680,7 @@ namespace etdc {
                         struct sockaddr_in sa;
                         
                         // Need to resolve? For clients we assume empty host means not OK!
-                        ETDCSYSCALL(etdc::resolve_host<etdc::EmptyMeansInvalid>(clnt.clntHost, SOCK_STREAM, IPPROTO_IP, sa),
+                        ETDCSYSCALL(etdc::resolve_host<etdc::EmptyMeansInvalid>(clnt.clntHost, SOCK_STREAM, IPPROTO_TCP, sa),
                                     "Failed to resolve/udt '" << clnt.clntHost << "'");
 
                         // Get the port info
@@ -676,8 +705,14 @@ namespace etdc {
                         struct sockaddr_in6 sa;
                         
                         // Need to resolve? For clients we assume empty host means not OK!
-                        ETDCSYSCALL(etdc::resolve_host<etdc::EmptyMeansInvalid>(clnt.clntHost, SOCK_STREAM, IPPROTO_IPV6, sa),
+                        ETDCSYSCALL(etdc::resolve_host<etdc::EmptyMeansInvalid>(clnt.clntHost, SOCK_STREAM, IPPROTO_TCP, sa),
                                     "Failed to resolve/udt6 '" << clnt.clntHost << "'");
+                        // Support scope id
+                        std::smatch scope;
+                        if( std::regex_search(clnt.clntHost, scope, rxScope) )
+                            sa.sin6_scope_id = ::if_nametoindex(scope[1].str().c_str());
+                        else
+                            sa.sin6_scope_id = 0;
 
                         // Get the port info
                         // See "etdc_resolve.h" for FFS glibc shit why we
