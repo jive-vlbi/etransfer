@@ -156,6 +156,11 @@ namespace etdc {
                    return os << w.__m_value;
                }
 
+        // Test for equality
+        bool operator==(tagged<T, Tags...> const& other) const {
+            return __m_value == other.__m_value;
+        }
+
         // Allow assignments: 3 flavours:
         //    * from a convertable type U
         //    * from own type T
