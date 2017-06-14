@@ -22,7 +22,7 @@
 
 #include <tagged.h>
 #include <reentrant.h>
-#include <streamutil.h>
+#include <etdc_streamutil.h>
 // UDT includes
 #include <udt.h>
 #include <ccc.h>

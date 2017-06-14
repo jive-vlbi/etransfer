@@ -73,7 +73,7 @@
 //
 
 // Own includes
-#include <streamutil.h>   // for repr()
+#include <etdc_streamutil.h>   // for repr()
 
 // C++ headers
 #include <map>

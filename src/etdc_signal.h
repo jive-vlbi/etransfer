@@ -22,9 +22,9 @@
 
 // own includes
 #include <utilities.h>
-#include <streamutil.h>
 #include <reentrant.h>
 #include <etdc_assert.h>
+#include <etdc_streamutil.h>
 #include <etdc_thread_local.h>
 
 // std c++
