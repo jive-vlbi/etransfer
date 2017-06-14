@@ -29,10 +29,18 @@
 #include <type_traits>
 
 // plain old C
+#include <string.h>
 #include <stdlib.h>
 #include <cxxabi.h>
 
 namespace etdc {
+
+    // Sometimes you just *need* to zero-out a struct or object; this
+    // template will do just that
+    template <typename T>
+    void zeroit(T& t) {
+        ::memset((void*)&t, 0, sizeof(T));
+    }
 
     // Sometimes you just *have* to be able to get the (demangled) name from
     // "typeid(T).name()" so as to know what the **** 'T' happens to be.
