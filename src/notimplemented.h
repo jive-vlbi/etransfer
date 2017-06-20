@@ -1,4 +1,7 @@
 // exception + macro to provide an implementation for memberfn that should be overridden and throws if it isn't
+#ifndef NOTIMPLEMENTED_H
+#define NOTIMPLEMENTED_H
+
 #include <string>
 #include <sstream>
 #include <exception>
@@ -55,3 +58,4 @@ class not_implemented_exception:
           throw ::not_implemented_exception(lclOZdreAm.str());\
         }
 
+#endif
