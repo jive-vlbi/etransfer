@@ -2,9 +2,10 @@
 #include <version.h>
 #include <etdc_fd.h>
 #include <reentrant.h>
-#include <etdc_thread.h>
+//#include <etdc_thread.h>
 #include <etdc_debug.h>
 #include <etdc_etd_state.h>
+#include <etdc_etdserver.h>
 #include <etdc_stringutil.h>
 #include <argparse.h>
 
@@ -24,11 +25,54 @@ namespace AP = argparse;
 using fdlist_type     = std::list<etdc::etdc_fdptr>;
 using signallist_type = std::vector<int>;
 
-// Introduce a readable overload for a fdptr
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Map protocol to function-that-prints-some-debug-info about the socket
+//  for that protocol
+//
+///////////////////////////////////////////////////////////////////////////////
+
+static std::map<std::string, std::function<void(etdc::etdc_fdptr, std::string const&)>>
+dbgMap = {
+    {"udt", [](etdc::etdc_fdptr pSok, std::string const& s) {
+                                                                etdc::udt_rcvbuf  rcv;
+                                                                etdc::udt_linger  linger;
+                                                                etdc::getsockopt(pSok->__m_fd, rcv, linger);
+                                                                ETDCDEBUG(1, s << "/UDT rcvbuf = " << rcv << " linger=" << untag(linger).l_onoff << ":" << untag(linger).l_linger << endl);
+                                                            }},
+    {"udt6", [](etdc::etdc_fdptr pSok, std::string const& s) {
+                                                                 etdc::udt_rcvbuf  rcv;
+                                                                 etdc::udt_linger  linger;
+                                                                 etdc::getsockopt(pSok->__m_fd, rcv, linger);
+                                                                 ETDCDEBUG(1, s << "/UDT6 rcvbuf = " << rcv << " linger=" << untag(linger).l_onoff << ":" << untag(linger).l_linger << endl);
+                                                             }},
+    {"tcp", [](etdc::etdc_fdptr pSok, std::string const& s) {
+                                                                etdc::so_rcvbuf  rcv;
+                                                                etdc::getsockopt(pSok->__m_fd, rcv);
+                                                                ETDCDEBUG(1, s << "/TCP rcvbuf = " << rcv << endl);
+                                                            }},
+    {"tcp6", [](etdc::etdc_fdptr pSok, std::string const& s) {
+                                                                 etdc::so_rcvbuf  rcv;
+                                                                 etdc::ipv6_only  ipv6;
+                                                                 etdc::getsockopt(pSok->__m_fd, rcv, ipv6);
+                                                                 ETDCDEBUG(1, s << "/TCP6 rcvbuf = " << rcv << ", ipv6 only = " << ipv6 << endl);
+                                                             }}
+};
+
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Transform string on command line into a working server file descriptor
+//
+///////////////////////////////////////////////////////////////////////////////
+
+// Introduce a readable overload for a fdptr so it'll render human readable
+// in the automatically generated help
 HUMANREADABLE(etdc::etdc_fdptr, "address")
 
-// Let's make the URL syntax at least somewhat similar to that of the client ...
-// The digits under the '(' are the submatch indices of that group
+// Let's make the URL syntax at least somewhat similar to that of the client:
+//     protocol://[local address][:port]
+//
+// In the string below the digits under the '(' are the submatch indices of that group.
 static const std::regex rxURL{
     /* protocol */
     "((tcp|udt)6?)://"
@@ -41,6 +85,7 @@ static const std::regex rxURL{
 //   6 7
     , std::regex_constants::ECMAScript | std::regex_constants::icase
 };
+
 
 // the host name may be surrounded by '[' ... ']' for a literal
 // "coloned hex" IPv6 address
@@ -70,6 +115,10 @@ struct string2socket_type:
                        (m[7].length() ? port(m[7]) : port(DefPort) ), // port
                        etdc::udt_rcvbuf{2*1024*1024}, etdc::so_rcvbuf{2*1024},  // some socket options
                        etdc::blocking_type{true});
+
+        auto socknm =  fd->getsockname(fd->__m_fd);
+        ETDCDEBUG(2, "etd: server is-at " << socknm << endl);
+        dbgMap[get_protocol(socknm)](fd, "server"); 
         return;
    }
 };
@@ -82,7 +131,7 @@ struct string2socket_type:
 //
 ////////////////////////////////////////////////////////////////////////////////////
 template <int> void command_server_thread(etdc::etdc_fdptr fd, etdc::etd_state&);
-template <int> void command_client_thread(etdc::etdc_fdptr fd, etdc::etd_state&);
+template <int> void data_server_thread(etdc::etdc_fdptr fd, etdc::etd_state&);
 
 // Make sure our zignal handlert has C-linkage
 extern "C" {
@@ -157,7 +206,7 @@ int main(int argc, char const*const*const argv) {
              // Constraints on the number + form of the argument
              AP::at_least(1), AP::match(rxURL),
              // And some useful info
-             AP::docstring("Listen on this(these) address(es) for incoming client control connections.") );
+             AP::docstring("Listen on this(these) address(es) for incoming client control connections") );
 
     // data servers; we require at least one of those
     cmd.add( AP::collect_into(dataServers), AP::long_name("data"),
@@ -166,7 +215,7 @@ int main(int argc, char const*const*const argv) {
              // Constraints on the number + form of the argument
              AP::at_least(1), AP::match(rxURL),
              // And some useful info
-             AP::docstring("Listen on this(these) address(es) for incoming client data connections.") );
+             AP::docstring("Listen on this(these) address(es) for incoming client data connections") );
 
     // OK Let's check that mother
     cmd.parse(argc, argv);
@@ -180,13 +229,19 @@ int main(int argc, char const*const*const argv) {
 
     etdc::thread(signal_thread, signallist_type{{SIGHUP, SIGINT, SIGTERM, SIGSEGV}}, std::ref(killSigPromise)).detach();
 
-    // Start threads for the command servers
+    // Start threads for the command+data servers
     etdc::etd_state         serverState;
-    std::list<std::thread>  tids;
+
+    // data servers first such that the command servers know which data
+    // ports are available
+    for(auto&& srv: dataServers) {
+        // Append the data server to the list of possible data servers
+        serverState.dataaddrs.push_back( srv->getsockname(srv->__m_fd) );
+        serverState.add_thread(&data_server_thread<SIGUSR2>, srv, std::ref(serverState));
+    }
 
     for(auto&& srv: commandServers)
-        // etdc::thread starts thread with all sigs blocked!
-        tids.emplace_back(etdc::thread(&command_server_thread<SIGUSR1>, srv, std::ref(serverState)));
+        serverState.add_thread(&command_server_thread<SIGUSR1>, srv, std::ref(serverState));
 
     // Now just wait ..
     killSigFuture.wait();
@@ -196,16 +251,18 @@ int main(int argc, char const*const*const argv) {
     catch( std::exception const& e ) {
         ETDCDEBUG(-1, "main: Caught exception " << e.what() << endl);
     }
+    // Before starting to process cancellations, set the cancel flag
+    std::atomic_store(&serverState.cancelled, true);
 
-    // OK. Process all cancellations and wait for them threads to finish
-    etdc::scoped_lock  lk(serverState.lock);
-
-    for(auto const& cancel: serverState.cancellations)
+    for(auto& cancel: serverState.cancellations)
         cancel();
 
     // Now wait for all of them to finish?
     ETDCDEBUG(3, "main: joining server threads" << endl);
-    for(auto&& tid: tids) {
+
+    // OK. Process all cancellations and wait for them threads to finish
+    etdc::scoped_lock  lk(serverState.lock);
+    for(auto&& tid: serverState.threads) {
         tid.join();
         ETDCDEBUG(4, "     * joined" << endl);
     }
@@ -214,31 +271,11 @@ int main(int argc, char const*const*const argv) {
 }
 
 
-static std::map<std::string, std::function<void(etdc::etdc_fdptr, std::string const&)>>
-   dbgMap = {{"udt", [](etdc::etdc_fdptr pSok, std::string const& s) {
-                            etdc::udt_rcvbuf  rcv;
-                            etdc::getsockopt(pSok->__m_fd, rcv);
-                            ETDCDEBUG(1, s << "/UDT rcvbuf = " << rcv << endl);
-                        }},
-              {"udt6", [](etdc::etdc_fdptr pSok, std::string const& s) {
-                            etdc::udt_rcvbuf  rcv;
-                            etdc::getsockopt(pSok->__m_fd, rcv);
-                            ETDCDEBUG(1, s << "/UDT6 rcvbuf = " << rcv << endl);
-                        }},
-              {"tcp", [](etdc::etdc_fdptr pSok, std::string const& s) {
-                            etdc::so_rcvbuf  rcv;
-                            etdc::getsockopt(pSok->__m_fd, rcv);
-                            ETDCDEBUG(1, s << "/TCP rcvbuf = " << rcv << endl);
-                        }},
-              {"tcp6", [](etdc::etdc_fdptr pSok, std::string const& s) {
-                            etdc::so_rcvbuf  rcv;
-                            etdc::ipv6_only  ipv6;
-                            etdc::getsockopt(pSok->__m_fd, rcv, ipv6);
-                            ETDCDEBUG(1, s << "/TCP6 rcvbuf = " << rcv << ", ipv6 only = " << ipv6 << endl);
-                        }}
-            };
 
-
+// New approach to command_server: there's just one (1) thread function:
+//   1. do blocking accept
+//   2. if fd accepted - spawn new thread with self state
+//   3. thread falls through to handle accepted client
 template <int KillSignal>
 void command_server_thread(etdc::etdc_fdptr pServer, etdc::etd_state& shared_state) {
     // First things first: push ourselves on the list of cancellations
@@ -246,8 +283,7 @@ void command_server_thread(etdc::etdc_fdptr pServer, etdc::etd_state& shared_sta
     // cancellation function send a signal to us :D
     pthread_t                       thisThread = ::pthread_self();
     etdc::UnBlock                   s({KillSignal});
-    std::atomic<bool>               beingCancelled{ false };
-    std::list<std::thread>          tids;
+    etdc::etdc_fdptr                pClient{ pServer };
     etdc::cancellist_type::iterator ourCancellation;
 
     etdc::install_handler(dummy_signal_handler, {KillSignal});
@@ -256,30 +292,50 @@ void command_server_thread(etdc::etdc_fdptr pServer, etdc::etd_state& shared_sta
         // used scoped lock to add ourselves to the list of cancellations
         etdc::scoped_lock lk(shared_state.lock);
         ourCancellation = shared_state.cancellations.insert( shared_state.cancellations.end(),
-                                                 [&](void) {
-                                                    ETDCDEBUG(2, "Cancellation fn/signalling thread for fd=" << pServer->__m_fd << std::endl);
-                                                    // Inform the thread it is being cancelled
-                                                    std::atomic_store_explicit(&beingCancelled, true, std::memory_order_release);
-                                                    pServer->close(pServer->__m_fd);
-                                                    ::pthread_kill(thisThread, KillSignal); }
-                                                );
+                 [&](void) {
+                    // Atomically load the file descriptor we need to cancel
+                    etdc::etdc_fdptr  myFD = std::atomic_load(&pClient);
+
+                    ETDCDEBUG(2, "Cancellation fn/signalling thread for command fd=" << myFD->__m_fd << std::endl);
+                    myFD->close(myFD->__m_fd);
+                    ::pthread_kill(thisThread, KillSignal); }
+               );
     }
 
     try {
         // Now we can get on with our lives
-        auto socknm =  pServer->getsockname(pServer->__m_fd);
-        ETDCDEBUG(2, "etd: server is-at " << socknm << endl);
-        dbgMap[get_protocol(socknm)](pServer, "server"); 
+        if( !std::atomic_load(&shared_state.cancelled) )
+            std::atomic_store(&pClient, pServer->accept(pServer->__m_fd));
 
-        // Start accepting clients!
-        while( true ) {
-            auto clnt = pServer->accept(pServer->__m_fd);
-            if( !clnt )
-                throw std::runtime_error("No incoming client?!");
+        // OK we accepted a client. Now spawn a new acceptor - unless we're calling it a day
+        if( !std::atomic_load(&shared_state.cancelled) )
+            shared_state.add_thread(&command_server_thread<KillSignal>, pServer, std::ref(shared_state));
 
-            // And start a client thread for the incoming connection
-            tids.emplace_back(etdc::thread(&command_client_thread<SIGUSR2>, clnt, std::ref(shared_state)));
-        }
+        if( !pClient )
+            throw std::runtime_error("No incoming command client?!");
+
+        // Now we fall through handling the client
+        auto uuid   = etdc::uuid_type::mk();
+        auto peernm = pClient->getpeername(pClient->__m_fd);
+        ETDCDEBUG(2, "Incoming COMMAND from " << peernm << " [local " << pClient->getsockname(pClient->__m_fd) << "]" << endl << "  UUID=" << uuid << std::endl);
+
+        // Command sockets typically do small messages so we set tcp_nodelay
+        // (if the protocol is TCP-like that is!)
+        if( get_protocol(peernm).find("tcp")!=std::string::npos )
+            etdc::setsockopt(pClient->__m_fd, etdc::tcp_nodelay{true});
+
+        dbgMap[get_protocol(peernm)](pClient, "client"); 
+
+        etdc::ETDServer   srv( std::ref(shared_state) );
+
+        for(auto const& p: srv.listPath("/tmp/*", true))
+            std::cout << "PATH: " << p << std::endl;
+        
+        char    buf[1024];
+        ssize_t n = 0, r;
+        while( (r = pClient->read(pClient->__m_fd, buf, sizeof(buf)))>0 )
+            n += r, cout << "." << flush;
+        ETDCDEBUG(3, "OK - client sent " << n << " bytes" << endl);
 
     }
     catch( std::exception const& e ) {
@@ -288,31 +344,23 @@ void command_server_thread(etdc::etdc_fdptr pServer, etdc::etd_state& shared_sta
     catch( ... ) {
         ETDCDEBUG(-1, "command server thread got unknown exception" << std::endl);
     }
-
-    // Now wait for all spawned clients to finish?
-    ETDCDEBUG(3, "command_server_thread[" << thisThread << "]: joining client threads" << endl);
-    for(auto&& tid: tids) {
-        tid.join();
-        ETDCDEBUG(4, "   [" << thisThread << "]: joined!" << endl);
-    }
-
-    ETDCDEBUG(1, "command server thread terminating" << endl);
-    // Deregister our cancellation - only if we weren't being cancelled.
-    // We only do that if we decided ourselves to call it a day
-    const bool cancelled = std::atomic_load_explicit(&beingCancelled, std::memory_order_acquire);
-
-    if( !cancelled ) {
+    if( !std::atomic_load(&shared_state.cancelled) ) {
         etdc::scoped_lock  lk(shared_state.lock);
         shared_state.cancellations.erase( ourCancellation );
     }
+    ETDCDEBUG(1, "command server thread terminated" << endl);
     return;
 }
 
+// We repeat for data_server threads
 template <int KillSignal>
-void command_client_thread(etdc::etdc_fdptr clnt, etdc::etd_state& shared_state) {
+void data_server_thread(etdc::etdc_fdptr pServer, etdc::etd_state& shared_state) {
+    // First things first: push ourselves on the list of cancellations
+    // But we'll unblock a signal for that such that we can let the
+    // cancellation function send a signal to us :D
     pthread_t                       thisThread = ::pthread_self();
     etdc::UnBlock                   s({KillSignal});
-    std::atomic<bool>               beingCancelled{ false };
+    etdc::etdc_fdptr                pClient{ pServer };
     etdc::cancellist_type::iterator ourCancellation;
 
     etdc::install_handler(dummy_signal_handler, {KillSignal});
@@ -321,61 +369,55 @@ void command_client_thread(etdc::etdc_fdptr clnt, etdc::etd_state& shared_state)
         // used scoped lock to add ourselves to the list of cancellations
         etdc::scoped_lock lk(shared_state.lock);
         ourCancellation = shared_state.cancellations.insert( shared_state.cancellations.end(),
-                                                 [&](void) {
-                                                    ETDCDEBUG(2, "Cancellation fn/signalling client thread for fd=" << clnt->__m_fd << std::endl);
-                                                    // Inform the thread it is being cancelled
-                                                    std::atomic_store_explicit(&beingCancelled, true, std::memory_order_release);
-                                                    clnt->close(clnt->__m_fd);
-                                                    ::pthread_kill(thisThread, KillSignal); }
-                                                );
+                // cancellation function void(void):
+                [&](void) {
+                    // Atomically load the shared pointer
+                    // http://en.cppreference.com/w/cpp/memory/shared_ptr/atomic
+                    etdc::etdc_fdptr  myFD = std::atomic_load(&pClient);
+
+                    ETDCDEBUG(2, "Cancellation fn/signalling thread for data fd=" << myFD->__m_fd << std::endl);
+                    myFD->close(myFD->__m_fd);
+                    ::pthread_kill(thisThread, KillSignal); }
+            );
     }
 
     try {
-        auto peernm = clnt->getpeername(clnt->__m_fd);
-        ETDCDEBUG(2, "Incoming from " << peernm << " [local " << clnt->getsockname(clnt->__m_fd) << "]" << endl);
+        // Now we can get on with our lives - atomically store the client's
+        // file descriptor as soon as accept() returns
+        if( !std::atomic_load(&shared_state.cancelled) )
+            std::atomic_store(&pClient, pServer->accept(pServer->__m_fd));
 
-        dbgMap[get_protocol(peernm)](clnt, "client"); 
+        // OK we accepted a client. Now spawn a new acceptor - unless we're calling it a day
+        if( !std::atomic_load(&shared_state.cancelled) )
+            shared_state.add_thread(&data_server_thread<KillSignal>, pServer, std::ref(shared_state));
+
+        if( !pClient )
+            throw std::runtime_error("No incoming data client?!");
+
+        // Now we fall through handling the client
+        auto peernm = pClient->getpeername(pClient->__m_fd);
+        ETDCDEBUG(2, "Incoming DATA from " << peernm << " [local " << pClient->getsockname(pClient->__m_fd) << "]" << endl);
+
+        dbgMap[get_protocol(peernm)](pClient, "client"); 
         
         char    buf[1024];
         ssize_t n = 0, r;
-        while( (r = clnt->read(clnt->__m_fd, buf, sizeof(buf)))>0 )
+        while( (r = pClient->read(pClient->__m_fd, buf, sizeof(buf)))>0 )
             n += r, cout << "." << flush;
         ETDCDEBUG(3, "OK - client sent " << n << " bytes" << endl);
     }
     catch( std::exception const& e ) {
-        ETDCDEBUG(-1, "command client thread got exception: " << e.what() << std::endl);
+        ETDCDEBUG(-1, "data server thread got exception: " << e.what() << std::endl);
     }
     catch( ... ) {
-        ETDCDEBUG(-1, "command client thread got unknown exception" << std::endl);
+        ETDCDEBUG(-1, "data server thread got unknown exception" << std::endl);
     }
-
-    ETDCDEBUG(1, "command client thread terminating" << endl);
-
     // Deregister our cancellation - only if we weren't being cancelled.
-    // We only do that if we decided ourselves to call it a day
-    const bool cancelled = std::atomic_load_explicit(&beingCancelled, std::memory_order_acquire);
-
-    if( !cancelled ) {
+    if( !std::atomic_load(&shared_state.cancelled) ) {
         etdc::scoped_lock  lk(shared_state.lock);
         shared_state.cancellations.erase( ourCancellation );
     }
+    ETDCDEBUG(1, "data server thread terminated" << endl);
     return;
 }
 
-#if 0
-auto pServer = mk_server(proto, port(8008), etdc::udt_rcvbuf{2*1024*1024}, etdc::so_rcvbuf{2*1024}, etdc::blocking_type{true});
-#endif
-
-
-#if 0
-#include <etdc_signal.h>
-#include <etdc_thread.h>
-//#include <keywordargs.h>
-#include <stdkeys.h>
-
-namespace stdkeys = etdc::stdkeys;
-
-#include <list>
-#include <utility>
-#include <iostream>
-#endif

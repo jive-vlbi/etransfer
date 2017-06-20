@@ -76,7 +76,7 @@ mkobjs=$(foreach O, $(patsubst %.c, %.co, $(patsubst %.cc, %.cco, $(patsubst %.S
 #         only set this variable if you actually need it
 
 # etransfer daemon
-etd_SRC=src/etd.cc src/reentrant.cc src/etdc_fd.cc
+etd_SRC=src/etd.cc src/reentrant.cc src/etdc_fd.cc src/etdc_etdserver.cc
 etd_VERSION=0.1
 etd_RELEASE=dev
 etd_OBJS=$(call mkobjs,etd)
