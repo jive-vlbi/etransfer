@@ -125,6 +125,11 @@ namespace etdc {
             ::snprintf( buff + 19, sizeof(buff)-19, ".%02ld: ", (long int)(raw_t1m3.tv_usec / 10000) );
             return buff;
         }
+        // stupid trick to shut up compiler warning-cum-error if you include
+        // etdc_debug.h but do not use it: you'd get an "unused-function"
+        // warning for the static timestamp() function. So by triggering it
+        // in here we circumvent that :D
+        static const std::string what_time_was_it{ timestamp() };
     } // namespace detail 
 
     // get current debuglevel
