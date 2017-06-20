@@ -49,7 +49,9 @@ namespace etdc {
     // good. Let's have more of those. With the new 'enum class' we can't
     // mistake e.g. MaskOp::setMask with plain old integers anymore!!!!!! Yay!
     enum class MaskOp : int { setMask = SIG_SETMASK, addMask = SIG_BLOCK, delMask = SIG_UNBLOCK, getMask = getMaskValue };
-    std::ostream& operator<<(std::ostream& os, MaskOp const& mo ) {
+
+    template <typename... Traits>
+    std::basic_ostream<Traits...>& operator<<(std::basic_ostream<Traits...>& os, MaskOp const& mo ) {
         const int val = static_cast<int>(mo);
 #define KEES(a) case a: os << #a; break
         switch( val ) {
@@ -69,26 +71,26 @@ namespace etdc {
     // How to display the sigmask is kept per thread ...
     //thread_local MaskDisplayFormat curMaskDisplay{ MaskDisplayFormat::defaultMaskFormat };
     using maskdisplaystack_type = std::stack<MaskDisplayFormat>;
-    etdc::tls_object_type<MaskDisplayFormat>     curMaskDisplay{ MaskDisplayFormat::defaultMaskFormat };
-    etdc::tls_object_type<maskdisplaystack_type> maskDisplayStack;
+    static etdc::tls_object_type<MaskDisplayFormat>     curMaskDisplay{ MaskDisplayFormat::defaultMaskFormat };
+    static etdc::tls_object_type<maskdisplaystack_type> maskDisplayStack;
 
-    template <class CharT, class Traits>
-    std::basic_ostream<CharT, Traits>& showMaskInHRF(std::basic_ostream<CharT, Traits>& os ) {
+    template <typename... Traits>
+    std::basic_ostream<Traits...>& showMaskInHRF(std::basic_ostream<Traits...>& os ) {
         curMaskDisplay = MaskDisplayFormat::showMaskInHRF;
         return os;
     } 
-    template <class CharT, class Traits>
-    std::basic_ostream<CharT, Traits>& showMaskInHex(std::basic_ostream<CharT, Traits>& os ) {
+    template <typename... Traits>
+    std::basic_ostream<Traits...>& showMaskInHex(std::basic_ostream<Traits...>& os ) {
         curMaskDisplay = MaskDisplayFormat::showMaskInHex;
         return os;
     } 
-    template <class CharT, class Traits>
-    std::basic_ostream<CharT, Traits>& pushMaskDisplayFormat(std::basic_ostream<CharT, Traits>& os ) {
+    template <typename... Traits>
+    std::basic_ostream<Traits...>& pushMaskDisplayFormat(std::basic_ostream<Traits...>& os ) {
         maskDisplayStack->push( curMaskDisplay );
         return os;
     } 
-    template <class CharT, class Traits>
-    std::basic_ostream<CharT, Traits>& popMaskDisplayFormat(std::basic_ostream<CharT, Traits>& os ) {
+    template <typename... Traits>
+    std::basic_ostream<Traits...>& popMaskDisplayFormat(std::basic_ostream<Traits...>& os ) {
         if( maskDisplayStack->empty() )
             throw std::logic_error("Attempt to pop maskDisplayFormat from empty stack!");
         curMaskDisplay = maskDisplayStack->top();
