@@ -156,6 +156,7 @@ namespace etdc {
     using udt_reuseaddr = detail::BooleanUDTOption<UDT_REUSEADDR>;
     using udt_sndsyn    = detail::BooleanUDTOption<UDT_SNDSYN>;
     using udt_rcvsyn    = detail::BooleanUDTOption<UDT_RCVSYN>;
+    using udt_linger    = detail::SocketOption<struct linger, detail::UDTName<UDT_LINGER>, tags::udt_option, detail::Level<-1>, tags::settable, tags::gettable>;
 
     // UDT Congestion Control
     template <typename T>
