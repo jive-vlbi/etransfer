@@ -35,12 +35,28 @@
 
 namespace etdc {
 
-    // Sometimes you just *need* to zero-out a struct or object; this
-    // template will do just that
+    // Simple wrapper template to zero-initialize C-style structs which
+    // makes them still usable as the C-structs that they are:
+    //
+    // in stead of:
+    //      struct glob_t  g;
+    //      ::memset(&g, 0, sizeof(glob_t));
+    //
+    //      ...
+    //      for(size_t i = 0; i<g.gl_pathc; ...)
+    //
+    // do:
+    //      Zero<struct glob_t> g;
+    //
+    //      ...
+    //      for(size_t i=0; i<g.gl_pathc; ...)
+    //
     template <typename T>
-    void zeroit(T& t) {
-        ::memset((void*)&t, 0, sizeof(T));
-    }
+    struct Zero: public T {
+        Zero() {
+            ::memset((void *)const_cast<Zero<T>*>(this), 0x0, sizeof(*this));
+        }
+    };
 
     // Sometimes you just *have* to be able to get the (demangled) name from
     // "typeid(T).name()" so as to know what the **** 'T' happens to be.
