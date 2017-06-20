@@ -41,9 +41,13 @@
 #include <iostream>
 #include <functional>
 
-#include <sys/socket.h>
-#include <sys/types.h>
+// Plain-old-C
+#include <fcntl.h>
+#include <libgen.h>
 #include <net/if.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/socket.h>
 
 
 // Define global ostream operator for struct sockaddr_in[6], dat's handy
@@ -217,6 +221,31 @@ namespace etdc {
             void setup_basic_fns( void );
     };
 
+    namespace detail {
+        std::string normalize_path(std::string const&);
+        std::string dirname(std::string const&);
+
+        // Introduce the template which whill recursively create directories if necessary
+        template <typename... Args>
+        int open_file(std::string const& path, int mode, Args&&...);
+    }
+    struct etdc_file:
+        public etdc_fd
+    {
+        etdc_file()    = delete;
+
+        // Take extra arguments that we can forward to ::open(2)
+        template <typename... Args>
+        explicit etdc_file(std::string const& path, Args&&... args) {
+            ETDCSYSCALL( (__m_fd=detail::open_file(path, std::forward<Args>(args)...))!=-1,
+                         "failed to open/create '" << path << "' - " << etdc::strerror(errno) );
+            setup_basic_fns();
+        }
+
+        private:
+            void setup_basic_fns( void );
+    };
+
 // End of the etdc namespace
 }
 
@@ -325,6 +354,7 @@ namespace etdc {
             etdc::so_rcvbuf  rcvBufSize {};
             etdc::udt_rcvbuf udtBufSize {};
             etdc::ipv6_only  ipv6_only  {};
+            etdc::udt_linger udtLinger  {};
         };
         const etdc::construct<server_settings>  update_srv( &server_settings::blocking,
                                                             &server_settings::backLog,
@@ -333,7 +363,8 @@ namespace etdc {
                                                             &server_settings::rcvBufSize,
                                                             &server_settings::udtBufSize,
                                                             &server_settings::udtMSS,
-                                                            &server_settings::ipv6_only );
+                                                            &server_settings::ipv6_only,
+                                                            &server_settings::udtLinger );
 
         using server_defaults_map = std::map<std::string, std::function<server_settings(void)>>;
 
@@ -350,13 +381,13 @@ namespace etdc {
             {"udt", []() { return update_srv.mk(backlog_type{4},
                                                 blocking_type{true},
                                                 etdc::udt_rcvbuf{defaultUDTBufSize},
-                                                any_port,
+                                                any_port, etdc::udt_linger{{0,0}},
                                                 etdc::udt_mss{1500});
                          }},
             {"udt6", []() { return update_srv.mk(backlog_type{4},
                                                 blocking_type{true},
                                                 etdc::udt_rcvbuf{defaultUDTBufSize},
-                                                any_port, etdc::ipv6_only{true},
+                                                any_port, etdc::udt_linger{{0,0}},
                                                 etdc::udt_mss{1500});
                          }}
         };
@@ -451,12 +482,10 @@ namespace etdc {
 
                         // And we can now actually enable the accept function
                         pSok->accept = [=](int f) {
-                            ETDCDEBUG(2, "waiting for incoming TCP6 connection ..." << std::endl);
                             socklen_t            ipl( sizeof(struct sockaddr_in6) );
                             struct sockaddr_in6  ip;
                             int                  fd = ::accept(f, reinterpret_cast<struct sockaddr*>(&ip), &ipl);
 
-                            ETDCDEBUG(2, "OK accept6 returned fd=" << fd << std::endl);
                             // fd<0 is not an error if blocking + errno == EAGAIN || EWOULDBLOCK
                             ETDCSYSCALL(fd>0 || (!srv.blocking && fd==-1 && (errno==EAGAIN || errno==EWOULDBLOCK)),
                                         "failed to accept on tcp6[" << sa << "] - " << etdc::strerror(errno));
@@ -470,7 +499,7 @@ namespace etdc {
                         struct sockaddr_in sa;
                         
                         // Set a couple of socket options
-                        etdc::setsockopt(pSok->__m_fd, etdc::udt_reuseaddr{true}, srv.udtBufSize, srv.udtMSS);
+                        etdc::setsockopt(pSok->__m_fd, etdc::udt_reuseaddr{true}, srv.udtBufSize, srv.udtMSS, srv.udtLinger);
 
                         // Need to resolve? For here we assume empty host means any
                         ETDCSYSCALL(etdc::resolve_host<etdc::EmptyMeansAny>(srv.srvHost, SOCK_STREAM, IPPROTO_TCP, sa),
@@ -514,7 +543,7 @@ namespace etdc {
                         
                         // Set a couple of socket options
                         // Note: we cannot set the IPv6 only option through the UDT library at the moment
-                        etdc::setsockopt(pSok->__m_fd, etdc::udt_reuseaddr{true}, srv.udtBufSize, srv.udtMSS/*, srv.ipv6_only*/);
+                        etdc::setsockopt(pSok->__m_fd, etdc::udt_reuseaddr{true}, srv.udtBufSize, srv.udtMSS, srv.udtLinger);
 
                         // Need to resolve? For here we assume empty host means any
                         ETDCSYSCALL(etdc::resolve_host<etdc::EmptyMeansAny>(srv.srvHost, SOCK_STREAM, IPPROTO_TCP, sa),
@@ -574,6 +603,7 @@ namespace etdc {
             etdc::so_sndbuf  sndBufSize {};
             etdc::udt_sndbuf udtBufSize {};
             etdc::ipv6_only  ipv6_only  {};
+            etdc::udt_linger udtLinger  {};
         };
         const etdc::construct<client_settings>  update_clnt( &client_settings::blocking,
                                                              &client_settings::clntPort,
@@ -581,7 +611,8 @@ namespace etdc {
                                                              &client_settings::sndBufSize,
                                                              &client_settings::udtMSS,
                                                              &client_settings::udtBufSize,
-                                                             &client_settings::ipv6_only );
+                                                             &client_settings::ipv6_only,
+                                                             &client_settings::udtLinger );
 
         using client_defaults_map = std::map<std::string, std::function<client_settings(void)>>;
 
@@ -595,14 +626,14 @@ namespace etdc {
                                                  any_port );
                          }},
             {"udt", []() { return update_clnt.mk(etdc::udt_mss{1500},
-                                                 any_port,
+                                                 any_port, etdc::udt_linger{{0, 0}},
                                                  etdc::udt_sndbuf{defaultUDTBufSize},
                                                  blocking_type{true});
                          }},
             {"udt6", []() { return update_clnt.mk(etdc::udt_mss{1500},
                                                  // UDT does not allow direct access to the real socket so we can't really
                                                  // set an option at the IPPROTO_IPV6 level.
-                                                 any_port, /*etdc::ipv6_only{true},*/ 
+                                                 any_port, etdc::udt_linger{{0,0}},
                                                  etdc::udt_sndbuf{defaultUDTBufSize},
                                                  blocking_type{true});
                          }}
@@ -650,10 +681,6 @@ namespace etdc {
                             sa.sin6_scope_id = ::if_nametoindex(scope[1].str().c_str());
                         else
                             sa.sin6_scope_id = 0;
-                        // If there was a scope (%<interface>) suffix we
-                        // should honour that and fill in the sin6_scope_id
-                        // [getaddrinfo doesn't seem to do that?]
-                        ETDCDEBUG(2, "tcp6/resolve_host yields sin6_scope_id=" << sa.sin6_scope_id << std::endl);
 
                         // Get the port info
                         // See "etdc_resolve.h" for FFS glibc shit why we
@@ -689,7 +716,7 @@ namespace etdc {
                         sa.sin_port = etdc::htons_( clnt.clntPort );
 
                         // Set socket options
-                        etdc::setsockopt(pSok->__m_fd, clnt.udtBufSize, clnt.udtMSS);
+                        etdc::setsockopt(pSok->__m_fd, clnt.udtBufSize, clnt.udtMSS, clnt.udtLinger);
 
                         // Make sure sokkit is in correct blocking mode
                         pSok->setblocking(pSok->__m_fd, etdc::untag(clnt.blocking));
@@ -721,7 +748,7 @@ namespace etdc {
 
                         // Set socket options
                         // Note: we cannot currently set the IPv6 only option through the UDT library
-                        etdc::setsockopt(pSok->__m_fd, clnt.udtBufSize, clnt.udtMSS/*, clnt.ipv6_only*/);
+                        etdc::setsockopt(pSok->__m_fd, clnt.udtBufSize, clnt.udtMSS, clnt.udtLinger);
 
                         // Make sure sokkit is in correct blocking mode
                         pSok->setblocking(pSok->__m_fd, etdc::untag(clnt.blocking));
@@ -835,4 +862,33 @@ std::basic_ostream<CharT, Traits>& operator<<(std::basic_ostream<CharT, Traits>&
     return os << buf << ":" << etdc::ntohs_(sa.sin6_port);
 }
 
+namespace etdc { namespace detail {
+        // Introduce the template which whill recursively create directories if necessary
+        template <typename... Args>
+        int open_file(std::string const& path, int mode, Args&&... args) {
+            const std::string npath = normalize_path(path);
+
+            // Now we can iterate over all the entries and create them if necessary
+            if( (mode&O_CREAT)==O_CREAT ) {
+                // we're expected to (attempt to) create the thing
+                const std::string      dir( detail::dirname(npath) );
+                std::string::size_type slash = dir.find(1, '/');
+                // iteratively start growing the path and attempt to create if not exist
+                while( slash!=std::string::npos ) {
+                    // Create the path - searchable for everyone, r,w,x for usr
+                    //if( ::mkdir(dir.substr(0, slash, 0755).c_str(), )==-1 && errno!=EEXIST )
+                    const std::string path_so_far{ dir.substr(0, slash) };
+                    ETDCASSERT(::mkdir(path_so_far.c_str(), 0755)==0 || errno==EEXIST,
+                               "Failed to create path '" << path_so_far << "' - " << etdc::strerror(errno) );
+                    // And look for the next slash
+                    slash = dir.find(slash+1, '/');
+                }
+            }
+            // Rite-o. Directories may have been created, now we can attempt to
+            // actually open the file
+            return ::open(npath.c_str(), mode, std::forward<Args>(args)...);
+        }
+        
+    } //namespace detail 
+} // namespace etdc
 #endif

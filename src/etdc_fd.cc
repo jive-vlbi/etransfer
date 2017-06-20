@@ -6,6 +6,7 @@
 #include <etdc_nullfn.h>
 
 #include <ios>
+#include <regex>
 #include <stdexcept>
 #include <functional>
 
@@ -68,7 +69,9 @@ namespace etdc {
 
             ETDCASSERT( ::inet_ntop(AF_INET6, &saddr.sin6_addr, addr_s, len)!=nullptr,
                         "inet_ntop() fails - "<< etdc::strerror(errno) );
-            return mk_sockname(proto(p), host(addr_s), port(etdc::ntohs_(saddr.sin6_port)));
+            // IPv6 'coloned-hex' format does square brackets around it, to
+            // be able to separate it from the ":port" suffix
+            return mk_sockname(proto(p), host(std::string("[")+addr_s+"]"), port(etdc::ntohs_(saddr.sin6_port)));
         }
     }
 
@@ -170,6 +173,7 @@ namespace etdc {
         // The wrapper's signatures do.
         ssize_t udtrecv(int s, void* b, size_t n, int f) {
             int   r = UDT::recv((UDTSOCKET)s, (char*)b, (int)n, f);
+
             if( r!=UDT::ERROR )
                 return (ssize_t)r;
             // Hmmm. recv returned an error
@@ -304,4 +308,115 @@ namespace etdc {
     }
 
     etdc_udt6::~etdc_udt6() {}
-}
+
+
+    ////////////////////////////////////////////////////////////////
+    //   I/O to a regular file
+    ////////////////////////////////////////////////////////////////
+    void etdc_file::setup_basic_fns( void ) {
+        // Update basic read/write/close functions
+        // and on files seek() makes sense!
+        etdc::update_fd(*this, read_fn(&::read), write_fn(&::write), close_fn(&::close),
+                               setblocking_fn(&setfdblockingmode),
+                               // we wrap the ::lseek() inna error check'n lambda dat does error check'n
+                               lseek_fn([](int fd, off_t offset, int whence) { 
+                                   off_t  rv;
+                                   ETDCASSERT((rv=::lseek(fd, offset, whence))!=(off_t)-1, "lseek fails - " << etdc::strerror(errno));
+                                   return rv;
+                                   })
+        );
+    }
+
+    namespace detail {
+        // normalize path according to http://en.cppreference.com/w/cpp/filesystem/path
+        // but we limit ourselves to '/' as preferred path separator.
+        // Numbers below correspond to the step numbers in the algorithm described in the mentioned URL.
+        //
+        // Note: we do this here because currently our c++ only goes to 11, not 17 yet!
+        // (In c++17 the filesystem library should be used)
+        std::string normalize_path(std::string const& p) {
+            // We keep the regexes statically compiled
+            static const std::regex rxMultipleSeparators("(/+)");
+            static const std::regex rxDotSlash("(/\\.(/|$))");
+            static const std::regex rxDirSlashDotDot("(/(?!\\.\\.)[^/]+/\\.\\./)");
+            static const std::regex rxRootDotDotSlash("^/((\\.\\./)*)");
+            static const std::regex rxTrailingDotDot("/\\.\\./$");
+
+            // Start with a copy of the input
+            std::string result( p );
+
+            // 2) multiple path separators into 1
+            //result = std::regex_replace(result, regex("(/+)"), "/");
+            result = std::regex_replace(result, rxMultipleSeparators, "/");
+
+            // 4) Remove each dot and any immediately following directory-separator.
+            //    we only remove /./ because we don't want to strip leading "./"
+            //    nor break anything of the form ".../aap./..."
+            //result = regex_replace(result, regex("(/\\.(/|$))"), "/");
+            result = std::regex_replace(result, rxDotSlash, "/");
+
+            // 5) Remove each non-dot-dot filename immediately followed by a directory-separator and a dot-dot,
+            //    along with any immediately following directory-separator.
+            bool    done = false;
+            while( !done ) {
+                //const string new_result( regex_replace(result, regex("(/(?!\\.\\.)[^/]+/\\.\\./)"), "/") );
+                const std::string new_result( std::regex_replace(result, rxDirSlashDotDot, "/") );
+                done   = (new_result==result);
+                result = new_result;
+            }
+
+            // 6) If there is root-directory, remove all dot-dots and any directory-separators immediately following them.
+            //result = regex_replace(result, regex("^/((\\.\\./)*)"), "/");
+            result = std::regex_replace(result, rxRootDotDotSlash, "/");
+
+            // 7) If the last filename is dot-dot, remove any trailing directory-separator.
+            //result = regex_replace(result, regex("/\\.\\./$"), "/..");
+            result = std::regex_replace(result, rxTrailingDotDot, "/..");
+
+            // 8) If the path is empty, add a dot (normal form of ./ is .)
+            if( result.empty() )
+                result = ".";
+            return result;
+        }
+
+        // ::dirname(3) requires a writable string! Eeeeks!
+        // reproduce the following behaviour:
+        // Note: the "category" column added by HV, first three columns taken from 
+        //       "man 3 basename"
+        //
+        // path       dirname   basename  category
+        // /usr/lib   /usr      lib       (1)
+        // /usr/      /         usr       (1)
+        // usr        .         usr       (2)
+        // /          /         /         (3)
+        // .          .         .         (3)
+        // ..         .         ..        (3)
+        std::string dirname(std::string const& path) {
+            // Any of the 'special' paths retun themselves [category (3)]
+            if( path=="/" || path=="." || path==".." )
+                return path;
+
+            // from basename(3) (on OSX):
+            // "If path is a null pointer, the empty string, or contains no `/'
+            // characters, dirname() returns a pointer to the string ".",
+            // signifying the current directory."
+            if( path.empty() or path.find('/')==std::string::npos )
+                return ".";
+
+            // OK inspect what we got
+            std::string::size_type epos = (path.empty() ? 0 : path.size()-1);
+
+            // igore any trailing '/'es to make sure that epos 'points' at the last non-slash character;
+            // we don't want to find the trailing slash
+            while( epos>0 && path[epos]=='/' )
+                epos -= 1;
+            // Look for the last-but-one slash
+            const std::string::size_type slash = path.rfind('/', epos);
+            // no slash at all? [category (2)]
+            if( slash==std::string::npos )
+                return ".";
+            // Remaining category [(1)] is the substring from start of path up to the slash
+            return path.substr(0, slash+1);
+        }
+    } // namespace detail
+} // namespace etdc
