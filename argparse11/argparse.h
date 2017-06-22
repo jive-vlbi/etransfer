@@ -493,7 +493,7 @@ namespace argparse {
                 std::ostringstream  alloptions;
                 alloptions << "{ ";
                 for(auto& p: xorGroup) {
-                    alloptions << (nCount++ ? ", " : "") << p->__m_usage;
+                    alloptions << (nCount++ ? " | " : "") << p->__m_usage;
                     previousPreConditions[p.get()]  = p->__m_precondition_f;
                     previousPostConditions[p.get()] = p->__m_postcondition_f;
                 }
@@ -515,7 +515,7 @@ namespace argparse {
                     // count that it is the same as the some that we're
                     // testing now
                     if( alreadyPresent && alreadyPresent!=ptr )
-                        fatal_error(std::cerr, "The options '", alreadyPresent->__m_usage, "' and '", ptr->__m_usage, "' are mutually exclusive");
+                        fatal_error(std::cerr, "The alternatives '", alreadyPresent->__m_usage, "' and '", ptr->__m_usage, "' are mutually exclusive");
                     // Now verify any precondition(s) for the option that we're looking at
                     previousPreConditions.find(ptr)->second(c, ptr);
                 };
@@ -530,7 +530,7 @@ namespace argparse {
                         while( rptr!=xorGroup.end() && (*rptr)->__m_count==0 )
                             rptr++;
                         if( rptr==xorGroup.end() )
-                            fatal_error(std::cerr, "None of the options of the required group ", allOpts, " are present");
+                            fatal_error(std::cerr, "None of the alternatives of the required group ", allOpts, " are present");
                     }
                     if( c )
                         previousPostConditions.find(ptr)->second(c, ptr);
@@ -549,11 +549,11 @@ namespace argparse {
                     exclusive << "xor:mutually exclusive with { ";
                     for(auto pp: xorGroup)
                         if( pp!=p )
-                            exclusive << (nExcl++ ? ", " : "") << pp->__m_usage;
+                            exclusive << (nExcl++ ? " | " : "") << pp->__m_usage;
                     exclusive << " }";
                     p->__m_constraints.push_back( exclusive.str() );
                     if( required )
-                        p->__m_constraints.push_back( "xor:at least one of these options must be given" );
+                        p->__m_constraints.push_back( "xor:at least one of these alternatives must be present" );
                     this->add_argument( p );
                 }
             }
