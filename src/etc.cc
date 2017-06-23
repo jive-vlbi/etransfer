@@ -2,6 +2,8 @@
 #include <version.h>
 #include <etdc_fd.h>
 #include <etdc_thread.h>
+#include <etdc_etd_state.h>
+#include <etdc_etdserver.h>
 #include <etdc_stringutil.h>
 #include <etdc_streamutil.h>
 #include <argparse.h>
@@ -14,7 +16,6 @@
 #include <iterator>
 #include <iostream>
 #include <functional>
-
 
 using namespace std;
 namespace AP = argparse;
@@ -107,6 +108,7 @@ std::basic_ostream<CharT, Traits>& operator<<(std::basic_ostream<CharT, Traits>&
 }
 
 HUMANREADABLE(url_type, "URL")
+HUMANREADABLE(etdc::openmode_type, "file copy mode")
 
 // Make sure our zignal handlert has C-linkage
 extern "C" {
@@ -119,6 +121,7 @@ int main(int argc, char const*const*const argv) {
     etdc::BlockAll         ba;
     // Let's set up the command line parsing
     int                    message_level = 0;
+    etdc::openmode_type    mode{ etdc::openmode_type::New };
     AP::ArgumentParser     cmd( AP::version( buildinfo() ),
                                 AP::docstring("'ftp' like etransfer client program.\n"
                                               "This is to be used with etransfer daemon (etd) for "
@@ -148,6 +151,27 @@ int main(int argc, char const*const*const argv) {
              AP::maximum_value(5), AP::minimum_value(-1), AP::at_most(1),
              AP::docstring("Message level - higher = more output") );
 
+    // User can choose between:
+    //  * the target file(s) may not exist [default]
+    //  * the target file(s) may or may not exits but will be truncated if
+    //    they do [basically retransmit everything, "overwrite"]
+    //  * the target file(s) may or may not exist, exisiting files will be
+    //    appended to [resume]
+    cmd.addXOR(
+            AP::option(AP::store_const_into(etdc::openmode_type::OverWrite, mode), AP::long_name("overwrite"),
+                       AP::docstring("Existing target file(s) will be overwritten (default: target file(s) may not exist)"),
+                       AP::at_most(1)),
+            AP::option(AP::store_const_into(etdc::openmode_type::Resume, mode), AP::long_name("resume"),
+                       AP::docstring("Existing target file(s) will be appended to (default: target file(s) may not exist)"),
+                       AP::at_most(1))
+        );
+
+    cmd.add(AP::long_name("mode"), AP::at_most(1), AP::store_value<etdc::openmode_type>(),
+            AP::set_default(etdc::openmode_type::New),
+            AP::is_member_of({etdc::openmode_type::New, etdc::openmode_type::OverWrite, etdc::openmode_type::Resume, etdc::openmode_type::SkipExisting}),
+            AP::docstring("Set file copy mode"),
+            AP::convert([](std::string const& s) { std::istringstream iss(s); etdc::openmode_type om; iss >> om; return om; }));
+
     // Let the command line parser decide the validity - "--list URL" or "URL URL"
     // are mutually exclusive and IF they are present, the constraint(s) of
     // the one that is present are enforced.
@@ -165,6 +189,9 @@ int main(int argc, char const*const*const argv) {
                    AP::docstring("SRC and DST URL/PATH"))
         );
 
+    // Flag wether or not to wait
+    cmd.add(AP::store_true(), AP::short_name('b'), AP::docstring("Do not exit but do a blocking read instead"));
+
     // OK Let's check that mother
     cmd.parse(argc, argv);
 
@@ -173,6 +200,21 @@ int main(int argc, char const*const*const argv) {
 
     // The size of the list of URLs is a proxy wether to list or not; a
     // list of length one is only accepted if '--list URL' was given
+    etdc::UnBlock                   s({SIGINT});
+    etdc::install_handler(dummy_signal_handler, {SIGINT});
+
+    etdc::etd_state                 localState{};
+    std::list<etdc::etd_server_ptr> servers;
+
+    // We must transform the URL(s) into ETDServerInterface* 
+    std::transform(std::begin(urls), std::end(urls), std::back_inserter(servers),
+                   [&](url_type const& url) {
+                        return url.isLocal ? mk_etdserver(std::ref(localState)) : mk_etdproxy(url.protocol, url.host, url.port);
+                    });
+    if( servers.size()==1 )
+        for(auto const& p: (*servers.begin())->listPath(urls.begin()->path, false))
+            std::cout << p << std::endl;
+#if 0
     for(const auto& u: urls)
         std::cout << (urls.size()==1 ? "LIST: " : "") << u << std::endl;
 
@@ -186,6 +228,13 @@ int main(int argc, char const*const*const argv) {
     const auto data = "012345";
     pClnt->write(pClnt->__m_fd, data, sizeof(data));
     cout << "wrote " << sizeof(data) << " bytes" << endl;
+
+    if( cmd.get<bool>("b") ) {
+        char buf[128];
+        cout << "entering blocking read" << endl;
+        pClnt->read(pClnt->__m_fd, buf, sizeof(buf));
+    }
+#endif
     return 0;
 }
 

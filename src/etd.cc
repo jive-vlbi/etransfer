@@ -315,9 +315,8 @@ void command_server_thread(etdc::etdc_fdptr pServer, etdc::etd_state& shared_sta
             throw std::runtime_error("No incoming command client?!");
 
         // Now we fall through handling the client
-        auto uuid   = etdc::uuid_type::mk();
         auto peernm = pClient->getpeername(pClient->__m_fd);
-        ETDCDEBUG(2, "Incoming COMMAND from " << peernm << " [local " << pClient->getsockname(pClient->__m_fd) << "]" << endl << "  UUID=" << uuid << std::endl);
+        ETDCDEBUG(2, "Incoming COMMAND from " << peernm << " [local " << pClient->getsockname(pClient->__m_fd) << "]" << endl);
 
         // Command sockets typically do small messages so we set tcp_nodelay
         // (if the protocol is TCP-like that is!)
@@ -326,17 +325,8 @@ void command_server_thread(etdc::etdc_fdptr pServer, etdc::etd_state& shared_sta
 
         dbgMap[get_protocol(peernm)](pClient, "client"); 
 
-        etdc::ETDServer   srv( std::ref(shared_state) );
-
-        for(auto const& p: srv.listPath("/tmp/*", true))
-            std::cout << "PATH: " << p << std::endl;
-        
-        char    buf[1024];
-        ssize_t n = 0, r;
-        while( (r = pClient->read(pClient->__m_fd, buf, sizeof(buf)))>0 )
-            n += r, cout << "." << flush;
-        ETDCDEBUG(3, "OK - client sent " << n << " bytes" << endl);
-
+        // Fall into ETDServerWrapper
+        etdc::ETDServerWrapper   srv(pClient, std::ref(shared_state));
     }
     catch( std::exception const& e ) {
         ETDCDEBUG(-1, "command server thread got exception: " << e.what() << std::endl);
