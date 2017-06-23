@@ -17,6 +17,8 @@
 //          Joint Institute for VLBI in Europe
 //          P.O. Box 2
 //          7990 AA Dwingeloo
+#ifndef ETDC_STRINGUTIL_H
+#define ETDC_STRINGUTIL_H
 
 #include <regex>
 #include <string>
@@ -44,4 +46,33 @@ namespace etdc {
         std::copy(std::sregex_token_iterator(std::begin(s), std::end(s), rxSplit, -1),
                   std::sregex_token_iterator(), output);
     }
+    
+    namespace detail {
+        // case insensitive sorting [lexicographical compare: is l < r?]
+        template <typename Char>
+        struct case_insensitive_lt_t {
+            bool operator()(Char l, Char r) const {
+                return ::toupper((unsigned char)l) < ::toupper((unsigned char)r);
+            }
+        };
+        // case insensitive equality: is l==r?
+        template <typename Char>
+        struct case_insensitive_eq_t {
+            bool operator()(Char l, Char r) const {
+                return ::toupper((unsigned char)l) == ::toupper((unsigned char)r);
+            }
+        };
+    }
+
+    // the libc stringcompare functions return 0 if they're equal, i.e. false if equal.
+    // let's mimic that behaviour to not upset users
+    template <typename Char, typename... Traits>
+    bool stricmp(std::basic_string<Char, Traits...> const& l, std::basic_string<Char, Traits...> const& r) {
+        static const detail::case_insensitive_eq_t<Char> ci_comparator{};
+        if( l.size()==r.size() )
+            return std::equal(std::begin(l), std::end(l), std::begin(r), ci_comparator);
+        return false;
+    }
 } // namespace etdc
+
+#endif // include guard
