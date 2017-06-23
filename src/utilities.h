@@ -304,6 +304,8 @@ namespace etdc {
     //     iterate over the same sequence. This is possible because the
     //     iterators do not modify the underlying Sequence object.
     //     Incrementing one iterator does not invalidate an other.
+    //
+    /////////////////////////////////////////////////////////////////////////////////////////
     template <typename T>
     struct Sequence {
         // delete stuff that we really don't want to enable
@@ -424,6 +426,33 @@ namespace etdc {
     // Expose only this into the etdc namespace
     template <typename... Ts>
     using common_type = detail::m_common_type<Ts...>;
+
+
+    /////////////////////////////////////////////////////////////////////////////////////////
+    //
+    // Sometimes it is really handy to be able to use first()/second() to
+    // extract elements from tuple/pair &cet
+    //
+    // The following structs can act as functor to extract the n-th element 
+    // of any thing that supports "std::get<N>(...)"
+    //
+    /////////////////////////////////////////////////////////////////////////////////////////
+    template <std::size_t N>
+    struct nth_type {
+        explicit nth_type() {}
+
+        template <typename T>
+        auto operator()(T const& t) const -> decltype( std::get<N>(t) ) {
+            return std::get<N>(t);
+        }
+        template <typename T>
+        auto operator()(T& t) const -> decltype( std::get<N>(t) ) {
+            return std::get<N>(t);
+        }
+    };
+    // shorthands - handy for std::pair
+    using fst_type = nth_type<0>;
+    using snd_type = nth_type<1>;
 }
 
 #endif // ETDC_UTILITIES_H
