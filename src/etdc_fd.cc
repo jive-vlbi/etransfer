@@ -231,14 +231,41 @@ namespace etdc {
         }
         // Again, UDT does not provide their API with socklen_t
         // so we wrap and make sure that sizeof socklen_t is compatible with
-        // what UDT expects
+        // what UDT expects.
+        // Also: the error handling for UDT APIs is different from libc. Jeebus.
+        static const std::map<int, int> sockname_udt2libc{ {CUDTException::ENOCONN,   ENOTCONN}, 
+                                                           {CUDTException::EINVPARAM, EINVAL},
+                                                           {CUDTException::EINVSOCK,  ENOTSOCK} };
+
         int udt_sockname(int fd, struct sockaddr* addr, socklen_t* sl) {
             static_assert(sizeof(socklen_t)==sizeof(int), "UDT parameter int not compatible with socklen_t");
-            return UDT::getsockname(fd, addr, reinterpret_cast<int*>(sl));
+
+            const int udt_rv = UDT::getsockname(fd, addr, reinterpret_cast<int*>(sl));
+            // OK that didn't work - need to extract the UDT error and translate to standard errno
+            if( udt_rv==UDT::ERROR ) {
+                UDT::ERRORINFO   udtinfo( UDT::getlasterror() );
+                auto const       pErr = sockname_udt2libc.find(udtinfo.getErrorCode());
+
+                ETDCASSERT(pErr!=sockname_udt2libc.end(),
+                           "UDT::getsockname() returned unrecognized error code " << udtinfo.getErrorCode() << " - " << udtinfo.getErrorMessage());
+                errno = pErr->second;
+            }
+            return (udt_rv==UDT::ERROR);
         }
         int udt_peername(int fd, struct sockaddr* addr, socklen_t* sl) {
             static_assert(sizeof(socklen_t)==sizeof(int), "UDT parameter int not compatible with socklen_t");
-            return UDT::getpeername(fd, addr, reinterpret_cast<int*>(sl));
+
+            const int udt_rv = UDT::getpeername(fd, addr, reinterpret_cast<int*>(sl));
+            // OK that didn't work - need to extract the UDT error and translate to standard errno
+            if( udt_rv==UDT::ERROR ) {
+                UDT::ERRORINFO   udtinfo( UDT::getlasterror() );
+                auto const       pErr = sockname_udt2libc.find(udtinfo.getErrorCode());
+
+                ETDCASSERT(pErr!=sockname_udt2libc.end(),
+                           "UDT::getpeername() returned unrecognized error code " << udtinfo.getErrorCode() << " - " << udtinfo.getErrorMessage());
+                errno = pErr->second;
+            }
+            return (udt_rv==UDT::ERROR);
         }
     }
 
