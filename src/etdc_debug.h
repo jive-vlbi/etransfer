@@ -108,48 +108,33 @@
 namespace etdc {
 
     namespace detail {
-        static std::mutex       __m_iolock{};
+        extern std::mutex       __m_iolock;
         // if msglevel<=dbglevel it is printed
-        static std::atomic<int> __m_dbglev{1};
+        extern std::atomic<int> __m_dbglev;
         // if dbglevel>=fnthres_val level => functionnames are printed in DEBUG()
-        static std::atomic<int> __m_fnthres{5};
+        extern std::atomic<int> __m_fnthres;
 
-        static std::string timestamp( void ) {
-            char           buff[32];
-            struct tm      raw_tm;
-            struct timeval raw_t1m3;
-
-            ::gettimeofday(&raw_t1m3, NULL);
-            ::gmtime_r(&raw_t1m3.tv_sec, &raw_tm);
-            ::strftime( buff, sizeof(buff), "%Y-%m-%d %H:%M:%S", &raw_tm );
-            ::snprintf( buff + 19, sizeof(buff)-19, ".%02ld: ", (long int)(raw_t1m3.tv_usec / 10000) );
-            return buff;
-        }
-        // stupid trick to shut up compiler warning-cum-error if you include
-        // etdc_debug.h but do not use it: you'd get an "unused-function"
-        // warning for the static timestamp() function. So by triggering it
-        // in here we circumvent that :D
-        static const std::string what_time_was_it{ timestamp() };
+        std::string timestamp( void );
     } // namespace detail 
 
     // get current debuglevel
     inline int dbglev_fn( void ) {
-        return detail::__m_dbglev.load(std::memory_order_acquire);
+        return std::atomic_load(&detail::__m_dbglev);
     }
 
     // set current level to 'n', returns previous level
     inline int dbglev_fn( int n ) {
-        return std::atomic_exchange_explicit(&detail::__m_dbglev, n, std::memory_order_release);
+        return std::atomic_exchange(&detail::__m_dbglev, n);
     }
 
     // Similar for function name printing threshold
     inline int fnthres_fn( void ) {
-        return detail::__m_fnthres.load(std::memory_order_acquire);
+        return std::atomic_load(&detail::__m_fnthres);
     }
 
     // set current level to 'n', returns previous level
     inline int fnthres_fn( int n ) {
-        return std::atomic_exchange_explicit(&detail::__m_fnthres, n, std::memory_order_release);
+        return std::atomic_exchange(&detail::__m_fnthres, n);
     }
 
 
@@ -293,11 +278,11 @@ namespace etdc {
 //
 #define ETDCDEBUG(a, b) \
     do {\
-        if( a<=etdc::detail::__m_dbglev.load(std::memory_order_acquire) ) {\
+        if( a<=std::atomic_load(&etdc::detail::__m_dbglev) ) {\
             std::ostringstream OsS_ZyP;\
             /* could introduce flag for printing time stamp? */ \
             OsS_ZyP << etdc::detail::timestamp();\
-            if( etdc::detail::__m_dbglev.load(std::memory_order_acquire)>=etdc::detail::__m_fnthres.load(std::memory_order_acquire) ) \
+            if( std::atomic_load(&etdc::detail::__m_dbglev)>=std::atomic_load(&etdc::detail::__m_fnthres) ) \
                 OsS_ZyP << ETDCDBG_FUNC; \
             OsS_ZyP << b;\
             std::lock_guard<std::mutex> OsZyp_Lck(etdc::detail::__m_iolock);\
