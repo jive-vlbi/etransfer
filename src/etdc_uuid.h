@@ -18,7 +18,7 @@ namespace etdc {
             uuid_type()   = delete;
 
             template <typename X, typename... Args>
-            uuid_type(X&& x, Args&&... args): std::string(std::forward<X>(x), std::forward<Args>(args)...) {
+            explicit uuid_type(X&& x, Args&&... args): std::string(std::forward<X>(x), std::forward<Args>(args)...) {
                 // After construction, assert that we're non-empty
                 ETDCASSERT(this->empty()==false, "UUID cannot be empty");
             }
