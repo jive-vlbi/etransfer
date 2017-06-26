@@ -17,30 +17,13 @@
 #include <thread>
 #include <utility>
 #include <iostream>
+#include <exception>
 #include <algorithm>
 #include <functional>
+#include <condition_variable>
 
 
 namespace etdc {
-
-    namespace gory_detail {
-
-        //using os_flag_type  = decltype(O_RDONLY);
-
-#ifdef O_LARGEFILE
-    #define LARGEFILEFLAG O_LARGEFILE
-#else
-    #define LARGEFILEFLAG (decltype(O_RDONLY)(0))
-#endif
-
-        //constexpr os_flag_type large_file = 0;
-        //constexpr os_flag_type used_flags = O_RDONLY | O_CREAT | O_EXCL | O_WRONLY | O_APPEND | O_TRUNC | large_file;
-
-        // Now we need to invent a bit that is not one of the flags we
-        // actually use
-        //static os_flag_type find_free_flag(os_flag_type in_use) {
-        //const auto IGNORE_EXISTING = std::max({O_RDONLY, O_CREAT, O_EXCL, O_WRONLY, O_APPEND, O_TRUNC, LARGEFILEFLAG}) * 2;
-    }
 
     // When requesting file access we want to restrict the options to this
     enum class openmode_type : int {
@@ -115,25 +98,68 @@ namespace etdc {
 
     // Keep global server state
     struct etd_state {
-        std::mutex           lock;
-        cancellist_type      cancellations;
-        threadlist_type      threads;
-        transfermap_type     transfers;
-        std::atomic<bool>    cancelled;
-        dataaddrlist_type    dataaddrs;
+        std::mutex              lock;
+        unsigned int            n_threads;
+        cancellist_type         cancellations;
+        transfermap_type        transfers;
+        std::atomic<bool>       cancelled;
+        dataaddrlist_type       dataaddrs;
+        std::condition_variable condition;
 
-        etd_state() : cancelled{ false }
+        etd_state() : n_threads{ 0 }, cancelled{ false }
         {}
+
 
         // To prevent deadlock we first construct the thread 
         // and after the fact, grab a lock and modify the shared state
-        template <typename... Args>
-        void add_thread(Args&&... args) {
-            scoped_lock lk( lock );
+        template <typename F, typename... Args>
+        void add_thread(F&& f, Args&&... args) {
+            std::unique_lock<std::mutex> lk( lock );
             // by using etdc::thread we make sure that the started thread 
             // has all signals blocked
-            threads.emplace_back(etdc::thread(std::forward<Args>(args)...));
+            if( !std::atomic_load(&cancelled) ) {
+                etdc::thread(etd_state_thread_s(), std::ref(const_cast<etd_state&>(*this)), std::forward<F>(f), std::forward<Args>(args)...).detach();
+                n_threads++;
+            }
+            condition.notify_all();
         }
+
+        ~etd_state() {
+            ETDCDEBUG(4, "~etd_state/need to wait for " << n_threads << " threads" << std::endl);
+            std::unique_lock<std::mutex>  lk( lock );
+            // Wait for n_threads to reach 0
+            condition.wait(lk, [this](){ return n_threads==0; } );
+        }
+
+        private:
+            // This struct will act as templated function call functor.
+            // We wrap the *actual* thread function inside this function,
+            // which will catch the exceptions and handle the bookkeeping
+            // no matter how the actual function chooses to exit.
+            struct etd_state_thread_s {
+                template <typename Callable, typename... Args>
+                void operator()(etd_state& shared_state, Callable&& callable, Args&&... args) const {
+                    std::exception_ptr eptr;
+                    // Attempt to execute the function with the arguments
+                    // Catch any exceptions and then automatically decrement the
+                    // thread counter
+                    try {
+                        std::forward<Callable>(callable)( std::forward<Args>(args)... );
+                    }
+                    catch( ... ) {
+                        // Capture exception
+                        eptr = std::current_exception();
+                    }
+                    // Do bookkeeping - the thread is about to exit
+                    std::unique_lock<std::mutex> lk( shared_state.lock );
+                    shared_state.n_threads--;
+                    shared_state.condition.notify_all();
+
+                    // And retrow if necessary
+                    if( eptr )
+                        std::rethrow_exception(eptr);
+                }
+            };
     };
 }
 

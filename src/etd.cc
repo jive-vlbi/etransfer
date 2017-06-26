@@ -258,14 +258,6 @@ int main(int argc, char const*const*const argv) {
         cancel();
 
     // Now wait for all of them to finish?
-    ETDCDEBUG(3, "main: joining server threads" << endl);
-
-    // OK. Process all cancellations and wait for them threads to finish
-    etdc::scoped_lock  lk(serverState.lock);
-    for(auto&& tid: serverState.threads) {
-        tid.join();
-        ETDCDEBUG(4, "     * joined" << endl);
-    }
     ETDCDEBUG(1, "main: terminating." << endl);
     return 0;
 }
