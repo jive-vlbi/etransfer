@@ -850,7 +850,10 @@ namespace argparse {
     //
     ///////////////////////////////////////////////////////////////////////////////////
     struct docstring: std::string, detail::docstring_t {
-        using std::string::string;
+        template <typename... Args>
+        explicit docstring(Args&&... args):
+            std::string(std::forward<Args>(args)...) 
+        {}
         std::string const& docstr( void ) const {
             return *this;
         }
