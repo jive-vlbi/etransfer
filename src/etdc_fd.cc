@@ -278,7 +278,6 @@ namespace etdc {
         setup_basic_fns();
     }
     etdc_udt::etdc_udt(int fd) {
-        std::cout << "etdc_udt::etdc_udt(int " << fd << ")" << std::endl;
         ETDCASSERT(fd>=0, "constructing UDT file descriptor from invalid fd#" << fd);
         __m_fd = fd;
         // Update basic read/write/close functions
@@ -406,7 +405,7 @@ namespace etdc {
             return result;
         }
 
-        // ::dirname(3) requires a writable string! Eeeeks!
+        // ::dirname(3) and ::basename(3) require writable strings! Eeeeks!
         // reproduce the following behaviour:
         // Note: the "category" column added by HV, first three columns taken from 
         //       "man 3 basename"
@@ -445,5 +444,40 @@ namespace etdc {
             // Remaining category [(1)] is the substring from start of path up to the slash
             return path.substr(0, slash+1);
         }
+
+        std::string basename(std::string const& path) {
+            static const std::regex allSlash("^\\\\+$");
+            // Any of the 'special' paths retun themselves [category (3)]
+            if( path=="/" || path=="." || path==".." )
+                return path;
+
+            // from basename(3) (on OSX):
+            // "If path is a null pointer(*) or the empty string, a pointer to the string "." is returned."
+            // (*) we don't have that possibility here so don't have to check for that
+            if( path.empty() )
+                return ".";
+
+            // "If path consists entirely of `/' characters, a pointer to the string "/" is returned.
+            if( std::regex_match(path, allSlash) )
+                return "/";
+            
+            // "The basename() function returns the last component from the pathname pointed to by path, deleting any trailing `/' characters."
+            // We've already ruled out the case that path consists of all slashes.
+            // So now we must remove all trailing slashes
+            auto  lastNonSlash = path.rbegin();
+            // We can do this w/o any testing because of our previous assertions:
+            //  * path is non-empty so *iter is always valid
+            //  * path does not consist of all slashes so we're guaranteed to find a non-slash
+            //    before hitting path.rend()
+            while( *lastNonSlash=='/' )
+                lastNonSlash++;
+
+            // Now we must find the bit of string between lastNonSlash and the next
+            std::string rv;
+            std::reverse_copy(lastNonSlash, std::find(lastNonSlash, path.rend(), '/'), std::back_inserter(rv));
+            return rv;
+       }
+
+
     } // namespace detail
 } // namespace etdc

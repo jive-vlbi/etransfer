@@ -94,18 +94,43 @@ namespace etdc {
     static constexpr port_type any_port = port_type{ (unsigned short)0 };
 
     // ipport_type:   <host> : <port>
-    // sockname_type: <type> : <host> : <port>
+    // sockname_type: <type> / <host> : <port>
     using ipport_type   = std::tuple<host_type, port_type>;
     using sockname_type = std::tuple<protocol_type, host_type, port_type>;
 
+    template <typename CharT, typename... Traits>
+    std::basic_string<CharT, Traits...> bracket(std::basic_string<CharT, Traits...> const& s) {
+        using stype = std::basic_string<CharT, Traits...>;
+        // If the host name contains ":", "%" or "/" it means we may be looking at IPv6 hexformat
+        // and then we bracket the host name to '[ .... ]'
+        if( s.empty() )
+            return s;
+        // From here on we know that s is not empty
+        auto const colon = s.find(':'), slash = s.find('/'), percent = s.find('%');
+        // If we suspect s is an IPv6 literal but is already bracketed then don't do that again
+        if( (colon==stype::npos && slash==stype::npos && percent==stype::npos) || s[0]=='[' )
+            return s;
+        return stype("[") + s + "]";
+    }
+
+    // the host name may be surrounded by '[' ... ']' for a literal
+    // "coloned hex" IPv6 address
+    template <typename CharT, typename... Traits>
+    std::basic_string<CharT, Traits...> unbracket(std::basic_string<CharT, Traits...> const& h) {
+        static const std::regex rxBracket("\\[([:0-9a-fA-F]+(/[0-9]{1,3})?(%[a-zA-Z0-9]+)?)\\]",
+                                          std::regex_constants::ECMAScript | std::regex_constants::icase);
+        return std::regex_replace(h, rxBracket, "$1");
+    }
+
     template <class CharT, class Traits>
     std::basic_ostream<CharT, Traits>& operator<<(std::basic_ostream<CharT, Traits>& os, ipport_type const& ipport) {
-        return os << std::get<0>(ipport) << "/" << std::get<1>(ipport);
+        return os << "<" << bracket(std::get<0>(ipport)) << ":" << std::get<1>(ipport) << ">";
     }
     template <class CharT, class Traits>
     std::basic_ostream<CharT, Traits>& operator<<(std::basic_ostream<CharT, Traits>& os, sockname_type const& sn) {
-        return os << "<" << std::get<0>(sn) << "/" << std::get<1>(sn) << "/" << std::get<2>(sn) << ">";
+        return os << "<" << std::get<0>(sn) << "/" << bracket(std::get<1>(sn)) << ":" << std::get<2>(sn) << ">";
     }
+
     // Forward declare
     struct etdc_fd;
     using etdc_fdptr     = std::shared_ptr<etdc_fd>;
@@ -165,7 +190,8 @@ namespace etdc {
     };
 
     static const etdc::construct<etdc_fd> update_fd( &etdc_fd::read, &etdc_fd::write, &etdc_fd::close, &etdc_fd::accept,
-                                                     &etdc_fd::getsockname, &etdc_fd::getpeername, &etdc_fd::setblocking );
+                                                     &etdc_fd::getsockname, &etdc_fd::getpeername, &etdc_fd::setblocking,
+                                                     &etdc_fd::lseek );
 
     //////////////////////////////////////////////////////////////////
     //
@@ -224,6 +250,7 @@ namespace etdc {
     namespace detail {
         std::string normalize_path(std::string const&);
         std::string dirname(std::string const&);
+        std::string basename(std::string const&);
 
         // Introduce the template which whill recursively create directories if necessary
         template <typename... Args>
@@ -868,20 +895,38 @@ namespace etdc { namespace detail {
         int open_file(std::string const& path, int mode, Args&&... args) {
             const std::string npath = normalize_path(path);
 
+            ETDCDEBUG(5, "open_file/npath='" << npath << "'" << std::endl);
             // Now we can iterate over all the entries and create them if necessary
             if( (mode&O_CREAT)==O_CREAT ) {
                 // we're expected to (attempt to) create the thing
                 const std::string      dir( detail::dirname(npath) );
-                std::string::size_type slash = dir.find(1, '/');
+                // XXX NOTE:
+                // std::string.find(...) has (as one of the overloads):
+                //     .find(CharT ch, size_type pos)
+                //
+                //  and I was calling it as:
+                //     .find(1, '/')
+                //  Even with the warnings turned up to 11 and more
+                //  not a single chirp from either clang (MacOS) or g++ (Loonix)
+                //  But obviously it ain't gonna work that way!
+                //
+                //  Also tried compiling with -fsigned-char and calling as
+                //      .find(1, char('/')) 
+                //  to see if we could trigger a signed/unsigned warning
+                //  (std::string::size_type is usually unsigned and 
+                //  "char('/')" should be signed per -fsigned-char
+                //  but also nothing ...
+                std::string::size_type slash = dir.find('/', 1);
+                ETDCDEBUG(5, "open_file/O_CREAT is set, dir='" << dir << "'" << std::endl);
                 // iteratively start growing the path and attempt to create if not exist
                 while( slash!=std::string::npos ) {
                     // Create the path - searchable for everyone, r,w,x for usr
-                    //if( ::mkdir(dir.substr(0, slash, 0755).c_str(), )==-1 && errno!=EEXIST )
                     const std::string path_so_far{ dir.substr(0, slash) };
+                    ETDCDEBUG(5, "open_file/path_so_far='" << path_so_far << "'" << std::endl);
                     ETDCASSERT(::mkdir(path_so_far.c_str(), 0755)==0 || errno==EEXIST,
                                "Failed to create path '" << path_so_far << "' - " << etdc::strerror(errno) );
                     // And look for the next slash
-                    slash = dir.find(slash+1, '/');
+                    slash = dir.find('/', slash+1);
                 }
             }
             // Rite-o. Directories may have been created, now we can attempt to
