@@ -10,14 +10,41 @@
 
 // C++ headers
 #include <list>
+#include <regex>
 #include <string>
 #include <memory>
+#include <type_traits>
 
 namespace etdc {
     using filelist_type     = std::list<std::string>;
     using result_type       = std::tuple<etdc::uuid_type, off_t>;
 
-    uuid_type const& get_uuid(result_type const& res);
+    // On some systems off_t is an 'alias' for long long int, on others for
+    // long int. So when converting between string and off_t we must choose
+    // between std::stoll or std::stol.
+    // Note that we probably also could've done "istringstream iss >> off_t"
+    // But then we need to check the istream's state afterwards because if
+    // the conversion fails it sets the fail/bad bit(s) on the istream.
+    // The advantage of stol(l) is that they immediately throw on fishyness.
+
+    // base template that isn't really there
+    template <typename T>
+    void string2off_t(std::string const&, T&); 
+
+    // Two specializations 
+    template <> void string2off_t<long int>     (std::string const&, long int&);
+    template <> void string2off_t<long long int>(std::string const&, long long int&);
+
+    // get either the uuid or the off_t out of a result type.
+    // The template(s) follow the constness of their argument and return "&" or "const &" to the extracted type
+    template <typename T, typename = typename std::enable_if<std::is_same<typename std::decay<T>::type, result_type>::value>::type>
+    typename std::conditional<std::is_const<T>::value, const uuid_type&, uuid_type&>::type get_uuid(T t) {
+        return std::get<0>(t);
+    }
+    template <typename T, typename = typename std::enable_if<std::is_same<typename std::decay<T>::type, result_type>::value>::type>
+    typename std::conditional<std::is_const<T>::value, const off_t&, off_t&>::type get_filepos(T t) {
+        return std::get<1>(t);
+    }
 
     // This is really just an interface, defining the API for the e-transfer thingamabob
     class ETDServerInterface {
@@ -64,7 +91,7 @@ namespace etdc {
         public:
             explicit ETDServer(etdc::etd_state& shared_state):
                 __m_uuid( etdc::uuid_type::mk() ), __m_shared_state( shared_state )
-            {}
+            { ETDCDEBUG(2, "ETDServer starting, my uuid=" << __m_uuid << std::endl); }
 
             virtual filelist_type     listPath(std::string const& /*path*/, bool /*allow tilde expansion*/) const;
 
@@ -103,23 +130,23 @@ namespace etdc {
 
             virtual filelist_type     listPath(std::string const& /*path*/, bool /*allow tilde expansion*/) const;
 
-            virtual result_type       requestFileWrite(std::string const&, openmode_type) NOTIMPLEMENTED;
-            virtual result_type       requestFileRead(std::string const&,  off_t) NOTIMPLEMENTED;
-            virtual dataaddrlist_type dataChannelAddr( void ) const NOTIMPLEMENTED;
+            virtual result_type       requestFileWrite(std::string const&, openmode_type);
+            virtual result_type       requestFileRead(std::string const&,  off_t);
+            virtual dataaddrlist_type dataChannelAddr( void ) const;
 
             // Canned sequence?
             virtual bool          sendFile(uuid_type const& /*srcUUID*/, uuid_type const& /*dstUUID*/,
-                                           off_t /*todo*/, dataaddrlist_type const& /*remote*/) NOTIMPLEMENTED;
+                                           off_t /*todo*/, dataaddrlist_type const& /*remote*/);
             virtual bool          getFile (uuid_type const& /*srcUUID*/, uuid_type const& /*dstUUID*/,
                                            off_t /*todo*/, dataaddrlist_type const& /*remote*/) NOTIMPLEMENTED;
 
-            virtual bool          removeUUID(etdc::uuid_type const&) NOTIMPLEMENTED;
+            virtual bool          removeUUID(etdc::uuid_type const&);
             virtual std::string   status( void ) const NOTIMPLEMENTED;
 
             virtual ~ETDProxy() {}
 
         private:
-            // We operate on shared state
+            // Because we are a proxy we only have a connection to the other end
             etdc::etdc_fdptr    __m_connection;
     };
 
@@ -164,11 +191,20 @@ namespace etdc {
         public:
             ETDDataServer(etdc::etdc_fdptr conn, etdc::etd_state& shared_state):
                 __m_connection(conn), __m_shared_state(shared_state)
-            {}
+            { ETDCASSERT(__m_connection, "The data server must have a valid connection");
+              this->handle(); }
 
         private:
             etdc::etdc_fdptr                        __m_connection;
             std::reference_wrapper<etdc::etd_state> __m_shared_state;
+
+            void handle( void );
+
+            static void pull_n(size_t n, etdc::etdc_fdptr& src, etdc::etdc_fdptr& dst,
+                               size_t rdPos, const size_t endPos, const size_t bufSz, std::unique_ptr<char[]>& buf);
+            static void push_n(size_t n, etdc::etdc_fdptr& src, etdc::etdc_fdptr& dst,
+                               size_t rdPos, const size_t endPos, const size_t bufSz, std::unique_ptr<char[]>& buf);
+
     };
 } // namespace etdc
 
