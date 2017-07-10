@@ -21,32 +21,31 @@ using namespace std;
 namespace AP = argparse;
 
 // The client may support local URLs by just using "/path/to/file"
-// so the whole "protocol://[user@]host[:port]" prefix must be optional
 //
+// Better shtick to what ppl understand:
+//  [[(tcp|udt)6?://][user@]host[#port]/]path
 //
-// Note: the digits under the '(' are the submatch indices of that group
 static const std::regex rxURL{
     /* remote prefix is optional! */
     "("
 //   1
     /* protocol */
-    "((tcp|udt)6?)://"
-//   23 
+    "(((tcp|udt)6?)://)?"
+//   234 
     /* optional user@ prefix */
     "(([a-z0-9]+)@)?" 
-//   45
+//   56
     /* non-optional host name or IPv6 colon 'coloned hex' (with optional interface suffix) in literal []'s*/
-    "([-a-z0-9\\.]+|\\[[:0-9a-f]+(/[0-9]{1,3})?(%[a-z0-9\\.]+)?\\])" 
-//   6                           7             8
+    "([-a-zA-Z0-9_\\.]*|\\[[:0-9a-fA-F]+(/[0-9]{1,3})?(%[a-zA-Z0-9\\.]+)?\\])" 
+//   7                                  8             9
     /* port number - maybe default? */
-    "(:([0-9]+))?"
-//   9 10
+    "(#([0-9]+))?"
+//   1011
     /* remote prefix is optional!*/
-    ")?"
-//
-    /* optional path following non-optional slash */
-    "(/.*)"
-//   11 
+    ":)?"
+    /* path is whatever's left */
+    "(.+)"
+//   12
     , std::regex_constants::ECMAScript | std::regex_constants::icase
 };
 
@@ -75,35 +74,29 @@ struct str2url_type:
 
         std::regex_match(s, m, rxURL);
         // path HAS to be there
-        url.path = m[11];
+        url.path = m[12];
 
         // If local path, then we're done
         if( (url.isLocal=(m[1].length()==0)) )
             return;
 
         // Not local: extract+convert the matched groups
-        url.protocol = etdc::protocol_type(m[2]);
-        url.user     = m[5];
-        url.host     = etdc::host_type( str2url_type::unbracket(m[6]) );
-        url.port     = (m[10].length() ? port(m[10]) : port(4004));
+        url.protocol = (m[3].length() ? etdc::protocol_type(m[3]) : etdc::protocol_type("tcp"));
+        url.user     = m[6];
+        url.host     = etdc::host_type( etdc::unbracket(m[7].str()) );
+        url.port     = (m[11].length() ? port(m[11]) : port(4004));
     }
 
-    // the host name may be surrounded by '[' ... ']' for a literal
-    // "coloned hex" IPv6 address
-    static std::string unbracket(std::string const& h) {
-        static const std::regex rxBracket("\\[([:0-9a-f]+(/[0-9]{1,3})?(%[a-z0-9]+)?)\\]",
-                                          std::regex_constants::ECMAScript | std::regex_constants::icase);
-        return std::regex_replace(h, rxBracket, "$1");
-    }
 };
 template <class CharT, class Traits>
 std::basic_ostream<CharT, Traits>& operator<<(std::basic_ostream<CharT, Traits>& os, url_type const& url) {
     os << (url.isLocal ? "PATH: " : "URL: ");
     if( !url.isLocal )
-        os << url.protocol << "://"
+        os << url.protocol << ":"
            << (url.user.empty() ? "" : url.user+"@")
            << url.host 
-           << ((url.port == etdc::any_port) ? "" : std::string(":")+etdc::repr(url.port));
+           << ((url.port == etdc::any_port) ? "" : std::string(":")+etdc::repr(url.port))
+           << "://";
     return os << url.path;
 }
 
@@ -128,7 +121,7 @@ int main(int argc, char const*const*const argv) {
                                               "high speed file/directory transfers or it can be used "
                                               "to list the contents of a remote directory, if the remote "
                                               "etransfer daemon allows your credentials to do so."),
-                                AP::docstring("Remote URLs are formatted as (tcp|udt)[6]://[user@]host[:port]/path\n"
+                                AP::docstring("Remote URLs are formatted as ((tcp|udt)[6]://)[user@]host[:port]/path\n"
                                               "Paths on the local machine are specified just as /<path> (i.e. absolute path)") );
     // The URLs from the command line
     unsigned int           nLocal = 0;
@@ -151,6 +144,10 @@ int main(int argc, char const*const*const argv) {
              AP::maximum_value(5), AP::minimum_value(-1), AP::at_most(1),
              AP::docstring("Message level - higher = more output") );
 
+    // verbosity
+    cmd.add( AP::store_false(), AP::short_name('v'), AP::long_name("verbose"),
+             AP::at_most(1), AP::docstring("Verbose output for each file transferred") );
+
     // User can choose between:
     //  * the target file(s) may not exist [default]
     //  * the target file(s) may or may not exits but will be truncated if
@@ -159,18 +156,24 @@ int main(int argc, char const*const*const argv) {
     //    appended to [resume]
     cmd.addXOR(
             AP::option(AP::store_const_into(etdc::openmode_type::OverWrite, mode), AP::long_name("overwrite"),
-                       AP::docstring("Existing target file(s) will be overwritten (default: target file(s) may not exist)"),
-                       AP::at_most(1)),
+                        //AP::docstring("Existing target file(s) will be overwritten (default: target file(s) may not exist)"),
+                        AP::docstring("Existing target file(s) will be overwritten"),
+                        AP::at_most(1)),
             AP::option(AP::store_const_into(etdc::openmode_type::Resume, mode), AP::long_name("resume"),
-                       AP::docstring("Existing target file(s) will be appended to (default: target file(s) may not exist)"),
-                       AP::at_most(1))
+                        //AP::docstring("Existing target file(s) will be appended to (default: target file(s) may not exist)"),
+                        AP::docstring("Existing target file(s) will be appended to, if the source file is larger"),
+                        AP::at_most(1)),
+            AP::option(AP::store_const_into(etdc::openmode_type::Resume, mode), AP::long_name("skipexisting"),
+                        //AP::docstring("Existing target file(s) will be skipped (default: target file(s) may not exist)"),
+                        AP::docstring("Existing target file(s) will be skipped"),
+                        AP::at_most(1)),
+            AP::option(AP::long_name("mode"), AP::at_most(1), AP::store_into(mode),
+                        AP::is_member_of({etdc::openmode_type::New, etdc::openmode_type::OverWrite,
+                                      etdc::openmode_type::Resume, etdc::openmode_type::SkipExisting}),
+                        AP::docstring(std::string("Set file copy mode, default=")+etdc::repr(mode)),
+                        AP::convert([](std::string const& s) { std::istringstream iss(s); etdc::openmode_type om; iss >> om; return om; }))
         );
 
-    cmd.add(AP::long_name("mode"), AP::at_most(1), AP::store_value<etdc::openmode_type>(),
-            AP::set_default(etdc::openmode_type::New),
-            AP::is_member_of({etdc::openmode_type::New, etdc::openmode_type::OverWrite, etdc::openmode_type::Resume, etdc::openmode_type::SkipExisting}),
-            AP::docstring("Set file copy mode"),
-            AP::convert([](std::string const& s) { std::istringstream iss(s); etdc::openmode_type om; iss >> om; return om; }));
 
     // Let the command line parser decide the validity - "--list URL" or "URL URL"
     // are mutually exclusive and IF they are present, the constraint(s) of
@@ -203,38 +206,109 @@ int main(int argc, char const*const*const argv) {
     etdc::UnBlock                   s({SIGINT});
     etdc::install_handler(dummy_signal_handler, {SIGINT});
 
-    etdc::etd_state                 localState{};
-    std::list<etdc::etd_server_ptr> servers;
+    const bool                        verbose = cmd.get<bool>("verbose");
+    etdc::etd_state                   localState{};
+    std::vector<etdc::etd_server_ptr> servers;
 
     // We must transform the URL(s) into ETDServerInterface* 
     std::transform(std::begin(urls), std::end(urls), std::back_inserter(servers),
                    [&](url_type const& url) {
                         return url.isLocal ? mk_etdserver(std::ref(localState)) : mk_etdproxy(url.protocol, url.host, url.port);
                     });
-    if( servers.size()==1 )
-        for(auto const& p: (*servers.begin())->listPath(urls.begin()->path, false))
+
+    // Get the list of files to transfer (or to list if servers.size()==1)
+    static const auto isDir = [](std::string const& str) { return !str.empty() && str[str.size()-1]=='/'; };
+    const auto        remoteList = servers[0]->listPath(urls[0].path, false);
+
+    if( servers.size()==1 ) {
+        for(auto const& p: remoteList)
             std::cout << p << std::endl;
-#if 0
-    for(const auto& u: urls)
-        std::cout << (urls.size()==1 ? "LIST: " : "") << u << std::endl;
-
-    // Before we go into potential blocking syscalls, enable killing by
-    // unblocking a signal + installing dummy signal handler
-    etdc::UnBlock                   s({SIGINT});
-    etdc::install_handler(dummy_signal_handler, {SIGINT});
-
-    auto pClnt = mk_client(urls[0].protocol, urls[0].host, urls[0].port);
-    cout << "connected to " << pClnt->getpeername(pClnt->__m_fd) << " [local " << pClnt->getsockname(pClnt->__m_fd) << "]" << endl;
-    const auto data = "012345";
-    pClnt->write(pClnt->__m_fd, data, sizeof(data));
-    cout << "wrote " << sizeof(data) << " bytes" << endl;
-
-    if( cmd.get<bool>("b") ) {
-        char buf[128];
-        cout << "entering blocking read" << endl;
-        pClnt->read(pClnt->__m_fd, buf, sizeof(buf));
+        return 0;
     }
-#endif
+
+    // OK we have two end points. Do a bit more validation
+    ETDCASSERT(urls[1].path.find('*')==std::string::npos && urls[1].path.find('?')==std::string::npos,
+               "Destination path may not contain wildcards");
+
+    // If there is >1 files to transfer and the destination is not a directory thats an error
+    std::list<std::string> files2do;
+
+    std::copy_if(std::begin(remoteList), std::end(remoteList), std::back_inserter(files2do),
+                 [](std::string const& pth) {return !isDir(pth);});
+
+    ETDCASSERT(files2do.empty()==false, "Your path '" << urls[0].path << "' did not match any file(s) to transfer");
+    if( files2do.size()>1 )
+        ETDCASSERT(isDir(urls[1].path), "Cannot copy " << files2do.size() << " files to the same destination file");
+
+    // Compute output path
+    const std::string dstPath      = urls[1].path;
+    const bool        dstIsDir     = isDir(dstPath);
+    auto const        mkOutputPath = [&](std::string const& in) { return dstIsDir ? dstPath+etdc::detail::basename(in) : dstPath; };
+
+    // Decide on wether to push or pull based on who has a data channel addr.
+    // If the destination is a remote daemon it has at least one data channel
+    // and then we push data to it
+    // If the destination has no data channel, it means that we're copying *into* this
+    // client so we don't have a daemon running so we ask the built-in 'daemon' to 
+    // pull the file from the source
+    bool                    push{ true };
+    etdc::host_type         dstHost{ urls[1].host };
+    etdc::dataaddrlist_type dataChannels( servers[1]->dataChannelAddr() );
+
+    if( dataChannels.empty() ) {
+        push         = false;
+        dstHost      = urls[0].host;
+        dataChannels = servers[0]->dataChannelAddr();
+    }
+
+    // In the data channels, we must replace any of the wildcard IPs with a real host name
+    std::regex  rxWildCard("^(::|0.0.0.0)$");
+    for(auto ptr=dataChannels.begin(); ptr!=dataChannels.end(); ptr++)
+        *ptr = mk_sockname(get_protocol(*ptr), etdc::host_type(std::regex_replace(get_host(*ptr), rxWildCard, dstHost)), get_port(*ptr));
+
+    // Before processing all file(s) we already know if we're going to push or pull
+    std::function<bool(etdc::uuid_type const&, etdc::uuid_type&, off_t, etdc::dataaddrlist_type const&)> fn;
+    namespace ph = std::placeholders;
+    fn = (push ?
+          std::bind(&etdc::ETDServerInterface::sendFile, servers[0].get(), ph::_1, ph::_2, ph::_3, ph::_4) :
+          std::bind(&etdc::ETDServerInterface::getFile,  servers[1].get(), ph::_1, ph::_2, ph::_3, ph::_4));
+
+    // Loop over all files to do ...
+    using unique_result = std::unique_ptr<etdc::result_type>;
+
+    for(auto const& file: files2do) {
+        // Skip directories
+        if( file[file.size()-1]=='/' )
+            continue;
+        // We must keep these outside the try/catch such that we can clean up?
+        unique_result      srcResult, dstResult;
+        std::exception_ptr eptr;
+        try {
+            auto const outputFN = mkOutputPath(file);
+            ETDCDEBUG(verbose ? -1 : 9, (push ? "PUSH" : "PULL" ) << " " << mode << " " << file << " -> " << outputFN << std::endl);
+            dstResult = std::move( unique_result(new etdc::result_type(servers[1]->requestFileWrite(outputFN, mode))) );
+            auto nByte = etdc::get_filepos(*dstResult);
+
+            if( mode!=etdc::openmode_type::SkipExisting || nByte==0 ) {
+                srcResult      = std::move(  unique_result(new etdc::result_type(servers[0]->requestFileRead(file, nByte))) );
+                auto nByteToGo = etdc::get_filepos(*srcResult);
+
+                if( nByteToGo>0 )
+                    (void)fn(etdc::get_uuid(*srcResult), etdc::get_uuid(*dstResult), nByteToGo, dataChannels);
+                else
+                    ETDCDEBUG(verbose ? -1 : 9, "Destination is complete or is larger than source file" << std::endl);
+            }
+        }
+        catch( ... ) {
+            eptr = std::current_exception();
+        }
+        if( dstResult )
+            servers[1]->removeUUID( etdc::get_uuid(*dstResult) );
+        if( srcResult )
+            servers[0]->removeUUID( etdc::get_uuid(*srcResult) );
+        if( eptr )
+            std::rethrow_exception(eptr);
+    }
     return 0;
 }
 

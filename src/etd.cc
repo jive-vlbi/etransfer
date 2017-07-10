@@ -153,10 +153,10 @@ void signal_thread(signallist_type const& sigs, std::promise<int>& promise) {
     for(auto s: sigs)
         sigaddset(&sset, s);
 
-    ETDCDEBUG(-1, "sigwaiterthread: enter wait phase" << endl);
+    ETDCDEBUG(2, "sigwaiterthread: enter wait phase" << endl);
     // ... and wait for any of them to happen
     ::sigwait(&sset, &received);
-    ETDCDEBUG(-1, "sigwaiterthread: got signal " << received << endl);
+    ETDCDEBUG(2, "sigwaiterthread: got signal " << received << endl);
     promise.set_value( received );
 }
 
@@ -318,13 +318,13 @@ void command_server_thread(etdc::etdc_fdptr pServer, etdc::etd_state& shared_sta
         dbgMap[get_protocol(peernm)](pClient, "client"); 
 
         // Fall into ETDServerWrapper
-        etdc::ETDServerWrapper   srv(pClient, std::ref(shared_state));
+        etdc::ETDServerWrapper(pClient, std::ref(shared_state));
     }
     catch( std::exception const& e ) {
-        ETDCDEBUG(-1, "command server thread got exception: " << e.what() << std::endl);
+        ETDCDEBUG(1, "command server thread got exception: " << e.what() << std::endl);
     }
     catch( ... ) {
-        ETDCDEBUG(-1, "command server thread got unknown exception" << std::endl);
+        ETDCDEBUG(1, "command server thread got unknown exception" << std::endl);
     }
     if( !std::atomic_load(&shared_state.cancelled) ) {
         etdc::scoped_lock  lk(shared_state.lock);
@@ -380,19 +380,14 @@ void data_server_thread(etdc::etdc_fdptr pServer, etdc::etd_state& shared_state)
         auto peernm = pClient->getpeername(pClient->__m_fd);
         ETDCDEBUG(2, "Incoming DATA from " << peernm << " [local " << pClient->getsockname(pClient->__m_fd) << "]" << endl);
 
-        dbgMap[get_protocol(peernm)](pClient, "client"); 
-        
-        char    buf[1024];
-        ssize_t n = 0, r;
-        while( (r = pClient->read(pClient->__m_fd, buf, sizeof(buf)))>0 )
-            n += r, cout << "." << flush;
-        ETDCDEBUG(3, "OK - client sent " << n << " bytes" << endl);
+        dbgMap[get_protocol(peernm)](pClient, "client");
+        etdc::ETDDataServer(pClient, std::ref(shared_state));
     }
     catch( std::exception const& e ) {
-        ETDCDEBUG(-1, "data server thread got exception: " << e.what() << std::endl);
+        ETDCDEBUG(1, "data server thread got exception: " << e.what() << std::endl);
     }
     catch( ... ) {
-        ETDCDEBUG(-1, "data server thread got unknown exception" << std::endl);
+        ETDCDEBUG(1, "data server thread got unknown exception" << std::endl);
     }
     // Deregister our cancellation - only if we weren't being cancelled.
     if( !std::atomic_load(&shared_state.cancelled) ) {
