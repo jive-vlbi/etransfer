@@ -26,6 +26,7 @@
 #include <string>
 #include <sstream>
 #include <iterator>
+#include <stdexcept>
 #include <type_traits>
 
 // plain old C
@@ -153,6 +154,22 @@ namespace etdc {
             static bool const beg_value = sizeof(f<T>(0)) == 1;
             static bool const end_value = sizeof(g<T>(0)) == 1;
             static bool const value     = beg_value && end_value;
+        };
+
+        // mapped types in STL containers have a key_type typedef.
+        // this is important for looking up values in any container:
+        //  * non-associative containers: use std::find()
+        //  * associative containers: use .find(key)
+        template <typename T>
+        struct has_key_type {
+            using yes = char;
+            using no  = decltype(nullptr);
+
+            template <typename U> static auto test(typename U::key_type*) -> yes;
+            template <typename U> static auto test(U*)                    -> no;
+
+            static const bool value = (sizeof(test<T>(nullptr))==sizeof(yes));
+            static_assert(sizeof(yes)!=sizeof(no), "Choose a slightly different type for yes or no");
         };
     } // namespace detail
 
@@ -453,6 +470,136 @@ namespace etdc {
     // shorthands - handy for std::pair
     using fst_type = nth_type<0>;
     using snd_type = nth_type<1>;
+
+
+    /////////////////////////////////////////////////////////////////////////////////////////
+    //
+    //  When using an insert iterator into e.g. a map or set, sometimes you'd like
+    //  to assert that only unique values are being inserted.
+    //  Using "std::insert_iterator(map<K,V>&,...)" will allow multiple inserts
+    //  of the same Key but effectively only remembers the first value inserted.
+    //  The other insertions are ignored.
+    //
+    //  Actually there could be three policies on how to deal with duplicate Key insert:
+    //      1.) keep the first and ignore the rest
+    //      2.) keep the last inserted value
+    //      3.) fail on duplicate insert
+    //
+    /////////////////////////////////////////////////////////////////////////////////////////
+
+    namespace detail {
+        // mapped types in STL containers have a key_type typedef.
+        // this is important for looking up values in any container:
+        //  * non-associative containers: use std::find()
+        //  * associative containers: use .find(key)
+        template <typename Container, typename Value>
+        typename Container::iterator find_value(Container* container, Value v, typename std::enable_if<has_key_type<Container>::value>::type* = nullptr) {
+            // this Container has key_type as member typedef thus we assume Value is a <Key, Value> pair
+            // so the lookup goes by Key, i.e. "v.first"
+            return container->find( v.first );
+        }
+        template <typename Container, typename Value>
+        typename Container::iterator find_value(Container* container, Value v, typename std::enable_if<!has_key_type<Container>::value>::type* = nullptr) {
+            // this Container don't have key_type as member so we assume it's just a container of values
+            // so the lookup goes by find(value)
+            return std::find(std::begin(*container), std::end(*container), v);
+        }
+
+        // keep_first policy: do not insert if value already there
+        template <typename Container>
+        struct keep_first {
+            template <typename T>
+            typename Container::iterator operator()(Container* container, typename Container::iterator iter, T value) const {
+                typename Container::iterator  exist = find_value(container, value);
+                if( exist==container->end() )
+                    return container->insert(iter, std::move(value));
+                return iter;
+            }
+        };
+        // keep_last policy: if value already existed, erase old value and insert new one
+        template <typename Container>
+        struct keep_last {
+            template <typename T>
+            typename Container::iterator operator()(Container* container, typename Container::iterator iter, T value) const {
+                typename Container::iterator  exist = find_value(container, value);
+                if( exist!=container->end() )
+                    container->erase(exist);
+                return container->insert(iter, std::move(value));
+            }
+        };
+
+        // the assert-no-duplicates policy: it is an error to attempt to insert multiple identical keys
+        template <typename Container>
+        struct no_duplicates {
+            template <typename T>
+            typename Container::iterator operator()(Container* container, typename Container::iterator iter, T value) const {
+                // Throw up if value already exists
+                typename Container::iterator  exist = find_value(container, value);
+                if( exist!=container->end() )
+                    throw std::logic_error("Attempt to insert duplicate value");
+                return container->insert(iter, std::move(value));
+            }
+        };
+
+        template <typename Container, template<typename...> class Policy>
+        struct policy_insert_iterator:
+            public std::iterator< std::output_iterator_tag, void,void,void,void > 
+        {
+            // Yeah I know. struct is public by default. But we have protected member(s)
+            // so to keep alignment 'pretty' we do it like this
+            public:
+                using Self = policy_insert_iterator<Container, Policy>;
+
+                // no default not copy
+                policy_insert_iterator() = delete;
+                policy_insert_iterator(policy_insert_iterator<Container, Policy> const&) = delete;
+                // but move is ok
+                policy_insert_iterator(policy_insert_iterator<Container, Policy>&& other):
+                    container( std::move(other.container) ), iter( std::move(other.iter) )
+                {}
+
+                policy_insert_iterator(Container& c, typename Container::iterator i):
+                    container( &c ), iter( i )
+                {}
+
+                // The methods that don't do nothing
+                Self& operator*( void )   { return *this; }
+                Self& operator++( void )  { return *this; }
+                Self& operator++( int )   { return *this; }
+
+                // The method that does everything
+                template <typename U>
+                Self& operator=(U&& u) {
+                    ++ (iter = __m_policy(container, iter, std::forward<U>(u)));
+                    return *this;
+                }
+
+            protected:
+                Container*                   container;
+                typename Container::iterator iter;
+                Policy<Container>            __m_policy{};
+        };
+    }
+
+    template <typename Container>
+    using keep_first_iterator    = detail::policy_insert_iterator<Container, detail::keep_first>;
+    template <typename Container>
+    using keep_last_iterator     = detail::policy_insert_iterator<Container, detail::keep_last>;
+    template <typename Container>
+    using no_duplicates_iterator = detail::policy_insert_iterator<Container, detail::no_duplicates>;
+
+    template <typename Container>
+    auto keep_first_inserter(Container& container, typename Container::iterator iter) -> keep_first_iterator<Container> {
+        return keep_first_iterator<Container>(container, iter);
+    }
+    template <typename Container>
+    auto keep_last_inserter(Container& container, typename Container::iterator iter) -> keep_last_iterator<Container> {
+        return keep_last_iterator<Container>(container, iter);
+    }
+    template <typename Container>
+    auto no_duplicates_inserter(Container& container, typename Container::iterator iter) -> no_duplicates_iterator<Container> {
+        return no_duplicates_iterator<Container>(container, iter);
+    }
 }
 
 #endif // ETDC_UTILITIES_H
