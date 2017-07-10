@@ -62,6 +62,19 @@ namespace etdc {
                 return ::toupper((unsigned char)l) == ::toupper((unsigned char)r);
             }
         };
+
+        template <typename T>
+        struct has_value_type {
+            using yes = char;
+            using no  = unsigned long;
+
+            template <typename U>
+            static auto test(typename U::value_type*) -> yes;
+            template <typename U>
+            static auto test(U*)                      -> no;
+
+            static const bool value = (sizeof(test<T>(nullptr)) == sizeof(yes));
+        };
     }
 
     // the libc stringcompare functions return 0 if they're equal, i.e. false if equal.
@@ -73,6 +86,15 @@ namespace etdc {
             return std::equal(std::begin(l), std::end(l), std::begin(r), ci_comparator);
         return false;
     }
+
+    // Implement case insensitive < for strings
+    struct case_insensitive_lt {
+        template <typename T, typename = typename std::enable_if<detail::has_value_type<typename std::decay<T>::type>::value>::type>
+        bool operator()(T const& l, T const& r) const {
+            static const detail::case_insensitive_lt_t<typename T::value_type> ci_comparator{};
+            return std::lexicographical_compare(std::begin(l), std::end(l), std::begin(r), std::end(r), ci_comparator);
+        }
+    };
 } // namespace etdc
 
 #endif // include guard
