@@ -70,22 +70,13 @@ namespace etdc {
         std::string                 path;
         etdc::etdc_fdptr            fd;
         const openmode_type         openMode;
-        std::unique_ptr<std::mutex> lockPtr;
+        std::mutex                  lock;
 
         // we cannot be copied or default constructed! (because of our unique_ptr)
         transferprops_type()                          = delete;
-        transferprops_type(transferprops_type const&) = delete;
-
-        // We could be moved, which we accomplish by swapping our default
-        // constructed elements with other's non-default ones, we assume
-        transferprops_type(transferprops_type&& other): openMode( other.openMode ) {
-            std::swap(path,    other.path);
-            std::swap(fd,      other.fd);
-            std::swap(lockPtr, other.lockPtr);
-        }
 
         transferprops_type(etdc::etdc_fdptr efd, std::string const& p, openmode_type om):
-            path(p), fd(efd), openMode(om), lockPtr(new std::mutex())
+            path(p), fd(efd), openMode(om)
         {}
     }; 
 
@@ -94,7 +85,7 @@ namespace etdc {
     using scoped_lock       = std::lock_guard<std::mutex>;
     using threadlist_type   = std::list<std::thread>;
     using dataaddrlist_type = std::list<etdc::sockname_type>;
-    using transfermap_type  = std::map<etdc::uuid_type, transferprops_type>;
+    using transfermap_type  = std::map<etdc::uuid_type, std::unique_ptr<transferprops_type>>;
 
     // Keep global server state
     struct etd_state {
