@@ -104,11 +104,11 @@ void CChannel::open(const sockaddr* addr)
    if (NULL != addr)
    {
       socklen_t namelen = m_iSockAddrSize;
-      const int reuse( 1 );
+      //const int reuse( 1 );
 
       // always set reuseaddr orelse we won't be able to bind udt/ipv4 and udt/ipv6 on same port
-      if( ::setsockopt(m_iSocket, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(int))!=0 )
-        throw CUDTException(1, 3, NET_ERROR);
+      //if( ::setsockopt(m_iSocket, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(int))!=0 )
+      //  throw CUDTException(1, 3, NET_ERROR);
 
       if (0 != ::bind(m_iSocket, addr, namelen))
          throw CUDTException(1, 3, NET_ERROR);
