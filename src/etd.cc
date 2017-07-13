@@ -18,12 +18,34 @@
 #include <iostream>
 #include <functional>
 
+// C-stuff
+#include <pwd.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/types.h>
+//#include <uuid/uuid.h>
+#include <sys/resource.h>
+
+
 // Some handy shorthands
 using namespace std;
 namespace AP = argparse;
 
 using fdlist_type     = std::list<etdc::etdc_fdptr>;
 using signallist_type = std::vector<int>;
+
+
+///////////////////////////////////////////////////////////////////////////////
+//
+// When daemonizing we may need to change to different user id
+//
+///////////////////////////////////////////////////////////////////////////////
+HUMANREADABLE(struct passwd*, "user name")
+template <typename... Traits>
+std::basic_ostream<Traits...>& operator<<(std::basic_ostream<Traits...>& os, struct passwd const*const usert) {
+    return os << ((usert==nullptr) ? "<unknown usert>" : usert->pw_name);
+}
+void  do_daemonize( void );
 
 ///////////////////////////////////////////////////////////////////////////////
 //
@@ -95,32 +117,36 @@ static std::string unbracket(std::string const& h) {
     return std::regex_replace(h, rxBracket, "$1");
 }
 
-// The template argument is the default port number
-template <unsigned short DefPort>
-struct string2socket_type:
-    // we pretend to be a converter!
-    public AP::detail::conversion_t {
+struct string2socket_type_m {
+    string2socket_type_m() = delete;
+    string2socket_type_m(etdc::port_type defPort):
+        __m_default_port( defPort )
+    {}
 
     // to be a converter we must have "void (<target type>&, std::string const&) const"
     // The string is guaranteed to match the regex above :-)
-    void operator()(etdc::etdc_fdptr& fd, std::string const& s) const {
+    etdc::etdc_fdptr operator()(std::string const& s) const {
         // We're going to repeat the matching: we need the submatches now.
         // The cmdline has already verified the match so we can do this
         // unchecked.
+        etdc::etdc_fdptr                                fd;
         std::match_results<std::string::const_iterator> m;
 
         std::regex_match(s, m, rxURL);
 
         fd = mk_server(etdc::protocol_type(m[1]), etdc::host_type(unbracket(m[3])), // protocol + local addres (if any)
-                       (m[7].length() ? port(m[7]) : port(DefPort) ), // port
-                       etdc::udt_rcvbuf{2*1024*1024}, etdc::so_rcvbuf{2*1024},  // some socket options
+                       //(m[7].length() ? port(m[7]) : port(DefPort) ), // port
+                       (m[7].length() ? port(m[7]) :  __m_default_port), // port
+                       etdc::udt_rcvbuf{10*1024*1024}, etdc::so_rcvbuf{4*1024},  // some socket options
                        etdc::blocking_type{true});
 
         auto socknm =  fd->getsockname(fd->__m_fd);
         ETDCDEBUG(2, "etd: server is-at " << socknm << endl);
         dbgMap[get_protocol(socknm)](fd, "server"); 
-        return;
+        return fd;
    }
+
+    const etdc::port_type   __m_default_port;
 };
 
 
@@ -166,7 +192,6 @@ int main(int argc, char const*const*const argv) {
     etdc::BlockAll      ba;
     // Let's set up the command line parsing
     int                 message_level = 0;
-    fdlist_type         commandServers, dataServers;
     AP::ArgumentParser  cmd( AP::version( buildinfo() ),
                              AP::docstring("'ftp' like etransfer server daemon, to be used with etransfer client for "
                                            "high speed file/directory transfers."),
@@ -183,6 +208,7 @@ int main(int argc, char const*const*const argv) {
     //        --acl <access control list>
     //        [-h] [--help] [--version]
     //        [-m <int>]
+    //        [-f] (foreground)
     //
     // <address> = [udt|tcp]/[<local IP>]/<port>
     //             (if <local IP> not given, listen on all interfaces)
@@ -194,24 +220,37 @@ int main(int argc, char const*const*const argv) {
     cmd.add( AP::long_name("version"), AP::print_version(),
              AP::docstring("Print version and exit succesfully") );
 
+    // These are mutex: if foregrounding you can't set a run-as user, and if
+    //                  you've set a run-as user then you cannot not daemonize
+    cmd.addXOR(
+        // -f              run in foreground, i.e. do NOT daemonize
+        AP::option(AP::short_name('f'), AP::store_true(),
+                   AP::docstring("Run in foreground, i.e. do NOT daemonize")),
+        // --run-as <USER> run daemon as user <USER>
+        AP::option(AP::long_name("run-as"), AP::store_value<struct passwd*>(), AP::at_most(1),
+                   AP::docstring("Run daemon under this user name"),
+                   // Default = current user
+                   AP::set_default( ::getpwuid(::geteuid()) ),
+                   // We do not allow unknown user
+                   AP::constrain([](struct passwd* ptr) { return ptr!=nullptr;}, "user name must exist on this system"),
+                   // And we convert user name to passwd entry
+                   AP::convert([](std::string const& username) { return ::getpwnam(username.c_str()); }))
+        );
+
     // message level: higher = more verbose
     cmd.add( AP::store_into(message_level), AP::short_name('m'),
              AP::maximum_value(5), AP::minimum_value(-1),
              AP::docstring("Message level - higher = more output") );
 
     // command servers; we require at least one of 'm
-    cmd.add( AP::collect_into(commandServers), AP::long_name("command"),
-             // Make the system automatically convert the address string into a real sokkit
-             string2socket_type<4004>(),
+    cmd.add( AP::collect<std::string>(), AP::long_name("command"),
              // Constraints on the number + form of the argument
              AP::at_least(1), AP::match(rxURL),
              // And some useful info
              AP::docstring("Listen on this(these) address(es) for incoming client control connections") );
 
     // data servers; we require at least one of those
-    cmd.add( AP::collect_into(dataServers), AP::long_name("data"),
-             // Make the system automatically convert the address string into a real sokkit
-             string2socket_type<8008>(),
+    cmd.add( AP::collect<std::string>(), AP::long_name("data"),
              // Constraints on the number + form of the argument
              AP::at_least(1), AP::match(rxURL),
              // And some useful info
@@ -223,6 +262,34 @@ int main(int argc, char const*const*const argv) {
     // Set message level based on command line value (or default)
     etdc::dbglev_fn( message_level );
 
+    // To daemonize or not to daemonize, that is the question.
+    // If we do, we do that by replacing the streambuf of std::cerr by one
+    // that actually stuffs stuff into syslog.
+    auto                oldStreamBuf = etdc::empty_streamsaver_for_stream(std::cerr);
+    const bool          daemonize    = !cmd.get<bool>("f");
+
+    if( daemonize ) {
+        // Oh dear.
+
+        // We replace std::cerr's streambuf so from this moment on all
+        // output goes to syslog - we are, after all, daemonizing
+        oldStreamBuf = std::move(etdc::redirect_to_syslog(std::cerr, argv[0]));
+
+        // Drop privileges + assert that after that we are NOT root!
+        // Note: the command line parser has already validated that this is
+        //       not a nullptr; even the default gets tested against that
+        // Note: setresuid(2) is only available on linux (or glibc)
+        //       even though it is the preferred method, I guess we
+        //       stick to POSIX setuid(2) 
+        struct passwd* run_as_ptr = cmd.get<struct passwd*>("run-as");
+     
+        ETDCASSERT(::setuid(run_as_ptr->pw_uid)==0, "setuid() failed - " << etdc::strerror(errno));
+        ETDCASSERT(::setgid(run_as_ptr->pw_gid)==0, "setgid() failed - " << etdc::strerror(errno));
+        ETDCASSERT(::getuid() && ::geteuid() && ::getgid() && ::getegid(),
+                   "Not all privileges were dropped; some rootage is still left!");
+        do_daemonize();
+    }
+
     // Fire up the signal thread. 
     std::promise<int>   killSigPromise;
     std::future<int>    killSigFuture = killSigPromise.get_future();
@@ -230,18 +297,20 @@ int main(int argc, char const*const*const argv) {
     etdc::thread(signal_thread, signallist_type{{SIGHUP, SIGINT, SIGTERM, SIGSEGV}}, std::ref(killSigPromise)).detach();
 
     // Start threads for the command+data servers
-    etdc::etd_state         serverState;
+    etdc::etd_state            serverState;
+    const string2socket_type_m mk_cmd ( port(4004) );
+    const string2socket_type_m mk_data( port(8008) );
 
-    // data servers first such that the command servers know which data
-    // ports are available
-    for(auto&& srv: dataServers) {
+    // data servers first such that the command servers know which data ports are available
+    for(auto&& datasrv: cmd.get<std::list<std::string>>("data")) {
+        auto srv = mk_data( datasrv );
         // Append the data server to the list of possible data servers
         serverState.dataaddrs.push_back( srv->getsockname(srv->__m_fd) );
         serverState.add_thread(&data_server_thread<SIGUSR2>, srv, std::ref(serverState));
     }
 
-    for(auto&& srv: commandServers)
-        serverState.add_thread(&command_server_thread<SIGUSR1>, srv, std::ref(serverState));
+    for(auto&& cmdsrv: cmd.get<std::list<std::string>>("command"))
+        serverState.add_thread(&command_server_thread<SIGUSR1>, mk_cmd(cmdsrv), std::ref(serverState));
 
     // Now just wait ..
     killSigFuture.wait();
@@ -375,10 +444,19 @@ void data_server_thread(etdc::etdc_fdptr pServer, etdc::etd_state& shared_state)
 
         if( !pClient )
             throw std::runtime_error("No incoming data client?!");
-
         // Now we fall through handling the client
         auto peernm = pClient->getpeername(pClient->__m_fd);
         ETDCDEBUG(2, "Incoming DATA from " << peernm << " [local " << pClient->getsockname(pClient->__m_fd) << "]" << endl);
+
+        // This is data connection so let's set a big sokkitbuffer
+        // Do not *assert* it - e.g. on Mac OSX (and maybe other *BSDs)
+        // asking for SO_RCVBUF > maximum will /fail/ and that's not our
+        // intent. We'd *like* to have a bigr 'n bettr SO_RCVBUF if you
+        // pretty please with sugar on top. But if we can't have it then
+        // that's not an error.
+        // Note: for UDT data channels we have already set RCVBUF
+        if( get_protocol(peernm).find("tcp")!=std::string::npos )
+            etdc::setsockopt(pClient->__m_fd, etdc::so_rcvbuf{32*1024*1024});
 
         dbgMap[get_protocol(peernm)](pClient, "client");
         etdc::ETDDataServer(pClient, std::ref(shared_state));
@@ -398,3 +476,62 @@ void data_server_thread(etdc::etdc_fdptr pServer, etdc::etd_state& shared_state)
     return;
 }
 
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+//
+//   Daemonize as per section 13.3 in Stevens' and Rago's
+//   "Advanced Programming in the UNIX Environment"
+//
+//   Mods:
+//   1.) do not do the sigaction for SIGHUP - we already made main()
+//       terminate on reception of SIGHUP, SIGTERM, SIGSTOP and SIGSEGV
+//
+///////////////////////////////////////////////////////////////////////////////////////////////////
+void do_daemonize( void ) {
+    pid_t         pid;
+    struct rlimit rl;
+
+    // Clear file creation mask - no need to do any assertions
+    ::umask( 0 );
+
+    // Get max. number of file descriptors
+    ETDCASSERT(::getrlimit(RLIMIT_NOFILE, &rl)==0, "Failed to get max number of file descriptors - " << etdc::strerror(errno));
+    // first fork
+    ETDCASSERT((pid=::fork())>=0, "Failed to fork(1) - " << etdc::strerror(errno));
+    // parent exits succesfully
+    if( pid>0 )
+        ::exit(0);
+    // child becomes session leader
+    ETDCASSERT(::setsid()!=static_cast<pid_t>(-1), "Failed to become session leader - " << etdc::strerror(errno));
+    // here Stevens et al ignore SIGHUP which we don't [see Mod 2. above]
+    // ...
+    // 2nd fork
+    ETDCASSERT((pid=::fork())>=0, "Failed to fork(2) - " << etdc::strerror(errno));
+    // parent exits succesfully
+    if( pid>0 )
+        ::exit(0);
+    // child continues
+    ETDCASSERT(::chdir("/")==0, "Failed to change directory to '/' - " << etdc::strerror(errno));
+
+    // close all file descriptors
+    if( rl.rlim_max==RLIM_INFINITY ) {
+        const long scopenmax = ::sysconf(_SC_OPEN_MAX);
+        // if sysconf returns -1 it could mean either of two things:
+        // 1) failure
+        // 2) still no known limit
+        // either way, we still don't know how many file descriptors to
+        // close ...
+        rl.rlim_max = (scopenmax==-1) ? 1024 : scopenmax;
+    }
+    // do not close stderr - we've redirected that to syslog
+    for(decltype(rl.rlim_max) i = 0; i<rl.rlim_max; i++)
+        if( i!=2 )
+            ::close( (int)i );
+    // Getting there ...
+    // attach stdin, stdout  to /dev/null
+    int fd0, fd1;
+
+    fd0 = ::open("/dev/null", O_RDWR);
+    fd1 = ::dup(0);
+    ETDCASSERT(fd0==0 && fd1==1, "Something went wrong attaching stdin, stdout to devnull");
+}
