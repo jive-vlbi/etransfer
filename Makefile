@@ -154,7 +154,7 @@ clean: $(foreach P, $(DEFAULTTARGETS), $(addsuffix .clean, $(P)))
 	@echo "cleaned: $(DEFAULTTARGETS)"
 
 libudt4hv: 
-	@$(MAKE) -C libudt4hv -f Makefile B2B="$(B2B)" CPP="$(CXX)" REPOS="$(repos)"
+	@$(MAKE) -C libudt4hv -f Makefile B2B="$(B2B)" CPP="$(CXX)" REPOS="$(repos)" BUILD="$(BUILD)"
 
 %.target: %.version %.depend %.dep
 	$(LD) -o $* $($*_OBJS) $(repos)/src/$*_version.cco $(LIBD) $(PLATFORMLIBS) $($*F_LIBS)

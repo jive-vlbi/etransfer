@@ -13,6 +13,11 @@ else
 	UDTREPOS = ../$(REPOS)/libudt4hv
 endif
 
+DBGFLAG=-O2
+ifeq ($(BUILD),debug)
+	override DBGFLAG+=-g -O0
+endif
+
 ## Detect the operating system
 UNAME=$(shell uname)
 ifeq ($(UNAME),Linux)
@@ -57,7 +62,7 @@ ifeq ($(arch),)
 	target=failarch
 endif
 
-CCFLAGS = -fPIC -Wall -Wextra -D$(os) -finline-functions -O3 -fno-strict-aliasing #-msse3
+CCFLAGS = -fPIC -Wall -Wextra $(DBGFLAG) -D$(os) -finline-functions -fno-strict-aliasing
 
 ifeq ($(arch), IA32)
    CCFLAGS += -DIA32
@@ -97,6 +102,7 @@ $(UDTREPOS)/libudt4hv.a: $(OBJS)
 
 clean:
 	rm -f $(UDTREPOS)/*.o $(UDTREPOS)/*.so $(UDTREPOS)/*.dylib $(UDTREPOS)/*.a $(UDTREPOS)/udt
+	@echo "Cleaned $(UDTREPOS)"
 
 mkdir:
 	@ mkdir -p $(UDTREPOS)
