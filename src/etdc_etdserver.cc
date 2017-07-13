@@ -315,7 +315,7 @@ namespace etdc {
             ETDCASSERT(dstFD, "Failed to connect to any of the data servers: " << tried.str());
 
             // Weehee! we're connected!
-            const size_t                     bufSz( 2*1024*1024 );
+            const size_t                     bufSz( 10*1024*1024 );
             std::unique_ptr<unsigned char[]> buffer(new unsigned char[bufSz]);
 
             // Create message header
@@ -327,9 +327,7 @@ namespace etdc {
 
             while( todo>0 ) {
                 const size_t  n = std::min((size_t)todo, bufSz);
-                ETDCDEBUG(4, "sendFile: reading n=" << n << std::endl);
                 ETDCASSERTX(transfer.fd->read(transfer.fd->__m_fd, &buffer[0], n)==(ssize_t)n);
-                ETDCDEBUG(4, "sendFile: writing n=" << n << std::endl);
                 ETDCASSERTX(dstFD->write(dstFD->__m_fd, &buffer[0], n)==(ssize_t)n);
                 todo -= (off_t)n;
             }
@@ -408,7 +406,7 @@ namespace etdc {
             ETDCASSERT(dstFD, "Failed to connect to any of the data servers: " << tried.str());
 
             // Weehee! we're connected!
-            const size_t                     bufSz( 2*1024*1024 );
+            const size_t                     bufSz( 10*1024*1024 );
             std::unique_ptr<unsigned char[]> buffer(new unsigned char[bufSz]);
 
             // Create message header
@@ -1036,7 +1034,7 @@ namespace etdc {
         // If we go 2kB w/o seeing an actual command we call it a day
         // I mean, our commands are typically *very* small
         const size_t            maxNoCmdSz( 4*1024 );
-        const size_t            bufSz( 2*1024*1024 );
+        const size_t            bufSz( 10*1024*1024 );
         std::unique_ptr<char[]> buffer(new char[bufSz]);
 
         bool          terminated = false;
