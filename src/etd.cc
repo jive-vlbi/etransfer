@@ -268,25 +268,25 @@ int main(int argc, char const*const*const argv) {
     auto                oldStreamBuf = etdc::empty_streamsaver_for_stream(std::cerr);
     const bool          daemonize    = !cmd.get<bool>("f");
 
-    if( daemonize ) {
-        // Oh dear.
+    // Drop privileges + assert that after that we are NOT root!
+    // Note: the command line parser has already validated that this is
+    //       not a nullptr; even the default gets tested against that
+    // Note: setresuid(2) is only available on linux (or glibc)
+    //       even though it is the preferred method, I guess we
+    //       stick to POSIX setuid(2) 
+    struct passwd* run_as_ptr = cmd.get<struct passwd*>("run-as");
+ 
+    ETDCASSERT(::setgid(run_as_ptr->pw_gid)==0, "setgid() failed - " << etdc::strerror(errno));
+    ETDCASSERT(::setuid(run_as_ptr->pw_uid)==0, "setuid() failed - " << etdc::strerror(errno));
+    ETDCASSERT(::getuid() && ::geteuid() && ::getgid() && ::getegid(),
+               "Not all privileges were dropped; some rootage is still left!");
 
+    // Oh dear.
+    if( daemonize ) {
         // We replace std::cerr's streambuf so from this moment on all
         // output goes to syslog - we are, after all, daemonizing
         oldStreamBuf = std::move(etdc::redirect_to_syslog(std::cerr, argv[0]));
 
-        // Drop privileges + assert that after that we are NOT root!
-        // Note: the command line parser has already validated that this is
-        //       not a nullptr; even the default gets tested against that
-        // Note: setresuid(2) is only available on linux (or glibc)
-        //       even though it is the preferred method, I guess we
-        //       stick to POSIX setuid(2) 
-        struct passwd* run_as_ptr = cmd.get<struct passwd*>("run-as");
-     
-        ETDCASSERT(::setuid(run_as_ptr->pw_uid)==0, "setuid() failed - " << etdc::strerror(errno));
-        ETDCASSERT(::setgid(run_as_ptr->pw_gid)==0, "setgid() failed - " << etdc::strerror(errno));
-        ETDCASSERT(::getuid() && ::geteuid() && ::getgid() && ::getegid(),
-                   "Not all privileges were dropped; some rootage is still left!");
         do_daemonize();
     }
 
