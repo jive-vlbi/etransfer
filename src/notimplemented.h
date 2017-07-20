@@ -33,8 +33,8 @@ class not_implemented_exception:
     public std::exception
 {
     public:
-        not_implemented_exception(std::string const& what):
-            mMessage( std::string("not implemented function: ") + what )
+        not_implemented_exception(std::string const& msg):
+            mMessage( std::string("not implemented function: ") + msg )
         {}
 
         virtual const char* what( void ) const noexcept {

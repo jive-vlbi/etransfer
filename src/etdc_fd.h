@@ -119,7 +119,7 @@ namespace etdc {
     std::basic_string<CharT, Traits...> unbracket(std::basic_string<CharT, Traits...> const& h) {
         static const std::regex rxBracket("\\[([:0-9a-fA-F]+(/[0-9]{1,3})?(%[a-zA-Z0-9]+)?)\\]",
                                           std::regex_constants::ECMAScript | std::regex_constants::icase);
-        return std::regex_replace(h, rxBracket, "$1");
+        return std::regex_replace(h, rxBracket, std::string("$1"));
     }
 
     template <class CharT, class Traits>

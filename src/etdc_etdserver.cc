@@ -553,7 +553,7 @@ namespace etdc {
 
         bool                       finished{ false };
         size_t                     curPos{ 0 };
-        std::string                status, info;
+        std::string                status_s, info;
         std::unique_ptr<off_t>     filePos{};
         std::unique_ptr<uuid_type> curUUID{};
 
@@ -583,7 +583,7 @@ namespace etdc {
                     // We get OK (optional stuff)
                     // or     ERR (optional error message)
                     // Either will mean end-of-parsing
-                    status   = fields[1].str();
+                    status_s = fields[1].str();
                     info     = fields[3].str();
                     finished = true;
                 } else {
@@ -599,7 +599,7 @@ namespace etdc {
         // We must have consumed all output from the server
         ETDCASSERT(curPos==0, "requestFileWrite: there are " << curPos << " unconsumed server bytes left in the input. This is likely a protocol error.");
         // We must have seen a success reply
-        ETDCASSERT(status=="OK", "requestFileWrite(" << file << ") failed - " << (info.empty() ? "<unknown reason>" : info));
+        ETDCASSERT(status_s=="OK", "requestFileWrite(" << file << ") failed - " << (info.empty() ? "<unknown reason>" : info));
         // And we must have received both a UUID as well as an AlreadyHave
         ETDCASSERT(filePos && curUUID, "requestFileWrite: the server did NOT send all required fields");
         return result_type{*curUUID, *filePos};
@@ -622,7 +622,7 @@ namespace etdc {
 
         bool                       finished{ false };
         size_t                     curPos{ 0 };
-        std::string                info, status;
+        std::string                info, status_s;
         std::unique_ptr<off_t>     remain{};
         std::unique_ptr<uuid_type> curUUID{};
 
@@ -652,7 +652,7 @@ namespace etdc {
                     // We get OK (optional stuff)
                     // or     ERR (optional error message)
                     // Either will mean end-of-parsing
-                    status   = fields[1].str();
+                    status_s = fields[1].str();
                     info     = fields[3].str(); 
                     finished = true;
                 } else {
@@ -668,7 +668,7 @@ namespace etdc {
         // We must have consumed all output from the server
         ETDCASSERT(curPos==0, "requestFileRead: there are " << curPos << " unconsumed server bytes left in the input. This is likely a protocol error.");
         // We must have seen a success reply
-        ETDCASSERT(status=="OK", "requestFileRead(" << file << ") failed - " << (info.empty() ? "<unknown reason>" : info));
+        ETDCASSERT(status_s=="OK", "requestFileRead(" << file << ") failed - " << (info.empty() ? "<unknown reason>" : info));
         // And we must have received both a UUID as well as an AlreadyHave
         ETDCASSERT(remain && curUUID, "requestFileRead: the server did NOT send all required fields");
         return result_type{*curUUID, *remain};
