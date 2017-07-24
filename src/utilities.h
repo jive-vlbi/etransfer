@@ -55,7 +55,17 @@ namespace etdc {
     template <typename T>
     struct Zero: public T {
         Zero() {
-            ::memset((void *)const_cast<Zero<T>*>(this), 0x0, sizeof(*this));
+            // GCC 6 does not like this - i.e. overwriting oneself 
+            //       using memset. Compiler sais that we're not trivial
+            //       thus may have a vtable thus it sais we should
+            //       use member assignment or c'tor to zero struct out
+            ::memset(static_cast<void*>(const_cast<Zero<T>*>(this)), 0x0, sizeof(T));
+        }
+        // This creates a zeroed-out region of memory
+    	static T* mk( void ) {
+            T*  rv = new T;
+            ::memset(static_cast<void*>(rv), 0x0, sizeof(T));
+            return rv;
         }
     };
 
