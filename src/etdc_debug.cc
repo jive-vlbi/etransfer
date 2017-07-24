@@ -7,7 +7,7 @@ namespace etdc { namespace detail {
     std::atomic<int> __m_fnthres{5};
 
     std::string timestamp( void ) {
-        char           buff[32];
+        char           buff[64];
         struct tm      raw_tm;
         struct timeval raw_t1m3;
 
