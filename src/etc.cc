@@ -30,7 +30,7 @@ static const std::regex rxURL{
     "("
 //   1
     /* protocol */
-    "(((tcp|udt)6?)://)?"
+    "(((tcp|udt)6?):\\/\\/)?"
 //   234 
     /* optional user@ prefix */
     "(([a-z0-9]+)@)?" 
@@ -275,6 +275,7 @@ int main(int argc, char const*const*const argv) {
 
     // Loop over all files to do ...
     using unique_result = std::unique_ptr<etdc::result_type>;
+    const int 	lvl( verbose ? -1 : 9 );
 
     for(auto const& file: files2do) {
         // Skip directories
@@ -285,7 +286,7 @@ int main(int argc, char const*const*const argv) {
         std::exception_ptr eptr;
         try {
             auto const outputFN = mkOutputPath(file);
-            ETDCDEBUG(verbose ? -1 : 9, (push ? "PUSH" : "PULL" ) << " " << mode << " " << file << " -> " << outputFN << std::endl);
+            ETDCDEBUG(lvl, (push ? "PUSH" : "PULL" ) << " " << mode << " " << file << " -> " << outputFN << std::endl);
             dstResult = std::move( unique_result(new etdc::result_type(servers[1]->requestFileWrite(outputFN, mode))) );
             auto nByte = etdc::get_filepos(*dstResult);
 
@@ -296,7 +297,7 @@ int main(int argc, char const*const*const argv) {
                 if( nByteToGo>0 )
                     (void)fn(etdc::get_uuid(*srcResult), etdc::get_uuid(*dstResult), nByteToGo, dataChannels);
                 else
-                    ETDCDEBUG(verbose ? -1 : 9, "Destination is complete or is larger than source file" << std::endl);
+                    ETDCDEBUG(lvl, "Destination is complete or is larger than source file" << std::endl);
             }
         }
         catch( ... ) {
