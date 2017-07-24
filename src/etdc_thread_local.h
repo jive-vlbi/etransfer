@@ -250,7 +250,7 @@ namespace etdc {
                 auto ptr = objStore->find(id);
                 if( ptr==objStore->end() ) {
                     // Buggrit.
-                    auto insres = objStore->emplace( id, stored_type{} );
+                    auto insres = objStore->emplace( id, stored_type() );
                     if( !insres.second )
                         throw std::runtime_error("Failed to insert thread-local instance into object store");
                     ptr = insres.first;
