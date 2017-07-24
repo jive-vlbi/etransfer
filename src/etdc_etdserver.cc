@@ -72,7 +72,7 @@ namespace etdc {
         // Grab lock + execute 
         // Allocate zero-initialized struct and couple with correct deleter for when it goes out of scope
         int                                        globFlags{ GLOB_MARK };
-        std::unique_ptr<glob_t, void(*)(glob_t*)>  files{new etdc::Zero<glob_t>(),
+        std::unique_ptr<glob_t, void(*)(glob_t*)>  files{etdc::Zero<glob_t>::mk(),
                                                          [](glob_t* p) { ::globfree(p); delete p;} };
 
 #ifdef GLOB_TILDE
@@ -415,7 +415,6 @@ namespace etdc {
 
             const std::string   msg( msg_buf.str() );
             dstFD->write(dstFD->__m_fd, msg.data(), msg.size());
-
             while( todo>0 ) {
                 // Read at most bufSz bytes
                 const ssize_t n = dstFD->read(dstFD->__m_fd, &buffer[0], bufSz);
