@@ -1102,16 +1102,20 @@ namespace argparse {
     }
 
     namespace detail {
-        template <typename... T>
-        std::string humanreadable_rx(T const&...);
+        template <typename T>
+        std::string humanreadable_rx(T);
 
         template <>
-        std::string humanreadable_rx<std::string>(std::string const& s) {
+        std::string humanreadable_rx<std::string const&>(std::string const& s) {
             return s;
         }
         template <>
-        std::string humanreadable_rx<std::regex>(std::regex const&) {
-            return "<compiled std::regex>";
+        std::string humanreadable_rx<std::regex const&>(std::regex const&) {
+            return std::string("<compiled std::regex>");
+        }
+        template <>
+        std::string humanreadable_rx<char const*>(char const* s) {
+            return std::string(s);
         }
     }
     // And a cooked regex match constraint for string values
@@ -1120,7 +1124,7 @@ namespace argparse {
         std::regex    rx( std::forward<T>(t), std::forward<Ts>(ts)... );
         return detail::constraint_fn<std::string, detail::formatcondition>(
                         [=](std::string const& s) { return std::regex_match(s, rx); },
-                        std::string("match ")+detail::humanreadable_rx(t));
+                        std::string("match ")+detail::humanreadable_rx(std::forward<T>(t)));
     }
 
     
