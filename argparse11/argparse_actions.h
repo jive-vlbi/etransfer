@@ -1114,6 +1114,10 @@ namespace argparse {
             return std::string("<compiled std::regex>");
         }
         template <>
+        std::string humanreadable_rx<std::regex>(std::regex) {
+            return std::string("<compiled std::regex>");
+        }
+        template <>
         std::string humanreadable_rx<char const*>(char const* s) {
             return std::string(s);
         }
