@@ -369,7 +369,8 @@ namespace argparse {
             // on the equality of the decayed types - we're only interested
             // that the underlying types actually match
             template <typename U>
-            struct test: std::integral_constant<bool, std::is_same<typename std::decay<decltype(std::declval<U>().__m_default)>::type,
+            // Lets be a bit more generous: we must be able to convert from default to target type
+            struct test: std::integral_constant<bool, std::is_convertible<typename std::decay<decltype(std::declval<U>().__m_default)>::type,
                                                                    typename std::decay<T>::type>::value> {};
         };
 
