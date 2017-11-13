@@ -1,4 +1,22 @@
 // Implementation file
+// Copyright (C) 2007-2016 Harro Verkouter
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// any later version.
+// 
+// This program is distributed in the hope that it will be useful, but WITHOUT ANY
+// WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+// PARTICULAR PURPOSE.  See the GNU General Public License for more details.
+// 
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <http://www.gnu.org/licenses/>.
+// 
+// Author:  Harro Verkouter - verkouter@jive.eu
+//          Joint Institute for VLBI in Europe
+//          P.O. Box 2
+//          7990 AA Dwingeloo
 #include <utilities.h>
 #include <etdc_etdserver.h>
 
@@ -59,6 +77,14 @@ namespace etdc {
    
     filelist_type ETDServer::listPath(std::string const& path, bool allow_tilde) const {
         ETDCASSERT(!path.empty(), "We do not allow listing an empty path");
+
+        // The special majick file /dev/zero:[0-9]+([kMGT]i?B)? may be
+        // specified which (1) is implemented as not a real file (so what ...)
+        // and (2) does not get globbed for it is just one file
+        const bool              isDevZero( std::regex_match(path, etdc::rxDevZero) );
+
+        if( isDevZero ) 
+            return filelist_type{ path };
 
         // glob() is MT unsafe so we had better make sure only one thread executes this
         //static std::mutex       globMutex;
@@ -122,9 +148,14 @@ namespace etdc {
 
         // Before doing anything - see if this server already has an entry for this (normalized) path -
         // we cannot honour multiple write attempts (not even if it was already open for reading!)
-        const auto  pathPresent = (std::find_if(std::begin(transfers), std::end(transfers),
+        // 9/Nov/2017 - That is, writing to /dev/null can be done any number of times
+        //              !a && !b => !(a || b)
+        //                  a: writing to dev/null?
+        //                  b: already reading/writing from/to requested file?
+        const auto  pathPresent = !((nPath=="/dev/null") ||
+                                    (std::find_if(std::begin(transfers), std::end(transfers),
                                                 [&](transfermap_type::value_type const& vt) { return vt.second->path==nPath; })
-                                   != std::end(transfers));
+                                    == std::end(transfers)));
         ETDCASSERT(pathPresent==false, "requestFileWrite(" << path << ") - the path is already in use");
 
         // Transform to int argument to open(2) + append some flag(s) if necessary/available
@@ -141,7 +172,7 @@ namespace etdc {
 
         // Note: etdc_file(...) c'tor will create the whole directory tree if necessary.
         //       Because it may/may not have to create, we add the file permission bits
-        etdc_fdptr      fd( new etdc_file(nPath, omode, 0644) );
+        etdc_fdptr      fd( nPath=="/dev/null" ? mk_fd<devzeronull>(nPath, omode) : mk_fd<etdc_file>(nPath, omode, 0644) );
         const off_t     fsize{ fd->lseek(fd->__m_fd, 0, SEEK_END) };
         //const uuid_type uuid{ uuid_type::mk() };
 
@@ -181,7 +212,8 @@ namespace etdc {
 
         // Note: etdc_file(...) c'tor will create the whole directory tree if necessary.
         // Because openmode is read, then we don't have to pass the file permissions; either it's there or it isn't
-        etdc_fdptr      fd( new etdc_file(nPath, omode) );
+        //etdc_fdptr      fd( new etdc_file(nPath, omode) );
+        etdc_fdptr      fd( std::regex_match(nPath, etdc::rxDevZero) ? mk_fd<devzeronull>(nPath, omode) : mk_fd<etdc_file>(nPath, omode) );
         const off_t     sz{ fd->lseek(fd->__m_fd, 0, SEEK_END) };
         //const uuid_type uuid{ uuid_type::mk() };
 
@@ -296,12 +328,20 @@ namespace etdc {
             ETDCASSERT(transfer.openMode==openmode_type::Read, "This server was initialized, but not for reading a file");
 
             // Great. Now we attempt to connect to the remote end
+            const size_t        bufSz( 32*1024*1024 );
             etdc::etdc_fdptr    dstFD;
             std::ostringstream  tried;
 
             for(auto addr: dataAddrs) {
                 try {
-                    dstFD = mk_client(get_protocol(addr), get_host(addr), get_port(addr));
+                    // This is 'sendFile' so our data channel will have to
+                    // have a big send buffer
+
+                    // Pass all possible receive buf sizes - the mk_client
+                    // will make sure only the right ones will be used
+                    dstFD = mk_client(get_protocol(addr), get_host(addr), get_port(addr),
+                                      /*etdc::udt_rcvbuf{bufSz}, etdc::udt_sndbuf{bufSz},*/ etdc::so_rcvbuf{bufSz}, etdc::so_sndbuf{bufSz});
+                                      //etdc::udt_sndbuf{bufSz}, etdc::udp_sndbuf{bufSz}, etdc::so_sndbuf{bufSz});
                     ETDCDEBUG(2, "sendFile/connected to " << addr << std::endl);
                     break;
                 }
@@ -315,7 +355,6 @@ namespace etdc {
             ETDCASSERT(dstFD, "Failed to connect to any of the data servers: " << tried.str());
 
             // Weehee! we're connected!
-            const size_t                     bufSz( 10*1024*1024 );
             std::unique_ptr<unsigned char[]> buffer(new unsigned char[bufSz]);
 
             // Create message header
@@ -324,12 +363,22 @@ namespace etdc {
 
             const std::string   msg( msg_buf.str() );
             dstFD->write(dstFD->__m_fd, msg.data(), msg.size());
-
             while( todo>0 ) {
                 const size_t  n = std::min((size_t)todo, bufSz);
-                ETDCASSERTX(transfer.fd->read(transfer.fd->__m_fd, &buffer[0], n)==(ssize_t)n);
-                ETDCASSERTX(dstFD->write(dstFD->__m_fd, &buffer[0], n)==(ssize_t)n);
-                todo -= (off_t)n;
+                ssize_t       nRead, nWritten{ 0 };
+
+                ETDCASSERT((nRead=transfer.fd->read(transfer.fd->__m_fd, &buffer[0], n))>0,
+                           ((nRead==-1) ? std::string(etdc::strerror(errno)) : std::string("read() returned 0 - hung up?!")));
+
+                // Keep on writing untill all bytes that were read are actually written
+                while( nRead>0 ) {
+                    ssize_t thisWrite;
+                    ETDCASSERT((thisWrite=dstFD->write(dstFD->__m_fd, &buffer[nWritten], nRead))>0,
+                               ((thisWrite==-1) ? std::string(etdc::strerror(errno)) : std::string("write should never have returned 0?!")) );
+                    nRead    -= thisWrite;
+                    nWritten += thisWrite;
+                }
+                todo -= (off_t)nWritten;
             }
             // if we make it out of the loop, todo should be <= 0 and terminate the outer loop
             // wait here until the recipient has acknowledged receipt of all bytes
@@ -387,12 +436,19 @@ namespace etdc {
                        "This server was initialized, but not for writing to file");
 
             // Great. Now we attempt to connect to the remote end
+            const size_t        bufSz( 32*1024*1024 );
             etdc::etdc_fdptr    dstFD;
             std::ostringstream  tried;
 
             for(auto addr: dataAddrs) {
                 try {
-                    dstFD = mk_client(get_protocol(addr), get_host(addr), get_port(addr));
+                    // This is 'getFile' so our data channel will have to
+                    // have a big read buffer
+
+                    // Pass all possible receive buf sizes - the mk_client
+                    // will make sure only the right ones will be used
+                    dstFD = mk_client(get_protocol(addr), get_host(addr), get_port(addr),
+                                      /*etdc::udt_rcvbuf{bufSz}, etdc::udt_sndbuf{bufSz}, */etdc::so_rcvbuf{bufSz}, etdc::so_sndbuf{bufSz});
                     ETDCDEBUG(2, "getFile/connected to " << addr << std::endl);
                     break;
                 }
@@ -406,22 +462,25 @@ namespace etdc {
             ETDCASSERT(dstFD, "Failed to connect to any of the data servers: " << tried.str());
 
             // Weehee! we're connected!
-            const size_t                     bufSz( 10*1024*1024 );
             std::unique_ptr<unsigned char[]> buffer(new unsigned char[bufSz]);
 
             // Create message header
+            ssize_t             nWritten;
             std::ostringstream  msg_buf;
             msg_buf << "{ uuid:" << srcUUID << ", push:1, sz:" << todo << "}";
 
             const std::string   msg( msg_buf.str() );
             dstFD->write(dstFD->__m_fd, msg.data(), msg.size());
+
             while( todo>0 ) {
                 // Read at most bufSz bytes
+                // Note: we do blocking I/O so a read of size zero means
+                //       other side hung up
                 const ssize_t n = dstFD->read(dstFD->__m_fd, &buffer[0], bufSz);
-                if( n>0 ) {
-                    ETDCASSERTX(transfer.fd->write(transfer.fd->__m_fd, &buffer[0], n)==n);
-                    todo -= (off_t)n;
-                }
+                ETDCASSERT(n>0, "getFile/problem: " << ((n==0) ? std::string("remote side hung up") : etdc::strerror(errno)));
+                ETDCASSERT((nWritten=transfer.fd->write(transfer.fd->__m_fd, &buffer[0], n))>0,
+                           ((nWritten==-1) ? std::string(etdc::strerror(errno)) : std::string("write should never have returned 0?!")) );
+                todo -= (off_t)nWritten;
             }
             // if we make it out of the loop, todo should be <= 0 and terminate the outer loop
             // Send ACK 
@@ -1162,17 +1221,25 @@ namespace etdc {
     // client, following the command. But since we're pushing we're going to 
     // ignore any extra bytes sent by the client and overwrite everything in
     // the buffer
-    void ETDDataServer::push_n(size_t n, etdc::etdc_fdptr& src, etdc::etdc_fdptr& dst,
+    void ETDDataServer::push_n(size_t n, etdc::etdc_fdptr src, etdc::etdc_fdptr dst,
                                size_t /*rdPos*/, const size_t /*endPos*/, const size_t bufSz, std::unique_ptr<char[]>& buf) {
-        ETDCDEBUG(5, "ETDDataServer::push_n/n=" << n << std::endl);
         while( n>0 ) {
             // Amount of bytes to process in this iteration
             const ssize_t nRead = std::min(n, bufSz);
-            ETDCDEBUG(5, "ETDDataServer::push_n/iteration/nRead=" << nRead << std::endl);
+            ssize_t       aRead, nWritten{ 0 };
 
-            ETDCASSERTX(src->read(src->__m_fd,  &buf[0], nRead)==nRead);
-            ETDCASSERTX(dst->write(dst->__m_fd, &buf[0], nRead)==nRead);
-            n -= nRead;
+            ETDCASSERT((aRead=src->read(src->__m_fd, &buf[0], nRead))>0,
+                       ((aRead==-1) ? std::string(etdc::strerror(errno)) : std::string("read() returned 0 - hung up?!")));
+
+            // Keep on writing untill all bytes that were read are actually written
+            while( aRead>0 ) {
+                ssize_t thisWrite;
+                ETDCASSERT((thisWrite=dst->write(dst->__m_fd, &buf[nWritten], aRead))>0,
+                           ((thisWrite==-1) ? std::string(etdc::strerror(errno)) : std::string("write should never have returned 0?!")) );
+                aRead    -= thisWrite;
+                nWritten += thisWrite;
+            }
+            n -= (size_t)nWritten;
         }
         // Do a read from the destination such that we know it is finished
         char ack;
@@ -1184,7 +1251,7 @@ namespace etdc {
     // the bytes between endPos and rdPos are what was read from the client,
     // raw bytes immediately following the command. We flush those to the
     // file first and then we can use the whole buffer for reading bytes.
-    void ETDDataServer::pull_n(size_t n, etdc::etdc_fdptr& src, etdc::etdc_fdptr& dst,
+    void ETDDataServer::pull_n(size_t n, etdc::etdc_fdptr src, etdc::etdc_fdptr dst,
                                size_t rdPos, const size_t endPos, const size_t bufSz, std::unique_ptr<char[]>& buf) {
         // rdPos:  current start of read area in buf
         // endPos: passed in from above; this is where the initial command
@@ -1192,7 +1259,7 @@ namespace etdc {
         // wrPos:  current end of read aread in buf
         // bufSz:  size of buf
         size_t  wrEnd( endPos );
-        ETDCDEBUG(5, "ETDDataServer::pull_n/n=" << n << " rdPos=" << rdPos << " wrEnd=" << wrEnd << std::endl);
+
         while( n>0 ) {
             // Attempt read as many bytes into our buffer as we can; there
             // should be room for bufSz - wrEnd bytes. Amount of bytes still/already in buf = wrEnd - rdPos
@@ -1200,8 +1267,6 @@ namespace etdc {
             ssize_t       aRead;
             const ssize_t nRead = std::min(n + rdPos - wrEnd, bufSz - wrEnd);
         
-            ETDCDEBUG(5, "ETDDataServer::pull_n/iteration/nRead=" << nRead << std::endl);
-
             // Attempt to read bytes. <0 is an error
             ETDCASSERT((aRead = src->read(src->__m_fd, &buf[wrEnd], nRead))>=0, "Failed to read bytes from client - " << etdc::strerror(errno));
 

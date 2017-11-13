@@ -273,6 +273,60 @@ namespace etdc {
             void setup_basic_fns( void );
     };
 
+    namespace detail {
+        constexpr int64_t ipow(int64_t base, int exp, int64_t result = 1) {
+              return exp < 1 ? result : ipow(base*base, exp/2, (exp % 2) ? result*base : result);
+        }
+    }
+    // the pattern for /dev/zero:<size>[unit]
+    // unit can be empty              [base 1]
+    //             kB,  MB,  GB,  TB  [base 1024]
+    //             kiB, MiB, GiB, TiB [base 1000]
+    // numbers below the regex identify submatch indices
+    static const std::regex rxDevZero("^/dev/zero:([0-9]+)(([kMGT])(i?)B)?$");
+    //                                            1       23       4
+
+    // the fake file for speed testing
+    // can be used for reading from ("/dev/zero:size") or writing to ("/dev/null")
+    struct devzeronull:
+        public etdc_fd {
+
+            // no default objects
+            devzeronull() = delete;
+
+            // only acceptable paths: /dev/zero:<size> or /dev/null
+            // we only keep "mode" for testing RDONLY/WRONLY in the read()
+            // resp. write() function.
+            // This 'file descriptor' will always have data available so
+            // blocking/non-blocking is completely ignored
+            template <typename... Args>
+            devzeronull(std::string const& path, int omode, Args...): __m_closed(false), __m_mode(omode), __m_fSize(0), __m_fPointer(0) {
+                // base and power lookups
+                static const std::map<std::string, int> exponents{ {"", 0}, {"k", 1}, {"M", 2}, {"G", 3}, {"T", 4} };
+                std::smatch             fields;
+                const bool              isDevZero( std::regex_match(path, fields, rxDevZero) );
+                ETDCASSERT(path=="/dev/null" || isDevZero,
+                           std::string("Invalid path '") + path + "' [expect /dev/null or /dev/zero:<size>]");
+
+                // if isDevZero we must parse out the file size
+                if( isDevZero )
+                    __m_fSize = std::stoull(fields[1].str()) * /* size */
+                                (fields[2].str().empty() ?     /* any unit following? */
+                                  1 : /* nope */
+                                  detail::ipow( (fields[4].str().empty() ? 1024 : 1000), /* yes, base**exp */
+                                                etdc::get(exponents, fields[3].str(), 1) /*exponents[ fields[3].str() ]*/ /*exp*/)  );
+                setup_basic_fns();
+            }
+        private:
+            void setup_basic_fns( void );
+
+            // we need to do our own bookkeeping: fake file pointer and size
+            bool         __m_closed;
+            const int    __m_mode;
+            std::size_t  __m_fSize;
+            std::size_t  __m_fPointer;
+    };
+
 // End of the etdc namespace
 }
 
@@ -291,6 +345,11 @@ etdc::ipport_type mk_ipport(T const& host, etdc::port_type port = etdc::any_port
 template <typename T, typename U>
 etdc::sockname_type mk_sockname(T const& proto, U const& host, etdc::port_type port = etdc::any_port) {
     return etdc::sockname_type(proto, host, port);
+}
+
+template <typename T, typename... Args>
+etdc::etdc_fdptr mk_fd(Args&&... args) {
+    return etdc::etdc_fdptr( std::make_shared<T>(std::forward<Args>(args)...) );
 }
 
 ///////////////////////////////////////////////////////////////////////////
@@ -379,7 +438,11 @@ namespace etdc {
             port_type        srvPort    {};
             etdc::udt_mss    udtMSS     {};
             etdc::so_rcvbuf  rcvBufSize {};
+            etdc::so_sndbuf  sndBufSize {};
             etdc::udt_rcvbuf udtBufSize {};
+            etdc::udt_sndbuf udtSndBufSize {};
+            etdc::udp_rcvbuf udpBufSize {};
+            etdc::udp_sndbuf udpSndBufSize {};
             etdc::ipv6_only  ipv6_only  {};
             etdc::udt_linger udtLinger  {};
         };
@@ -388,7 +451,11 @@ namespace etdc {
                                                             &server_settings::srvHost,
                                                             &server_settings::srvPort,
                                                             &server_settings::rcvBufSize,
+                                                            &server_settings::sndBufSize,
                                                             &server_settings::udtBufSize,
+                                                            &server_settings::udtSndBufSize,
+                                                            &server_settings::udpBufSize,
+                                                            &server_settings::udpSndBufSize,
                                                             &server_settings::udtMSS,
                                                             &server_settings::ipv6_only,
                                                             &server_settings::udtLinger );
@@ -408,12 +475,18 @@ namespace etdc {
             {"udt", []() { return update_srv.mk(backlog_type{4},
                                                 blocking_type{true},
                                                 etdc::udt_rcvbuf{defaultUDTBufSize},
+                                                etdc::udt_sndbuf{defaultUDTBufSize},
+                                                etdc::udp_sndbuf{32*1024*1024},
+                                                etdc::udp_rcvbuf{32*1024*1024},
                                                 any_port, etdc::udt_linger{{0,0}},
                                                 etdc::udt_mss{1500});
                          }},
             {"udt6", []() { return update_srv.mk(backlog_type{4},
                                                 blocking_type{true},
                                                 etdc::udt_rcvbuf{defaultUDTBufSize},
+                                                etdc::udt_sndbuf{defaultUDTBufSize},
+                                                etdc::udp_sndbuf{32*1024*1024},
+                                                etdc::udp_rcvbuf{32*1024*1024},
                                                 any_port, etdc::udt_linger{{0,0}},
                                                 etdc::udt_mss{1500});
                          }}
@@ -437,8 +510,11 @@ namespace etdc {
 
                         // Set socket options 
                         etdc::setsockopt(pSok->__m_fd, etdc::so_reuseaddr{true});
+
                         if( srv.rcvBufSize )
                             etdc::setsockopt(pSok->__m_fd, srv.rcvBufSize);
+                        if( srv.sndBufSize )
+                            etdc::setsockopt(pSok->__m_fd, srv.sndBufSize);
 
                         // Get the port info
                         // See "etdc_resolve.h" for FFS glibc shit why we
@@ -490,6 +566,8 @@ namespace etdc {
                         // Override rcvbufsize only if actually set
                         if( srv.rcvBufSize )
                             etdc::setsockopt(pSok->__m_fd, srv.rcvBufSize);
+                        if( srv.sndBufSize )
+                            etdc::setsockopt(pSok->__m_fd, srv.sndBufSize);
 
                         // Get the port info
                         // See "etdc_resolve.h" for FFS glibc shit why we
@@ -526,7 +604,18 @@ namespace etdc {
                         struct sockaddr_in sa;
                         
                         // Set a couple of socket options
-                        etdc::setsockopt(pSok->__m_fd, etdc::udt_reuseaddr{true}, srv.udtBufSize, srv.udtMSS, srv.udtLinger);
+                        // NOTE: For really large buffers we must set the UDT_FC (flow control, window size)
+                        //       to a larger value (25600 in libudt), it is
+                        //       measured in MSS packets so we set this
+                        //       option from the server's configured values
+                        const auto fc = (etdc::untag(srv.udtBufSize)/(etdc::untag(srv.udtMSS)-28))+256;
+                        etdc::setsockopt(pSok->__m_fd, etdc::udt_reuseaddr{true}, etdc::udt_fc{fc}, 
+                                         srv.udtBufSize, srv.udtSndBufSize, srv.udtMSS, srv.udtLinger);
+
+                        if( srv.udpBufSize )
+                            etdc::setsockopt(pSok->__m_fd, srv.udpBufSize);
+                        if( srv.udpSndBufSize )
+                            etdc::setsockopt(pSok->__m_fd, srv.udpSndBufSize);
 
                         // Need to resolve? For here we assume empty host means any
                         ETDCSYSCALL(etdc::resolve_host<etdc::EmptyMeansAny>(srv.srvHost, SOCK_STREAM, IPPROTO_TCP, sa),
@@ -570,7 +659,19 @@ namespace etdc {
                         
                         // Set a couple of socket options
                         // Note: we cannot set the IPv6 only option through the UDT library at the moment
-                        etdc::setsockopt(pSok->__m_fd, etdc::udt_reuseaddr{true}, srv.udtBufSize, srv.udtMSS, srv.udtLinger);
+                        // NOTE: For really large buffers we must set the UDT_FC (flow control, window size)
+                        //       to a larger value (25600 in libudt), it is
+                        //       measured in MSS packets so we set this
+                        //       option from the server's configured values
+                        const auto fc = (etdc::untag(srv.udtBufSize)/(etdc::untag(srv.udtMSS)-28))+256;
+                        etdc::setsockopt(pSok->__m_fd, etdc::udt_reuseaddr{true}, etdc::udt_fc{fc}, 
+                                         srv.udtBufSize, srv.udtSndBufSize, srv.udtMSS, srv.udtLinger);
+                        //etdc::setsockopt(pSok->__m_fd, etdc::udt_reuseaddr{true}, srv.udtBufSize, srv.udtSndBufSize, srv.udtMSS, srv.udtLinger);
+
+                        if( srv.udpBufSize )
+                            etdc::setsockopt(pSok->__m_fd, srv.udpBufSize);
+                        if( srv.udpSndBufSize )
+                            etdc::setsockopt(pSok->__m_fd, srv.udpSndBufSize);
 
                         // Need to resolve? For here we assume empty host means any
                         ETDCSYSCALL(etdc::resolve_host<etdc::EmptyMeansAny>(srv.srvHost, SOCK_STREAM, IPPROTO_TCP, sa),
@@ -628,7 +729,11 @@ namespace etdc {
             port_type        clntPort   {};
             etdc::udt_mss    udtMSS     {};
             etdc::so_sndbuf  sndBufSize {};
+            etdc::so_rcvbuf  rcvBufSize {};
             etdc::udt_sndbuf udtBufSize {};
+            etdc::udt_rcvbuf udtRcvBufSize {};
+            etdc::udp_sndbuf udpBufSize {};
+            etdc::udp_rcvbuf udpRcvBufSize {};
             etdc::ipv6_only  ipv6_only  {};
             etdc::udt_linger udtLinger  {};
         };
@@ -636,8 +741,12 @@ namespace etdc {
                                                              &client_settings::clntPort,
                                                              &client_settings::clntHost,
                                                              &client_settings::sndBufSize,
+                                                             &client_settings::rcvBufSize,
                                                              &client_settings::udtMSS,
                                                              &client_settings::udtBufSize,
+                                                             &client_settings::udtRcvBufSize,
+                                                             &client_settings::udpBufSize,
+                                                             &client_settings::udpRcvBufSize,
                                                              &client_settings::ipv6_only,
                                                              &client_settings::udtLinger );
 
@@ -655,6 +764,9 @@ namespace etdc {
             {"udt", []() { return update_clnt.mk(etdc::udt_mss{1500},
                                                  any_port, etdc::udt_linger{{0, 0}},
                                                  etdc::udt_sndbuf{defaultUDTBufSize},
+                                                 etdc::udt_rcvbuf{defaultUDTBufSize},
+                                                 etdc::udp_sndbuf{32*1024*1024},
+                                                 etdc::udp_rcvbuf{32*1024*1024},
                                                  blocking_type{true});
                          }},
             {"udt6", []() { return update_clnt.mk(etdc::udt_mss{1500},
@@ -662,6 +774,9 @@ namespace etdc {
                                                  // set an option at the IPPROTO_IPV6 level.
                                                  any_port, etdc::udt_linger{{0,0}},
                                                  etdc::udt_sndbuf{defaultUDTBufSize},
+                                                 etdc::udt_rcvbuf{defaultUDTBufSize},
+                                                 etdc::udp_sndbuf{32*1024*1024},
+                                                 etdc::udp_rcvbuf{32*1024*1024},
                                                  blocking_type{true});
                          }}
         };
@@ -685,6 +800,8 @@ namespace etdc {
                         // Set socket options
                         if( clnt.sndBufSize )
                             etdc::setsockopt(pSok->__m_fd, clnt.sndBufSize);
+                        if( clnt.rcvBufSize )
+                            etdc::setsockopt(pSok->__m_fd, clnt.rcvBufSize);
 
                         // Make sure sokkit is in correct blocking mode
                         pSok->setblocking(pSok->__m_fd, etdc::untag(clnt.blocking));
@@ -719,6 +836,8 @@ namespace etdc {
 
                         if( clnt.sndBufSize )
                             etdc::setsockopt(pSok->__m_fd, clnt.sndBufSize);
+                        if( clnt.rcvBufSize )
+                            etdc::setsockopt(pSok->__m_fd, clnt.rcvBufSize);
 
                         // Make sure sokkit is in correct blocking mode
                         pSok->setblocking(pSok->__m_fd, etdc::untag(clnt.blocking));
@@ -743,7 +862,19 @@ namespace etdc {
                         sa.sin_port = etdc::htons_( clnt.clntPort );
 
                         // Set socket options
-                        etdc::setsockopt(pSok->__m_fd, clnt.udtBufSize, clnt.udtMSS, clnt.udtLinger);
+                        // NOTE: For really large buffers we must set the UDT_FC (flow control, window size)
+                        //       to a larger value (25600 in libudt), it is
+                        //       measured in MSS packets so we set this
+                        //       option from the server's configured values
+                        const auto fc = (etdc::untag(clnt.udtRcvBufSize)/(etdc::untag(clnt.udtMSS)-28))+256;
+                        etdc::setsockopt(pSok->__m_fd, etdc::udt_reuseaddr{true}, etdc::udt_fc{fc}, 
+                                         clnt.udtBufSize, clnt.udtRcvBufSize, clnt.udtMSS, clnt.udtLinger);
+                        //etdc::setsockopt(pSok->__m_fd, clnt.udtBufSize, clnt.udtRcvBufSize, clnt.udtMSS, clnt.udtLinger);
+
+                        if( clnt.udpBufSize )
+                            etdc::setsockopt(pSok->__m_fd, clnt.udpBufSize);
+                        if( clnt.udpRcvBufSize )
+                            etdc::setsockopt(pSok->__m_fd, clnt.udpRcvBufSize);
 
                         // Make sure sokkit is in correct blocking mode
                         pSok->setblocking(pSok->__m_fd, etdc::untag(clnt.blocking));
@@ -775,7 +906,18 @@ namespace etdc {
 
                         // Set socket options
                         // Note: we cannot currently set the IPv6 only option through the UDT library
-                        etdc::setsockopt(pSok->__m_fd, clnt.udtBufSize, clnt.udtMSS, clnt.udtLinger);
+                        //       to a larger value (25600 in libudt), it is
+                        //       measured in MSS packets so we set this
+                        //       option from the server's configured values
+                        const auto fc = (etdc::untag(clnt.udtRcvBufSize)/(etdc::untag(clnt.udtMSS)-28))+256;
+                        etdc::setsockopt(pSok->__m_fd, etdc::udt_reuseaddr{true}, etdc::udt_fc{fc}, 
+                                         clnt.udtBufSize, clnt.udtRcvBufSize, clnt.udtMSS, clnt.udtLinger);
+                        //etdc::setsockopt(pSok->__m_fd, clnt.udtBufSize, clnt.udtRcvBufSize, clnt.udtMSS, clnt.udtLinger);
+
+                        if( clnt.udpBufSize )
+                            etdc::setsockopt(pSok->__m_fd, clnt.udpBufSize);
+                        if( clnt.udpRcvBufSize )
+                            etdc::setsockopt(pSok->__m_fd, clnt.udpRcvBufSize);
 
                         // Make sure sokkit is in correct blocking mode
                         pSok->setblocking(pSok->__m_fd, etdc::untag(clnt.blocking));

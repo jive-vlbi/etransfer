@@ -150,9 +150,12 @@ namespace etdc {
     using so_reuseport  = detail::BooleanSocketOption<SO_REUSEPORT>;
 #endif
 
+    using udt_fc        = detail::SimpleUDTOption<UDT_FC>;
     using udt_mss       = detail::SimpleUDTOption<UDT_MSS>;
     using udt_sndbuf    = detail::SimpleUDTOption<UDT_SNDBUF>;
     using udt_rcvbuf    = detail::SimpleUDTOption<UDT_RCVBUF>;
+    using udp_sndbuf    = detail::SimpleUDTOption<UDP_SNDBUF>;
+    using udp_rcvbuf    = detail::SimpleUDTOption<UDP_RCVBUF>;
     using udt_reuseaddr = detail::BooleanUDTOption<UDT_REUSEADDR>;
     using udt_sndsyn    = detail::BooleanUDTOption<UDT_SNDSYN>;
     using udt_rcvsyn    = detail::BooleanUDTOption<UDT_RCVSYN>;

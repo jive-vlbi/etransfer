@@ -1,4 +1,22 @@
 // implementation of base- and derived classes for wrapping file descriptors
+// Copyright (C) 2007-2016 Harro Verkouter
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// any later version.
+// 
+// This program is distributed in the hope that it will be useful, but WITHOUT ANY
+// WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+// PARTICULAR PURPOSE.  See the GNU General Public License for more details.
+// 
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <http://www.gnu.org/licenses/>.
+// 
+// Author:  Harro Verkouter - verkouter@jive.eu
+//          Joint Institute for VLBI in Europe
+//          P.O. Box 2
+//          7990 AA Dwingeloo
 //
 #include <etdc_fd.h>
 #include <reentrant.h>
@@ -349,7 +367,7 @@ namespace etdc {
                                    off_t  rv;
                                    ETDCASSERT((rv=::lseek(fd, offset, whence))!=(off_t)-1, "lseek fails - " << etdc::strerror(errno));
                                    return rv;
-                                   })
+                               })
         );
     }
 
@@ -480,4 +498,89 @@ namespace etdc {
 
 
     } // namespace detail
+
+    ////////////////////////////////////////////////////////////////
+    //   I/O to a non-existant file; /dev/null or /dev/zero
+    ////////////////////////////////////////////////////////////////
+    void devzeronull::setup_basic_fns( void ) {
+        // Because this a pure memory file w/ no backing storage or file
+        // system or O/S behind it, we must emulate the read, write, seek
+        // and close calls
+        etdc::update_fd(*this,
+                        // we only update the file pointer, no i/o happens
+                        // try to be POSIX compliant
+                        // readin' always succeeds, apart from readin' past EOF
+                        // or file not opened for readin
+                        read_fn([this](int, void*, size_t n) {
+                                // if this one wasn't opened for readin'
+                                // return an errors
+                                if( __m_closed || ((__m_mode&O_RDWR)!=O_RDWR && (__m_mode&O_RDONLY)!=O_RDONLY) ) {
+                                    errno = EBADF;
+                                    return (ssize_t)-1;
+                                }
+                                // 'no read shall happen past the end'
+                                if( __m_fPointer>=__m_fSize )
+                                    return (ssize_t)0;
+                                // how many bytes can be read? save old file
+                                // pointer
+                                const std::size_t  old_fPointer = __m_fPointer;
+                                // compute new file pointer, topping it off
+                                // at file size
+                                __m_fPointer = std::min(__m_fSize, __m_fPointer+n);
+                                // And the difference between the two file
+                                // pointers is the number of bytes 'read'
+                                return (ssize_t)(__m_fPointer - old_fPointer);
+                            }),
+                        // we only update the file pointer, no i/o happens
+                        // try to be POSIX compliant too.
+                        // Writing always succeeds unless the file wasn't
+                        // opened for writin'
+                        write_fn([this](int, const void*, size_t n) {
+                                // if this one wasn't opened for readin'
+                                // return an errors
+                                if( __m_closed || ((__m_mode&O_RDWR)==0 && (__m_mode&O_WRONLY)==0) ) {
+                                    errno = EBADF;
+                                    return (ssize_t)-1;
+                                }
+                                // bump the current file pointer
+                                __m_fPointer += n;
+                                // new file size is maximum of old size and
+                                // new file pointer
+                                __m_fSize     = std::max(__m_fSize, __m_fPointer);
+                                return (ssize_t)n;
+                            }),
+                        // attempt to comply to POSIX
+                        lseek_fn([this](int, off_t offset, int whence) {
+                                if( __m_closed ) {
+                                    errno = EBADF;
+                                    return (off_t)-1;
+                                }
+                                std::size_t   new_fPointer;
+                                switch( whence ) {
+                                    case SEEK_SET:
+                                        new_fPointer = offset;
+                                        break;
+                                    case SEEK_CUR:
+                                        new_fPointer = __m_fPointer + offset;
+                                        break;
+                                    // return '-1' + EINVAL if 'whence' is
+                                    // unrecognized or attempt to seek from end by
+                                    // more than the file size
+                                    case SEEK_END:
+                                        if( offset<=(off_t)__m_fSize ) {
+                                            new_fPointer = __m_fSize - offset;
+                                            break;
+                                        }
+                                    default:
+                                        errno = EINVAL;
+                                        return (off_t)-1;
+                                }
+                                return (off_t)(__m_fPointer = new_fPointer);
+                            }),
+                        // mark the file as closed
+                        close_fn([this](int) { __m_closed = true; return 0; }),
+                        // setting blocking flag doesn't do /anything/
+                        setblocking_fn([this](int, bool) { return; })
+        );
+    }
 } // namespace etdc

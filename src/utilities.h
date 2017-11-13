@@ -21,6 +21,7 @@
 #define ETDC_UTILITIES_H
 
 // std c++
+#include <map>
 #include <tuple>
 #include <memory>
 #include <string>
@@ -609,6 +610,32 @@ namespace etdc {
     template <typename Container>
     auto no_duplicates_inserter(Container& container, typename Container::iterator iter) -> no_duplicates_iterator<Container> {
         return no_duplicates_iterator<Container>(container, iter);
+    }
+
+
+    //////////////////////////////////////////////////////////////////////////////////////////
+    //
+    //  Pythonic "get(dict, key, default)"
+    //  We have two flavours: dict and const dict [aka std::map<Key,Value>]
+    //
+    //////////////////////////////////////////////////////////////////////////////////////////
+
+    template <typename Dict, typename Default, typename Foo = typename std::remove_reference<Dict>::type, typename Bar = typename std::decay<Dict>::type>
+    typename std::enable_if<std::is_const<Foo>::value && std::is_convertible<Default, typename Bar::mapped_type>::value, typename Bar::mapped_type>::type
+    get(Dict&& d, const typename Bar::key_type key, Default&& def) {
+        auto ptr = d.find(key);
+        if( ptr==d.end() )
+            return typename Bar::mapped_type{ std::forward<Default>(def) };
+        return ptr->second;
+    }
+    // non-const get
+    template <typename Dict, typename Default, typename Foo = typename std::remove_reference<Dict>::type, typename Bar = typename std::decay<Dict>::type>
+    typename std::enable_if<!std::is_const<Foo>::value && std::is_convertible<Default, typename Bar::mapped_type>::value, typename Bar::mapped_type>::type
+    get(Dict&& d, const typename Bar::key_type key, Default&& def) {
+        auto ptr = d.find(key);
+        if( ptr==d.end() )
+            d[ key ] = typename Bar::mapped_type{ std::forward<Default>(def) };
+        return d[ key ];
     }
 }
 

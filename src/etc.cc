@@ -1,4 +1,22 @@
-// etransfer client program/etdc=etransfer daemon + client
+// etransfer client program of the etdc=etransfer daemon + client
+// Copyright (C) 2007-2016 Harro Verkouter
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// any later version.
+// 
+// This program is distributed in the hope that it will be useful, but WITHOUT ANY
+// WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+// PARTICULAR PURPOSE.  See the GNU General Public License for more details.
+// 
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <http://www.gnu.org/licenses/>.
+// 
+// Author:  Harro Verkouter - verkouter@jive.eu
+//          Joint Institute for VLBI in Europe
+//          P.O. Box 2
+//          7990 AA Dwingeloo
 #include <version.h>
 #include <etdc_fd.h>
 #include <etdc_thread.h>
@@ -108,12 +126,38 @@ extern "C" {
     void dummy_signal_handler(int) { }
 }
 
+struct socketoptions_type {
+
+    socketoptions_type():
+        bufSize{ 32*1024*1024 }, MTU{ 1500 }
+    {}
+
+    size_t        bufSize;
+    unsigned int  MTU;
+#if 0
+    template <typename... Args>
+    auto mk_etdserver(Args&&... args) -> decltype(::mk_etdserver()) {
+        return ::mk_etdserver(std::forward<Args>(args)..., etdc::udt_mss{ MTU }, etdc::udt_rcvbuf{ bufSize },
+                            etdc::udt_sndbuf{ bufSize }, etdc::so_rcvbuf{ bufSize }, etdc::so_sndbuf{ bufSize });
+    }
+    template <typename... Args>
+    auto mk_etdproxy(Args&&... args) -> decltype(::mk_etdserver()) {
+        return ::mk_etdproxy(std::forward<Args>(args)..., etdc::udt_mss{ MTU }, etdc::udt_rcvbuf{ bufSize },
+                           etdc::udt_sndbuf{ bufSize }, etdc::so_rcvbuf{ bufSize }, etdc::so_sndbuf{ bufSize });
+    }
+#endif
+};
+
+
 
 int main(int argc, char const*const*const argv) {
     // First things first: block ALL signals
     etdc::BlockAll         ba;
     // Let's set up the command line parsing
     int                    message_level = 0;
+#if 0
+    socketoptions_type     sockopts{};
+#endif
     etdc::openmode_type    mode{ etdc::openmode_type::New };
     AP::ArgumentParser     cmd( AP::version( buildinfo() ),
                                 AP::docstring("'ftp' like etransfer client program.\n"
@@ -191,9 +235,16 @@ int main(int argc, char const*const*const argv) {
                    AP::constrain([&](url_type const& url) { if( url.isLocal ) nLocal++; return nLocal<2; }, "At most one local PATH can be given"),
                    AP::docstring("SRC and DST URL/PATH"))
         );
-
+#if 0
+    // Allow user to set network related options
+    cmd.add( AP::store_into(sockopts.MTU), AP::long_name("mss"),
+             AP::minimum_value((unsigned int)64), AP::maximum_value((unsigned int)65536), // UDP datagram limits
+             AP::docstring(std::string("Set UDT maximum segment size. Not honoured if data channel is TCP. Default ")+etdc::repr(sockopts.MTU)) );
+    cmd.add( AP::store_into(sockopts.bufSize), AP::long_name("buffer"),
+             AP::docstring(std::string("Set send/receive buffer size. Default ")+etdc::repr(sockopts.bufSize)) );
+#endif
     // Flag wether or not to wait
-    cmd.add(AP::store_true(), AP::short_name('b'), AP::docstring("Do not exit but do a blocking read instead"));
+    //cmd.add(AP::store_true(), AP::short_name('b'), AP::docstring("Do not exit but do a blocking read instead"));
 
     // OK Let's check that mother
     cmd.parse(argc, argv);
@@ -213,7 +264,7 @@ int main(int argc, char const*const*const argv) {
     // We must transform the URL(s) into ETDServerInterface* 
     std::transform(std::begin(urls), std::end(urls), std::back_inserter(servers),
                    [&](url_type const& url) {
-                        return url.isLocal ? mk_etdserver(std::ref(localState)) : mk_etdproxy(url.protocol, url.host, url.port);
+                        return url.isLocal ? ::mk_etdserver(std::ref(localState)) : ::mk_etdproxy(url.protocol, url.host, url.port);
                     });
 
     // Get the list of files to transfer (or to list if servers.size()==1)
@@ -234,11 +285,11 @@ int main(int argc, char const*const*const argv) {
     std::list<std::string> files2do;
 
     std::copy_if(std::begin(remoteList), std::end(remoteList), std::back_inserter(files2do),
-                 [](std::string const& pth) {return !isDir(pth);});
+                 [](std::string const& pth) { return !isDir(pth); });
 
     ETDCASSERT(files2do.empty()==false, "Your path '" << urls[0].path << "' did not match any file(s) to transfer");
     if( files2do.size()>1 )
-        ETDCASSERT(isDir(urls[1].path), "Cannot copy " << files2do.size() << " files to the same destination file");
+        ETDCASSERT(isDir(urls[1].path) || urls[1].path=="/dev/null", "Cannot copy " << files2do.size() << " files to the same destination file");
 
     // Compute output path
     const std::string dstPath      = urls[1].path;

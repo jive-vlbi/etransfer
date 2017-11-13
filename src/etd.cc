@@ -1,4 +1,22 @@
 // etransfer server program/etdc=etransfer daemon + client
+// Copyright (C) 2007-2016 Harro Verkouter
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// any later version.
+// 
+// This program is distributed in the hope that it will be useful, but WITHOUT ANY
+// WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+// PARTICULAR PURPOSE.  See the GNU General Public License for more details.
+// 
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <http://www.gnu.org/licenses/>.
+// 
+// Author:  Harro Verkouter - verkouter@jive.eu
+//          Joint Institute for VLBI in Europe
+//          P.O. Box 2
+//          7990 AA Dwingeloo
 #include <version.h>
 #include <etdc_fd.h>
 #include <reentrant.h>
@@ -58,26 +76,30 @@ static std::map<std::string, std::function<void(etdc::etdc_fdptr, std::string co
 dbgMap = {
     {"udt", [](etdc::etdc_fdptr pSok, std::string const& s) {
                                                                 etdc::udt_rcvbuf  rcv;
+                                                                etdc::udt_sndbuf  snd;
                                                                 etdc::udt_linger  linger;
-                                                                etdc::getsockopt(pSok->__m_fd, rcv, linger);
-                                                                ETDCDEBUG(1, s << "/UDT rcvbuf = " << rcv << " linger=" << untag(linger).l_onoff << ":" << untag(linger).l_linger << endl);
+                                                                etdc::getsockopt(pSok->__m_fd, rcv, linger, snd);
+                                                                ETDCDEBUG(1, s << "/UDT rcvbuf = " << rcv << " sndbuf = " << snd << " linger=" << untag(linger).l_onoff << ":" << untag(linger).l_linger << endl);
                                                             }},
     {"udt6", [](etdc::etdc_fdptr pSok, std::string const& s) {
                                                                  etdc::udt_rcvbuf  rcv;
+                                                                 etdc::udt_sndbuf  snd;
                                                                  etdc::udt_linger  linger;
                                                                  etdc::getsockopt(pSok->__m_fd, rcv, linger);
-                                                                 ETDCDEBUG(1, s << "/UDT6 rcvbuf = " << rcv << " linger=" << untag(linger).l_onoff << ":" << untag(linger).l_linger << endl);
+                                                                 ETDCDEBUG(1, s << "/UDT6 rcvbuf = " << rcv << " sndbuf = " << snd << " linger=" << untag(linger).l_onoff << ":" << untag(linger).l_linger << endl);
                                                              }},
     {"tcp", [](etdc::etdc_fdptr pSok, std::string const& s) {
                                                                 etdc::so_rcvbuf  rcv;
-                                                                etdc::getsockopt(pSok->__m_fd, rcv);
-                                                                ETDCDEBUG(1, s << "/TCP rcvbuf = " << rcv << endl);
+                                                                etdc::so_sndbuf  snd;
+                                                                etdc::getsockopt(pSok->__m_fd, rcv, snd);
+                                                                ETDCDEBUG(1, s << "/TCP rcvbuf = " << rcv << " sndbuf = " << snd << endl);
                                                             }},
     {"tcp6", [](etdc::etdc_fdptr pSok, std::string const& s) {
                                                                  etdc::so_rcvbuf  rcv;
+                                                                 etdc::so_sndbuf  snd;
                                                                  etdc::ipv6_only  ipv6;
-                                                                 etdc::getsockopt(pSok->__m_fd, rcv, ipv6);
-                                                                 ETDCDEBUG(1, s << "/TCP6 rcvbuf = " << rcv << ", ipv6 only = " << ipv6 << endl);
+                                                                 etdc::getsockopt(pSok->__m_fd, rcv, ipv6, snd);
+                                                                 ETDCDEBUG(1, s << "/TCP6 rcvbuf = " << rcv << " sndbuf = " << snd << ", ipv6 only = " << ipv6 << endl);
                                                              }}
 };
 
@@ -117,10 +139,21 @@ static std::string unbracket(std::string const& h) {
     return std::regex_replace(h, rxBracket, "$1");
 }
 
+struct socketoptions_type {
+
+    socketoptions_type():
+        bufSize{ 32*1024*1024 }, MTU{ 1500 }
+    {}
+
+    size_t        bufSize;
+    unsigned int  MTU;
+};
+
+
 struct string2socket_type_m {
     string2socket_type_m() = delete;
-    string2socket_type_m(etdc::port_type defPort):
-        __m_default_port( defPort )
+    string2socket_type_m(etdc::port_type defPort, socketoptions_type const& so):
+        __m_default_port( defPort ), __m_sockopts( so )
     {}
 
     // to be a converter we must have "void (<target type>&, std::string const&) const"
@@ -135,9 +168,11 @@ struct string2socket_type_m {
         std::regex_match(s, m, rxURL);
 
         fd = mk_server(etdc::protocol_type(m[1]), etdc::host_type(unbracket(m[3])), // protocol + local addres (if any)
-                       //(m[7].length() ? port(m[7]) : port(DefPort) ), // port
                        (m[7].length() ? port(m[7]) :  __m_default_port), // port
-                       etdc::udt_rcvbuf{10*1024*1024}, etdc::so_rcvbuf{4*1024},  // some socket options
+                       etdc::udt_mss{ __m_sockopts.MTU },
+                       //etdc::udt_rcvbuf{ __m_sockopts.bufSize }, etdc::udt_sndbuf{ __m_sockopts.bufSize },
+                       etdc::so_rcvbuf{ __m_sockopts.bufSize }, etdc::so_sndbuf{ __m_sockopts.bufSize },
+                       //etdc::udt_rcvbuf{32*1024*1024}, etdc::udt_sndbuf{32*1024*1024}, etdc::so_rcvbuf{4*1024},  // some socket options
                        etdc::blocking_type{true});
 
         auto socknm =  fd->getsockname(fd->__m_fd);
@@ -146,7 +181,8 @@ struct string2socket_type_m {
         return fd;
    }
 
-    const etdc::port_type   __m_default_port;
+    const etdc::port_type    __m_default_port;
+    const socketoptions_type __m_sockopts;
 };
 
 
@@ -192,6 +228,7 @@ int main(int argc, char const*const*const argv) {
     etdc::BlockAll      ba;
     // Let's set up the command line parsing
     int                 message_level = 0;
+    socketoptions_type  sockopts{};
     AP::ArgumentParser  cmd( AP::version( buildinfo() ),
                              AP::docstring("'ftp' like etransfer server daemon, to be used with etransfer client for "
                                            "high speed file/directory transfers."),
@@ -241,6 +278,13 @@ int main(int argc, char const*const*const argv) {
     cmd.add( AP::store_into(message_level), AP::short_name('m'),
              AP::maximum_value(5), AP::minimum_value(-1),
              AP::docstring("Message level - higher = more output") );
+
+    // Allow user to set network related options
+    cmd.add( AP::store_into(sockopts.MTU), AP::long_name("mss"),
+             AP::minimum_value((unsigned int)64), AP::maximum_value((unsigned int)65536), // UDP datagram limits
+             AP::docstring(std::string("Set UDT maximum segment size. Not honoured if data channel is TCP. Default ")+etdc::repr(sockopts.MTU)) );
+    cmd.add( AP::store_into(sockopts.bufSize), AP::long_name("buffer"),
+             AP::docstring(std::string("Set send/receive buffer size. Default ")+etdc::repr(sockopts.bufSize)) );
 
     // command servers; we require at least one of 'm
     cmd.add( AP::collect<std::string>(), AP::long_name("command"),
@@ -298,8 +342,8 @@ int main(int argc, char const*const*const argv) {
 
     // Start threads for the command+data servers
     etdc::etd_state            serverState;
-    const string2socket_type_m mk_cmd ( port(4004) );
-    const string2socket_type_m mk_data( port(8008) );
+    const string2socket_type_m mk_cmd ( port(4004), sockopts );
+    const string2socket_type_m mk_data( port(8008), sockopts );
 
     // data servers first such that the command servers know which data ports are available
     for(auto&& datasrv: cmd.get<std::list<std::string>>("data")) {
@@ -455,9 +499,14 @@ void data_server_thread(etdc::etdc_fdptr pServer, etdc::etd_state& shared_state)
         // pretty please with sugar on top. But if we can't have it then
         // that's not an error.
         // Note: for UDT data channels we have already set RCVBUF
-        if( get_protocol(peernm).find("tcp")!=std::string::npos )
-            etdc::setsockopt(pClient->__m_fd, etdc::so_rcvbuf{32*1024*1024});
-
+        //if( get_protocol(peernm).find("tcp")!=std::string::npos )
+        //    etdc::setsockopt(pClient->__m_fd, etdc::so_rcvbuf{32*1024*1024}, etdc::so_sndbuf{32*1024*1024});
+#if 0
+        else
+            // udt
+            etdc::setsockopt(pClient->__m_fd, etdc::udt_sndbuf{32*1024*1024}, etdc::udt_rcvbuf{32*1024*1024},
+                                              etdc::udp_sndbuf{32*1024*1024}, etdc::udp_rcvbuf{32*1024*1024});
+#endif
         dbgMap[get_protocol(peernm)](pClient, "client");
         etdc::ETDDataServer(pClient, std::ref(shared_state));
     }
