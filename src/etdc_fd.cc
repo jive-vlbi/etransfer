@@ -567,10 +567,12 @@ namespace etdc {
                                     // unrecognized or attempt to seek from end by
                                     // more than the file size
                                     case SEEK_END:
-                                        if( offset<=(off_t)__m_fSize ) {
-                                            new_fPointer = __m_fSize - offset;
-                                            break;
+                                        if( offset>(off_t)__m_fSize ) {
+                                            errno = EINVAL;
+                                            return (off_t)-1;
                                         }
+                                        new_fPointer = __m_fSize - offset;
+                                        break;
                                     default:
                                         errno = EINVAL;
                                         return (off_t)-1;
