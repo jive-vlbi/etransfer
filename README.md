@@ -1,6 +1,3 @@
-# etransfer
-A daemon/client pair for fast(er) file transfers
-
 ## The sales pitches:
 
 - The etransfer server/client system allows the client program to initiate
