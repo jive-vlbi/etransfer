@@ -172,6 +172,18 @@
 //                            Should support any constructor that
 //                            std::string supports.
 //
+//      hidden()              Sets the hidden attribute on the option.
+//                            The option will not be listed in the
+//                            print_help()/print_usage() output.
+//                            If an error occurs or a constraint is violated
+//                            the detailed information will still
+//                            be shows - apparently the user already
+//                            /knew/ the option existed but has made
+//                            an error and we should inform as best as
+//                            we can how he/she error'ed.
+//                            You cannot make a hidden command line option
+//                            required.
+//
 //      version(T t)          T must be streamable to std::ostream 
 //                            so feel free to give it anything you like
 //
@@ -243,6 +255,7 @@ namespace argparse {
         struct default_t             {};
         struct version_t             {};
         struct docstring_t           {};
+        struct invisible_t           {};
         struct conversion_t          {};
         struct constraint_template_t {};
 
@@ -395,6 +408,8 @@ namespace argparse {
                     std::forward<Constraints>(constraints)( def.__m_default );
                 }
                 catch( std::exception const& e ) {
+                    // this should be a fatal error!
+                    // but not at this level
                     throw constraint_violation(std::string("The default violated a constraint: ")+e.what());
                 }
             }
@@ -1390,6 +1405,11 @@ namespace argparse {
     template <typename... Props>
     auto option(Props&&... props) -> std::tuple<Props...> {
         return std::make_tuple(std::forward<Props>(props)...);
+    }
+
+
+    const detail::invisible_t hidden( void ) {
+        return detail::invisible_t{};
     }
 
 } // namespace argparse

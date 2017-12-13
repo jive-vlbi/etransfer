@@ -140,15 +140,14 @@ namespace argparse { namespace functools {
     //
     ////////////////////////////////////////////////////////////////////////////////////////////////////
     template <typename BinOp, typename T, typename U,
-              typename std::enable_if<std::tuple_size<typename std::decay<T>::type>::value==0, int>::type = 0>
+              typename std::enable_if<std::tuple_size<T>::value==0, int>::type = 0>
     auto foldl(BinOp&&, T&&, U&& u) -> typename std::decay<U>::type {
         return u;
     }
 
     template <typename BinOp, typename T, typename U,
-              typename std::enable_if<std::tuple_size<typename std::decay<T>::type>::value!=0, int>::type = 0>
-    auto foldl(BinOp&& binop, T&& t, U&& u) ->
-        decltype( std::forward<BinOp>(binop)(u, head(std::forward<T>(t))) ) {
+              typename std::enable_if<std::tuple_size<T>::value!=0, int>::type = 0>
+    auto foldl(BinOp&& binop, T&& t, U&& u) -> typename std::decay<U>::type {
             return foldl(std::forward<BinOp>(binop),
                          tail(std::forward<T>(t)),
                          binop(u, head(std::forward<T>(t))));

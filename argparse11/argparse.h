@@ -27,6 +27,7 @@
 #include <cstdlib>
 #include <cerrno>
 #include <climits>
+#include <cstring>
 #include <libgen.h>
 
 
@@ -189,12 +190,13 @@ namespace argparse {
                 // Step 0. Program name
                 if( argv ) {
                     char    buf[PATH_MAX+1], *bn;
+
                     if( ::realpath(*argv, buf)==nullptr )
-                        fatal_error(std::cerr, "realpath() fails on '", buf, "' - ", ::strerror(errno));
+                        ::strncpy(buf, *argv, PATH_MAX);
                     bn = ::basename(buf);
                     if( bn==nullptr )
                         fatal_error(std::cerr, "basename() fails on '", buf, "' - ", ::strerror(errno));
-                    __m_program = ::basename(buf);
+                    __m_program = bn;
                 }
 
                 // Step 1. Transform into list of strings 
@@ -355,13 +357,15 @@ namespace argparse {
                 *printer++ = __m_program;
 
                 for(auto const& opt: __m_option_by_alphabet) {
+                    if( opt->__m_invisible )
+                        continue;
                     if( opt->__m_names.begin()->empty() ) {
                         argument = opt;
                         continue;
                     }
                     *printer++ = opt->__m_usage;
                 }
-                if( argument )
+                if( argument && !argument->__m_invisible )
                     *printer++ = argument->__m_usage;
 
                 // If we're printing help ("long version") we start by
@@ -371,7 +375,7 @@ namespace argparse {
                     *dp++ = "";
                     detail::maybe_print("\n",  __m_description, dp);
 
-                    if( argument ) {
+                    if( argument && !argument->__m_invisible ) {
                         std::cout << std::endl << "positional arguments:" << std::endl;
                         *lineprinter++ = argument->__m_usage;
 
@@ -391,8 +395,9 @@ namespace argparse {
 
                     // And append the detailed help for all the options
                     for(auto const& opt: __m_option_by_alphabet) {
-                        // skip the unnamed option (the command's arguments)
-                        if( opt==argument )
+                        // skip the unnamed option (the command's
+                        // arguments) and the invisible options
+                        if( opt==argument || opt->__m_invisible )
                             continue;
 
                         // Print details!
@@ -438,12 +443,17 @@ namespace argparse {
             //
             //////////////////////////////////////////////////////////////////////
             template <typename... Props>
-            void add(Props&&... props) {
+            void add(std::tuple<Props...> props) {
                 if( __m_parsed )
                     fatal_error(std::cerr, "Cannot add command line arguments after having already parsed one.");
 
-                //auto new_arg = detail::mk_argument(this, std::forward<Props>(props)...);
-                this->add_argument( detail::mk_argument(this, std::forward<Props>(props)...) );
+                this->add_argument( detail::mk_argument(this, props) );
+            }
+            template <typename... Props>
+            void add(Props&&... props) {
+                if( __m_parsed )
+                    fatal_error(std::cerr, "Cannot add command line arguments after having already parsed one.");
+                this->add_argument( detail::mk_argument(this, option(std::forward<Props>(props)...)) );
             }
 
             //////////////////////////////////////////////////////////////////////
@@ -483,22 +493,53 @@ namespace argparse {
                 // The requirement is only tested in the post condition;
                 // each of the elements in the xor group may or may not have
                 // their own pre/post conditions.
-                const auto required  = (std::tuple_size<decltype(detail::get_all<detail::required_t>(std::forward_as_tuple(options...)))>::value > 0);
+                const bool required  = (std::tuple_size<decltype(detail::get_all<detail::required_t> (std::forward_as_tuple(options...)))>::value > 0);
+                // For this one we can do compile time visibility/required
+                // consistency testing!
+                // i.e. one should not be able to set both required AND
+                // invisibility!
+                const bool invisible = (std::tuple_size<decltype(detail::get_all<detail::invisible_t>(std::forward_as_tuple(options...)))>::value > 0);
+
+                static_assert( !required || !invisible,
+                               "You cannot create an invisible but required XOR option" );
 
                 // Let's first create the list of option pointers
+                // TODO: filter out detail::required_t and detail::invisible_t
+                //       from the Options... 
                 this->addXOR_impl(xorGroup, std::forward<Options>(options)...);
 
                 // Collect all old pre- and postcondition functions
-                unsigned int        nCount = 0;
+                // and whilst we're at it set the visibility flag
+                // Note: we passed the static_assert such that you can't
+                //       set the global required AND hidden.
+                //       But we still need to verify that if hidden was
+                //       not given for the whole XOR group, that at least 
+                //       one of them must be visible! [if none of them are
+                //       then the whole option would not be shown]
+                bool                visible = false;
+                unsigned int        nCount  = 0;
                 std::ostringstream  alloptions;
                 alloptions << "{ ";
                 for(auto& p: xorGroup) {
+                    visible          = visible || !p->__m_invisible;
+                    p->__m_invisible = (p->__m_invisible || invisible);
                     alloptions << (nCount++ ? " | " : "") << p->__m_usage;
                     previousPreConditions[p.get()]  = p->__m_precondition_f;
                     previousPostConditions[p.get()] = p->__m_postcondition_f;
                 }
                 alloptions << " }";
                 const std::string allOpts( alloptions.str() );
+
+                // It could still be that the group was marked as required
+                // but not marked hidden and yet that each of the
+                // participating options was individually marked as
+                // invisible. That would mean we still end up with a
+                // completely invisible yet required option. Which we don't
+                // allow.
+                if( required && !visible )
+                    fatal_error(std::cerr, "All of members of the required XOR group '", allOpts, "' are invisible.\n", 
+                                "This is confusing for the user: something must be entered but the framework is not allowed to inform him or her what.\n",
+                                "Therefore the argparse framework forbids construction of this XOR option");
 
                 // Now that we have /that/ we can add a precondition for all
                 // options in this group: only one can have non-zero
@@ -585,17 +626,24 @@ namespace argparse {
             template <typename...>
             void addXOR_impl(option_list_type&) { }
 
-            // If we encounter a 'required' marker we skip it silently.
+            // If we encounter a 'required' or 'hidden' marker we skip it silently.
             // Anything else had better be a required marker or an option
+            // Realistically we should filter those out at the addXOR() level 
             template <typename... Rest>
             void addXOR_impl(option_list_type& options, detail::required_t const&, Rest... rest) {
+                this->addXOR_impl(options, std::forward<Rest>(rest)...);
+            }
+            template <typename... Rest>
+            void addXOR_impl(option_list_type& options, detail::invisible_t const&, Rest... rest) {
                 this->addXOR_impl(options, std::forward<Rest>(rest)...);
             }
 
             // Strip off one option and recurse to next
             template <typename... Props, typename... Rest>
-            void addXOR_impl(option_list_type& options, std::tuple<Props...>&& option, Rest... rest) {
-                auto new_arg = detail::mk_argument(this, std::forward<std::tuple<Props...>>(option));
+            //void addXOR_impl(option_list_type& options, std::tuple<Props...>&& option, Rest... rest) {
+            void addXOR_impl(option_list_type& options, std::tuple<Props...>const& option, Rest... rest) {
+                //auto new_arg = detail::mk_argument(this, std::forward<std::tuple<Props...>>(option));
+                auto new_arg = detail::mk_argument(this, option);
 
                 options.push_back( new_arg );
                 this->addXOR_impl(options, std::forward<Rest>(rest)...);

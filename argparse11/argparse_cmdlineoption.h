@@ -59,6 +59,8 @@ namespace argparse { namespace detail {
         friend CmdLineOptionPtr mk_argument(CmdLineBase*, Props&&...);
         template <typename... Props>
         friend CmdLineOptionPtr mk_argument(CmdLineBase*, std::tuple<Props...>&&);
+        template <typename... Props>
+        friend CmdLineOptionPtr mk_argument(CmdLineBase*, std::tuple<Props...>const&);
 
         CmdLineOptionIF(): 
             __m_requires_argument( false ),
@@ -101,6 +103,7 @@ namespace argparse { namespace detail {
         // We could protect these members but that wouldn't be a lot of use
         bool             __m_requires_argument;
         bool             __m_required;
+        bool             __m_invisible;
         // pre-format the option's name(s), required/optional and, if applicable, type of argument:
         std::string      __m_usage; 
         unsigned int     __m_count;
@@ -112,6 +115,8 @@ namespace argparse { namespace detail {
 
         // Print the help for this option
         void mini_help(std::ostream& os, bool usage) const {
+            if( __m_invisible )
+                return;
             os << __m_usage << std::endl;
             if( !usage ) {
                 std::ostream_iterator<std::string> lineprinter(std::cout, "\n\t");
@@ -310,15 +315,9 @@ namespace argparse { namespace detail {
     //
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////
     template <typename... Props>
-    CmdLineOptionPtr mk_argument(CmdLineBase* cmdline, Props&&... props) {
-        // Make a tuple out of the args and process that
-        return mk_argument(cmdline, std::forward_as_tuple(props...));
-    }
-
-    template <typename... Props>
-    CmdLineOptionPtr mk_argument(CmdLineBase* cmdline, std::tuple<Props...>&& props) {
+    CmdLineOptionPtr mk_argument(CmdLineBase* cmdline, std::tuple<Props...>const& props) {
         // get the action!
-        auto allAction = get_all<action_t>( props );
+        const auto allAction            = get_all<action_t>( props );
         static_assert( std::tuple_size<decltype(allAction)>::value==1, "You must specify exactly one Action" );
 
         // Once we know what the action is, we know:
@@ -363,6 +362,23 @@ namespace argparse { namespace detail {
         // i.e. the option /is/ the value
         functools::copy(functools::map(allNames, name_getter_t()),
                         std::inserter(optionIF->__m_names, optionIF->__m_names.end()));
+
+        // Create a descriptive name for displaying errors
+        const std::string name_s = [&]( void ){
+            std::ostringstream err;
+            // The nameless command line option ("positional argument") has no name ...
+            if( optionIF->__m_names.empty() ) {
+                err << "the positional argument (the nameless option)";
+            } else {
+                // Names are sorted by reverse size
+                unsigned int n{ 0 };
+                err << "the option '";
+                for(auto const& nm: reversed(optionIF->__m_names))
+                    err << (n++ ? " " : "") << (nm.size()==1 ? "-" : "--") << nm;
+                err << "'";
+            }
+            return err.str();
+        }();
 
         /////////////////// Pre-Constraint handling //////////////////////////
         //
@@ -431,6 +447,38 @@ namespace argparse { namespace detail {
         }
         catch( std::exception const& ) { }
 
+        /////////////////// Visibility handling /////////////////////////////
+        //
+        // Regrettably we cannot at compile time deduce if the user is
+        // doing something insensible, like creating a hidden command line
+        // option and making it required.
+        // At the moment we can only do this at runtime ...
+        // But we make that a fatal one 
+        //
+        // The one (simple) way to do this at *compile* time is the
+        // following:
+        // - if one assumes a postcondition on the argument count
+        //   ("at_least(n)" or "exactly(n)" or "required()")
+        //   only makes /sense/ if n>0 (without actually testing
+        //   the value of "n")
+        // - then we can count the number of postconditions: 
+        //   because they indicate the option is NOT optional (by
+        //   the *assumption* that n>0)
+        // - and then test if the hidden attribute is set in the
+        //   properties
+        // - THEN we can do a static assert at compile time
+        //
+        // This approach was rejected because "n=0" in any of the
+        // postconditions may be a no-op but not actually inconsistent.
+        // Preventing the ppl from doing stupid things also prevents them
+        // from doing smart things is a principle which carries a lot of weight.
+        optionIF->__m_invisible  = std::tuple_size< decltype(get_all<invisible_t>(props)) >::value > 0;
+
+        if( optionIF->__m_invisible && optionIF->__m_required )
+            fatal_error(std::cerr, name_s, " is both invisible AND required. ", ENDL(std::cerr),
+                        "This combination is confusing for the user: we can't display what he or she /should/ have entered yet she or he is required to.", ENDL(std::cerr),
+                        "Therefore the framework forbids construction of this option.");
+
         /////////////////// Default handling /////////////////////////////
         //
         // Generate a function to set the default value, if one was supplied.
@@ -456,7 +504,14 @@ namespace argparse { namespace detail {
                        "The type of the default is incompatible with the type of the option" );
 
         // Verify that any defaults that are set do not violate any constraints
-        functools::map(okDefaults, default_constrainer_t(), optionPtr->__m_constraint_f);
+        try {
+            functools::map(okDefaults, default_constrainer_t(), optionPtr->__m_constraint_f);
+        }
+        catch( std::exception const& e ) {
+            // So the default triggered an error. Turn this into an
+            // intelligible error message
+            fatal_error(std::cerr, e.what(), " creating ",name_s);
+        }
 
         // Now we can blindly 'map' the default setter over ALL defaults (well,
         // there's at most one ...). This function can be void(void) because
