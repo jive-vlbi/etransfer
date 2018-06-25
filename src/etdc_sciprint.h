@@ -115,7 +115,6 @@
 #include <functional>
 #include <type_traits>
 
-
 namespace etdc {
     //////////////////////////////////////////////////////////////////////////////////////////
     //
@@ -133,7 +132,41 @@ namespace etdc {
         // but each of them is a different /type/
         // It is inconvenient (if possible at all) to loop over a list of *types* at runtime.
         // (compile time is ok of course)
-        static prefixlist_type const prefixes = { "y", "z", "a", "f", "n", "u", "m", "", "k", "M", "G", "T", "P", "E", "Z", "Y" };
+        // Note: we try to detect at startup if the 'outside world' seems to
+        // support ISO LATIN1 (ISO-8859-1) or UTF8 for display of the Greek
+        // lowercase m (mu). If we cannot establish this is true then we
+        // default to ASCII lower case m.
+        static prefixlist_type const prefixes_u  = { "y", "z", "a", "f", "n", u8"\u00b5", "m", "", "k", "M", "G", "T", "P", "E", "Z", "Y" };
+        static prefixlist_type const prefixes_nu = { "y", "z", "a", "f", "n", "u", "m", "", "k", "M", "G", "T", "P", "E", "Z", "Y" };
+
+
+        // Here we try to set the locale for the library based on the user's
+        // preference. If that fails we default to "C"
+        std::locale getLocale( void ) {
+            try {
+                return std::locale("");
+            }
+            catch ( ... ) {
+                // something went wrong - possibly user's LC_* environment
+                // variables set to something erroneous
+            }
+            return std::locale::classic();
+        }
+
+        static std::locale            theEnvironment = getLocale();
+
+        static prefixlist_type const& prefixes( void ) {
+#ifdef __APPLE__
+            // Bastard apple devs don't seem to give the environment a name
+            // even it it was initialized from the user's environment
+            static bool mayDoMicro = true;
+#else
+            static bool mayDoMicro = (theEnvironment.name().find("UTF-8")!=std::string::npos || theEnvironment.name().find("ISO8859-1")!=std::string::npos);
+#endif
+            if( mayDoMicro )
+                return prefixes_u;
+            return prefixes_nu;
+        }
 
         // In order to do typesafe formatting (...) we need to have the
         // 'thousands' value and the requested format and the unit together
@@ -182,8 +215,10 @@ namespace etdc {
         template <typename T>
         auto mk_default(T const& value, std::string const& unit) -> sp_tuple<T> {
             // remember the indices of the properties in the tuple:
-            //                 0      1     2                     3
-            return sp_tuple<T>(value, unit, std::ostringstream(), thousands_type<T>(1000));
+            //                     0      1     2                     3
+            auto rv =  sp_tuple<T>(value, unit, std::ostringstream(), thousands_type<T>(1000));
+            std::get<2>(rv).imbue( theEnvironment ); 
+            return rv;
         }
         
         // allow updating of the settings tuple
@@ -255,7 +290,7 @@ namespace etdc {
             static const auto one      = T{ 1 };
 
             // value sooooooh huge that we don't know what to do with it
-            if( p==prefixes.end() )
+            if( p==prefixes().end() )
                 return p;
 
             // Get current value
@@ -275,7 +310,7 @@ namespace etdc {
                 // between 1 and '1000' but that means taking the previous
                 // suffix.
                 // But we can only do that if there *IS* a previous suffix!
-                p = (p==prefixes.begin() ? prefixes.end() : (std::get<0>(reduced) *= thousand, std::prev(p)));
+                p = (p==prefixes().begin() ? prefixes().end() : (std::get<0>(reduced) *= thousand, std::prev(p)));
             } else {
                 // divide by another factor of 'thousand' and move to next
                 // larger prefix
@@ -309,10 +344,10 @@ namespace etdc {
 
         // Now that's passed we can carry on with our lives!
         // we know the empty string does appear in the list of prefixes
-        detail::prefixlist_type::const_iterator  pfx = detail::get_prefix(settings, std::find(std::begin(detail::prefixes), std::end(detail::prefixes), ""));
+        detail::prefixlist_type::const_iterator  pfx = detail::get_prefix(settings, std::find(std::begin(detail::prefixes()), std::end(detail::prefixes()), ""));
         auto&                                    strm = std::get<2>(settings);
             
-        if( pfx==detail::prefixes.end() )
+        if( pfx==detail::prefixes().end() )
             strm << value << " " << unit;
         else
             strm << std::get<0>(settings) << " " << *pfx << unit;
@@ -334,6 +369,10 @@ namespace etdc {
     template <typename T, typename... Args>
     auto mk_formatter(std::string unit, Args&&... args) -> std::function<std::string(T const&)> {
         return [&](T const& value) { return sciprint(value, unit, std::forward<Args>(args)...); };
+    }
+    template <typename T, typename... Args>
+    auto mk_to_string(Args&&... args) -> std::function<std::string(T const&)> {
+        return [&](T const& value) { return to_string(value, std::forward<Args>(args)...); };
     }
 
     ////////////////////////////////
