@@ -24,6 +24,7 @@
 #include <etdc_etdserver.h>
 #include <etdc_stringutil.h>
 #include <etdc_streamutil.h>
+#include <etdc_sciprint.h>
 #include <argparse.h>
 
 // C++ standard headers
@@ -54,7 +55,7 @@ static const std::regex rxURL{
     "(([a-z0-9]+)@)?" 
 //   56
     /* non-optional host name or IPv6 colon 'coloned hex' (with optional interface suffix) in literal []'s*/
-    "([-a-zA-Z0-9_\\.]*|\\[[:0-9a-fA-F]+(/[0-9]{1,3})?(%[a-zA-Z0-9\\.]+)?\\])" 
+    "([-a-zA-Z0-9_\\.]+|\\[[:0-9a-fA-F]+(/[0-9]{1,3})?(%[a-zA-Z0-9\\.]+)?\\])" 
 //   7                                  8             9
     /* port number - maybe default? */
     "(#([0-9]+))?"
@@ -149,12 +150,15 @@ struct socketoptions_type {
 };
 
 
+enum display_format { continental, imperial };
+
 
 int main(int argc, char const*const*const argv) {
     // First things first: block ALL signals
     etdc::BlockAll         ba;
     // Let's set up the command line parsing
     int                    message_level = 0;
+    display_format         display( imperial );
 #if 0
     socketoptions_type     sockopts{};
 #endif
@@ -165,7 +169,7 @@ int main(int argc, char const*const*const argv) {
                                               "high speed file/directory transfers or it can be used "
                                               "to list the contents of a remote directory, if the remote "
                                               "etransfer daemon allows your credentials to do so."),
-                                AP::docstring("Remote URLs are formatted as ((tcp|udt)[6]://)[user@]host[:port]/path\n"
+                                AP::docstring("Remote URLs are formatted as ((tcp|udt)[6]://)[user@]host[#port]/path\n"
                                               "Paths on the local machine are specified just as /<path> (i.e. absolute path)") );
     // The URLs from the command line
     unsigned int           nLocal = 0;
@@ -191,6 +195,13 @@ int main(int argc, char const*const*const argv) {
     // verbosity
     cmd.add( AP::store_false(), AP::short_name('v'), AP::long_name("verbose"),
              AP::at_most(1), AP::docstring("Verbose output for each file transferred") );
+
+    // display format
+    cmd.addXOR(
+        AP::option(AP::long_name("imperial"), AP::store_const_into(imperial, display),
+                   AP::docstring(std::string("Use imperial (American/English) formatting for number representation")+(display == imperial ? " (default)" : ""))),
+        AP::option(AP::long_name("continental"), AP::store_const_into(continental, display),
+                   AP::docstring(std::string("Use continental (European) formatting for number representation")+(display == continental ? " (default)" : ""))) );
 
     // User can choose between:
     //  * the target file(s) may not exist [default]
@@ -318,7 +329,7 @@ int main(int argc, char const*const*const argv) {
         *ptr = mk_sockname(get_protocol(*ptr), etdc::host_type(std::regex_replace(get_host(*ptr), rxWildCard, dstHost)), get_port(*ptr));
 
     // Before processing all file(s) we already know if we're going to push or pull
-    std::function<bool(etdc::uuid_type const&, etdc::uuid_type&, off_t, etdc::dataaddrlist_type const&)> fn;
+    std::function<etdc::xfer_result(etdc::uuid_type const&, etdc::uuid_type&, off_t, etdc::dataaddrlist_type const&)> fn;
     namespace ph = std::placeholders;
     fn = (push ?
           std::bind(&etdc::ETDServerInterface::sendFile, servers[0].get(), ph::_1, ph::_2, ph::_3, ph::_4) :
@@ -326,6 +337,18 @@ int main(int argc, char const*const*const argv) {
 
     // Loop over all files to do ...
     using unique_result = std::unique_ptr<etdc::result_type>;
+    auto        fmtByte = (display == continental ? 
+                            etdc::mk_to_string<decltype(etdc::xfer_result::__m_BytesTransferred)>(std::fixed, etdc::continental) :
+                            etdc::mk_to_string<decltype(etdc::xfer_result::__m_BytesTransferred)>(std::fixed, etdc::imperial) );
+    auto        fmt1000 = (display == continental ? 
+                            etdc::mk_formatter<decltype(etdc::xfer_result::__m_BytesTransferred)>("iB", etdc::continental) :
+                            etdc::mk_formatter<decltype(etdc::xfer_result::__m_BytesTransferred)>("iB", etdc::imperial) );
+    auto        fmtRate = (display == continental ?
+                            etdc::mk_formatter<double>("Bps", etdc::thousand(1024), std::fixed, etdc::continental, std::setprecision(2)) :
+                            etdc::mk_formatter<double>("Bps", etdc::thousand(1024), std::fixed, etdc::imperial, std::setprecision(2)) );
+    auto        fmtTime = (display == continental ? 
+                            etdc::mk_formatter<double>("s", std::setprecision(3), etdc::continental) :
+                            etdc::mk_formatter<double>("s", std::setprecision(3), etdc::imperial) );
     const int 	lvl( verbose ? -1 : 9 );
 
     for(auto const& file: files2do) {
@@ -345,9 +368,12 @@ int main(int argc, char const*const*const argv) {
                 srcResult      = std::move(  unique_result(new etdc::result_type(servers[0]->requestFileRead(file, nByte))) );
                 auto nByteToGo = etdc::get_filepos(*srcResult);
 
-                if( nByteToGo>0 )
-                    (void)fn(etdc::get_uuid(*srcResult), etdc::get_uuid(*dstResult), nByteToGo, dataChannels);
-                else
+                if( nByteToGo>0 ) {
+                    etdc::xfer_result result( fn(etdc::get_uuid(*srcResult), etdc::get_uuid(*dstResult), nByteToGo, dataChannels) );
+                    auto const        dt = result.__m_DeltaT.count();
+                    std::cout << (result.__m_Finished ? "" : "Un") << "succesfully transferred " << fmt1000(result.__m_BytesTransferred) << " (" << fmtByte(result.__m_BytesTransferred) << " bytes) in " << fmtTime(dt) << " seconds "
+                              << "[" << fmtRate( dt>0 ? ((double)result.__m_BytesTransferred)/dt : 0.0) << "]" << std::endl;
+                } else
                     ETDCDEBUG(lvl, "Destination is complete or is larger than source file" << std::endl);
             }
         }

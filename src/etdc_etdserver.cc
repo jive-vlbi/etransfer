@@ -288,17 +288,19 @@ namespace etdc {
         return true;
     }
 
-    bool ETDServer::sendFile(uuid_type const& srcUUID, uuid_type const& dstUUID, 
+    xfer_result ETDServer::sendFile(uuid_type const& srcUUID, uuid_type const& dstUUID, 
                              off_t todo, dataaddrlist_type const& dataAddrs) {
         // 1a. Verify that the srcUUID is our UUID
         ETDCASSERT(srcUUID==__m_uuid, "The srcUUID '" << srcUUID << "' is not our UUID");
 
         // We need to protect our transfer so we need to do deadlock avoidance
         // with re-searching our UUID until we have both locks
+        bool                             have_both_locks( false );
+        off_t const                      nTodo( todo );
         etdc::etd_state&                 shared_state( __m_shared_state.get() );
 
-        // Make it loop until all bytes are transferred
-        while( todo>0 ) {
+        // Make it loop until we got dem loks
+        while( !have_both_locks ) {
             // 2a. lock shared state
             std::unique_lock<std::mutex>     lk( shared_state.lock );
             // 2b. assert that there is an entry for us, indicating that we ARE configured
@@ -318,13 +320,16 @@ namespace etdc {
                 continue;
             }
             // Right, we now hold both locks!
+            have_both_locks = true;
+
             // At this point we don't need the shared_state lock anymore - we've found our entry and we've locked it
             // So no-one can remove the entry from under us until we're done
             lk.unlock();
 
-            // Verify that indeed we are configured for file read
-            transferprops_type&  transfer( *ptr->second );
+            // Get a reference to the actual transfer properties
+            transferprops_type&    transfer( *ptr->second );
 
+            // Verify that indeed we are configured for file read
             ETDCASSERT(transfer.openMode==openmode_type::Read, "This server was initialized, but not for reading a file");
 
             // Great. Now we attempt to connect to the remote end
@@ -361,47 +366,59 @@ namespace etdc {
             std::ostringstream  msg_buf;
             msg_buf << "{ uuid:" << dstUUID << ", sz:" << todo << "}";
 
+            std::string         reason;
             const std::string   msg( msg_buf.str() );
+            auto const          start_tm = std::chrono::high_resolution_clock::now();//system_clock::now();
             dstFD->write(dstFD->__m_fd, msg.data(), msg.size());
             while( todo>0 ) {
-                const size_t  n = std::min((size_t)todo, bufSz);
-                ssize_t       nRead, nWritten{ 0 };
+                size_t const  n = std::min((size_t)todo, bufSz);
+                ssize_t       nWritten{0}, nRead = transfer.fd->read(transfer.fd->__m_fd, &buffer[0], n);
 
-                ETDCASSERT((nRead=transfer.fd->read(transfer.fd->__m_fd, &buffer[0], n))>0,
-                           ((nRead==-1) ? std::string(etdc::strerror(errno)) : std::string("read() returned 0 - hung up?!")));
+                if( nRead<=0 ) {
+                    reason = ((nRead==-1) ? std::string(etdc::strerror(errno)) : std::string("read() returned 0 - hung up"));
+                    break;
+                }
 
                 // Keep on writing untill all bytes that were read are actually written
-                while( nRead>0 ) {
-                    ssize_t thisWrite;
-                    ETDCASSERT((thisWrite=dstFD->write(dstFD->__m_fd, &buffer[nWritten], nRead))>0,
-                               ((thisWrite==-1) ? std::string(etdc::strerror(errno)) : std::string("write should never have returned 0?!")) );
+                while( nWritten<nRead ) {
+                    ssize_t const thisWrite = dstFD->write(dstFD->__m_fd, &buffer[nWritten], nRead-nWritten);
+
+                    if( thisWrite<=0 ) {
+                        reason = ((thisWrite==-1) ? std::string(etdc::strerror(errno)) : std::string("write should never have returned 0"));
+                        break;
+                    }
                     nRead    -= thisWrite;
                     nWritten += thisWrite;
                 }
+                if( nWritten<nRead )
+                    break;
                 todo -= (off_t)nWritten;
             }
+            auto const          end_tm = std::chrono::high_resolution_clock::now();//system_clock::now();
             // if we make it out of the loop, todo should be <= 0 and terminate the outer loop
             // wait here until the recipient has acknowledged receipt of all bytes
             char    ack;
             ETDCDEBUG(4, "sendFile: waiting for remote ACK ..." << std::endl);
             dstFD->read(dstFD->__m_fd, &ack, 1);
             ETDCDEBUG(4, "sendFile: ... got it" << std::endl);
+            return xfer_result(todo==0, nTodo - todo, reason, (end_tm-start_tm));
         }
-        ETDCDEBUG(4, "sendFile: done!" << std::endl);
-        return true;
+        return xfer_result(false, 0, "Failed to get both locks", xfer_result::duration_type());
     }
 
-    bool ETDServer::getFile(uuid_type const& srcUUID, uuid_type const& dstUUID, 
+    xfer_result ETDServer::getFile(uuid_type const& srcUUID, uuid_type const& dstUUID, 
                             off_t todo, dataaddrlist_type const& dataAddrs) {
         // 1a. Verify that the dstUUID is our UUID
         ETDCASSERT(dstUUID==__m_uuid, "The dstUUID '" << dstUUID << "' is not our UUID");
 
         // We need to protect our transfer so we need to do deadlock avoidance
         // with re-searching our UUID until we have both locks
+        bool                             have_both_locks( false );
+        off_t const                      nTodo( todo );
         etdc::etd_state&                 shared_state( __m_shared_state.get() );
 
-        // Make it loop until all bytes are transferred
-        while( todo>0 ) {
+        // Make it loop until we get both locks
+        while( !have_both_locks ) {
             // 2a. lock shared state
             std::unique_lock<std::mutex>     lk( shared_state.lock );
             // 2b. assert that there is an entry for us, indicating that we ARE configured
@@ -422,6 +439,8 @@ namespace etdc {
                 continue;
             }
             // Right, we now hold both locks!
+            have_both_locks = true;
+
             // At this point we don't need the shared_state lock anymore - we've found our entry and we've locked it
             // So no-one can remove the entry from under us until we're done
             lk.unlock();
@@ -465,31 +484,48 @@ namespace etdc {
             std::unique_ptr<unsigned char[]> buffer(new unsigned char[bufSz]);
 
             // Create message header
-            ssize_t             nWritten;
             std::ostringstream  msg_buf;
             msg_buf << "{ uuid:" << srcUUID << ", push:1, sz:" << todo << "}";
 
-            const std::string   msg( msg_buf.str() );
+            std::string       reason;
+            std::string const msg( msg_buf.str() );
+            auto const        start_tm = std::chrono::high_resolution_clock::now();//system_clock::now();
             dstFD->write(dstFD->__m_fd, msg.data(), msg.size());
 
             while( todo>0 ) {
                 // Read at most bufSz bytes
                 // Note: we do blocking I/O so a read of size zero means
                 //       other side hung up
-                const ssize_t n = dstFD->read(dstFD->__m_fd, &buffer[0], bufSz);
-                ETDCASSERT(n>0, "getFile/problem: " << ((n==0) ? std::string("remote side hung up") : etdc::strerror(errno)));
-                ETDCASSERT((nWritten=transfer.fd->write(transfer.fd->__m_fd, &buffer[0], n))>0,
-                           ((nWritten==-1) ? std::string(etdc::strerror(errno)) : std::string("write should never have returned 0?!")) );
+                ssize_t       nWritten{0}, nRead = dstFD->read(dstFD->__m_fd, &buffer[0], bufSz);
+
+                if( nRead<=0 ) {
+                    reason = std::string("getFile/problem: ") + (nRead==0 ? std::string("remote side hung up") : etdc::strerror(errno));
+                    break;
+                }
+                while( nWritten<nRead ) {
+                    ssize_t const thisWrite = transfer.fd->write(transfer.fd->__m_fd, &buffer[nWritten], nRead-nWritten);
+
+                    if( thisWrite<=0 ) {
+                        reason = ((thisWrite==-1) ? std::string(etdc::strerror(errno)) : std::string("write should never have returned 0"));
+                        break;
+                    }
+                    nRead    -= thisWrite;
+                    nWritten += thisWrite;
+                }
+                if( nWritten<nRead )
+                    break;
                 todo -= (off_t)nWritten;
             }
+            auto const end_tm = std::chrono::high_resolution_clock::now();//system_clock::now();
             // if we make it out of the loop, todo should be <= 0 and terminate the outer loop
             // Send ACK 
             const char ack{ 'y' };
             ETDCDEBUG(4, "ETDServer::getFile/got all bytes, sending ACK ..." << std::endl);
             dstFD->write(dstFD->__m_fd, &ack, 1);
             ETDCDEBUG(4, "ETDServer::getFile/... done." << std::endl);
+            return xfer_result((todo==0), nTodo - todo, reason, (end_tm-start_tm));
         }
-        return true;
+        return xfer_result(false, 0, "Failed to grab both locks", xfer_result::duration_type());
     }
 
     ETDServer::~ETDServer() {
@@ -514,6 +550,15 @@ namespace etdc {
     static const std::regex            rxLine("([^\\r\\n]+)[\\r\\n]+");
     static const std::regex            rxReply("^(OK|ERR)(\\s+(\\S.*)?)?$", etdc_rxFlags);
                                              //  1       2    3   submatch numbers
+    // Update Jun 2018: we need sendFile/getFile to return more detail than
+    //              OK | ERR <reason>
+    //     we need to be able to return #-of-bytes transferred (integer) and a time
+    //     span (double, seconds).
+    //     to not break backward compatibility they're going to be
+    //     comma-separated after OK/ERR. Reason will remain.
+    //     If those fields are missing
+    static const std::regex            rxXferResultReply("^(OK|ERR)(,([0-9]+),([-0-9\\.\\+eE]+))?(\\s+\\S.*)?$", etdc_rxFlags);
+    //                                     submatches:     1       2 3        4                  5
 
     template <typename InputIter, typename OutputIter,
               typename RegexIter  = std::regex_iterator<InputIter>,
@@ -837,7 +882,7 @@ namespace etdc {
         return true;
     }
 
-    bool ETDProxy::sendFile(uuid_type const& srcUUID, uuid_type const& dstUUID, off_t todo, dataaddrlist_type const& dataaddrs) {
+    xfer_result ETDProxy::sendFile(uuid_type const& srcUUID, uuid_type const& dstUUID, off_t todo, dataaddrlist_type const& dataaddrs) {
         std::ostringstream       msgBuf;
 
         msgBuf << "send-file " << srcUUID << " " << dstUUID << " " << todo << " ";
@@ -849,8 +894,14 @@ namespace etdc {
         ETDCDEBUG(4, "ETDProxy::sendFile/sending message '" << msg << "'" << std::endl);
         ETDCASSERTX(__m_connection->write(__m_connection->__m_fd, msg.data(), msg.size())==(ssize_t)msg.size());
 
-        // And await the reply. We only allow "OK" or "ERR <msg>"
-        // if we allow ~1kB for the <msg> that's quite generous I'd say
+        // The values we need to parse from the reply
+        bool                       success{false};         // can be inferred from "OK" or "ERR ..." response
+        off_t                      nbyte_transferred{ 0 }; // provide defaults; older servers don't return this
+        double                     delta_t{ 0.0 };         //    id.
+        std::string                reason{};
+
+        // And await the reply. Update Jun 2018: accept more elaborate reply
+        // if we allow ~2kB for the <msg> that's quite generous I'd say
         size_t                     curPos{ 0 };
         const size_t               bufSz( 2048 );
         std::unique_ptr<char[]>    buffer(new char[bufSz]);
@@ -875,13 +926,26 @@ namespace etdc {
             // If we get >1 line, the client's messin' wiv de heads - we only allow 1 (one) line of reply
             ETDCASSERT(lines.size()==1, "The client sent wrong number of responses - this is likely a protocol error");
             // And that line should match our expectations
-            ETDCASSERT(std::regex_match(*lines.begin(), fields, rxReply), "The client sent a non-conforming response");
-            // Translate "ERR <Reason>" into an exception
-            ETDCASSERT(fields[1].str()=="OK", "sendFile failed - " << fields[2].str());
+            ETDCASSERT(std::regex_match(*lines.begin(), fields, rxXferResultReply), "The client sent a non-conforming response");
+            //    "^(OK|ERR)(,([0-9]+),([-0-9\\.\\+eE]+))?(\\s+\\S.*)?$"
+            //      1       2 3        4                  5
+            // Field 1 always exists
+            success = (fields[1].str()=="OK");
+
+            // Check optional fields
+            std::string     tmp;
+            if( (tmp = fields[3].str()).empty()==false ) {
+                // have new-style reply!
+                string2off_t(tmp, nbyte_transferred);
+                // then we also *know* we have field 4!
+                delta_t = std::stod(fields[4].str());
+            }
+            // Was there a reason?
+            reason = fields[5].str();
             // Otherwise we're done
             break;
         }
-        return true;
+        return xfer_result(success, nbyte_transferred, reason, xfer_result::duration_type(delta_t));
     }
 
     //////////////////////////////////////////////////////////////////////
@@ -994,8 +1058,16 @@ namespace etdc {
                                         std::sregex_iterator(), std::back_inserter(dataAddrs), 
                                         [](std::smatch const& sm) { return decode_data_addr(sm.str()); });
 
-                        const bool rv = __m_etdserver.sendFile(src_uuid, dst_uuid, todo, dataAddrs);
-                        replies.emplace_back( rv ? "OK" : "ERR Failed to send file" );
+                        const xfer_result  rv = __m_etdserver.sendFile(src_uuid, dst_uuid, todo, dataAddrs);
+                        std::ostringstream reply_s;
+                        reply_s << (rv.__m_Finished ? "OK" : "ERR")
+                                << ',' << rv.__m_BytesTransferred
+                                // make sure we have seconds as units of duration
+                                << ',' << rv.__m_DeltaT.count();
+                        if( !rv.__m_Reason.empty() )
+                            reply_s << ' ' << rv.__m_Reason;
+                        replies.emplace_back( reply_s.str() );
+                        //replies.emplace_back( rv ? "OK" : "ERR Failed to send file" );
                     } else if( std::regex_match(*line, fields, rxDataChannelAddr) ) {
                         const auto entries = __m_etdserver.dataChannelAddr();
                         std::transform(std::begin(entries), std::end(entries), std::back_inserter(replies),
@@ -1228,6 +1300,8 @@ namespace etdc {
             const ssize_t nRead = std::min(n, bufSz);
             ssize_t       aRead, nWritten{ 0 };
 
+            ETDCDEBUG(5, "ETDDataServer::push_n/pushing " << n << " bytes" << std::endl);
+
             ETDCASSERT((aRead=src->read(src->__m_fd, &buf[0], nRead))>0,
                        ((aRead==-1) ? std::string(etdc::strerror(errno)) : std::string("read() returned 0 - hung up?!")));
 
@@ -1266,6 +1340,8 @@ namespace etdc {
             // (thus: "n - (wrEnd - rdPos)" amount still to be read, if any; and "n - (wrEnd - rdPos)" == "n + rdPos - wrEnd"
             ssize_t       aRead;
             const ssize_t nRead = std::min(n + rdPos - wrEnd, bufSz - wrEnd);
+
+            ETDCDEBUG(5, "ETDDataServer::pull_n/pulling " << n << " bytes" << std::endl);
         
             // Attempt to read bytes. <0 is an error
             ETDCASSERT((aRead = src->read(src->__m_fd, &buf[wrEnd], nRead))>=0, "Failed to read bytes from client - " << etdc::strerror(errno));

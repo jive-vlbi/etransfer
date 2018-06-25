@@ -37,6 +37,26 @@ namespace etdc {
     using filelist_type     = std::list<std::string>;
     using result_type       = std::tuple<etdc::uuid_type, off_t>;
 
+
+    // The result of a transfer
+    struct xfer_result {
+        using duration_type = std::chrono::duration<double>;
+        bool const             __m_Finished;
+        off_t const            __m_BytesTransferred;
+        std::string const      __m_Reason; // may contain error message
+        duration_type const    __m_DeltaT;
+
+        // no default objects
+        xfer_result() = delete;
+
+        // can only be initialized from an actual duration. we convert to
+        // "double seconds"
+        template <typename Rep, typename Period>
+        xfer_result(bool success, off_t nb, std::string const& r, std::chrono::duration<Rep, Period> const& dt):
+            __m_Finished(success), __m_BytesTransferred(nb), __m_Reason(r), __m_DeltaT(std::chrono::duration_cast<duration_type>(dt))
+        {}
+    };
+
     // On some systems off_t is an 'alias' for long long int, on others for
     // long int. So when converting between string and off_t we must choose
     // between std::stoll or std::stol.
@@ -81,13 +101,13 @@ namespace etdc {
             //      srcUUID == own UUID [assume: requestFileRead() was issued to this instance]
             //      dstUUID == UUID of the requestFileWrite on the the destination
             //  Then we attempt to connect from here to 'remote' and push 
-            virtual bool          sendFile(uuid_type const& /*srcUUID*/, uuid_type const& /*dstUUID*/,
+            virtual xfer_result   sendFile(uuid_type const& /*srcUUID*/, uuid_type const& /*dstUUID*/,
                                            off_t /*todo*/, dataaddrlist_type const& /*remote*/) = 0;
             // In the getFile canned sequence, we are the remote end, thus:
             //      srcUUID == remote UUID [assume: requestFileRead() was issued to that instance]
             //      dstUUID == own UUID of the requestFileWrite
             //  Then we attempt to connect from here to 'remote' and ask them to push
-            virtual bool          getFile (uuid_type const& /*srcUUID*/, uuid_type const& /*dstUUID*/,
+            virtual xfer_result   getFile (uuid_type const& /*srcUUID*/, uuid_type const& /*dstUUID*/,
                                            off_t /*todo*/, dataaddrlist_type const& /*remote*/) = 0;
 
             virtual bool          removeUUID(etdc::uuid_type const&) = 0;
@@ -118,9 +138,9 @@ namespace etdc {
             virtual dataaddrlist_type dataChannelAddr( void ) const;
 
             // Canned sequence?
-            virtual bool          sendFile(uuid_type const& /*srcUUID*/, uuid_type const& /*dstUUID*/,
+            virtual xfer_result   sendFile(uuid_type const& /*srcUUID*/, uuid_type const& /*dstUUID*/,
                                            off_t /*todo*/, dataaddrlist_type const& /*remote*/);
-            virtual bool          getFile (uuid_type const& /*srcUUID*/, uuid_type const& /*dstUUID*/,
+            virtual xfer_result   getFile (uuid_type const& /*srcUUID*/, uuid_type const& /*dstUUID*/,
                                            off_t /*todo*/, dataaddrlist_type const& /*remote*/);
 
             virtual bool          removeUUID(etdc::uuid_type const&);
@@ -153,10 +173,10 @@ namespace etdc {
             virtual dataaddrlist_type dataChannelAddr( void ) const;
 
             // Canned sequence?
-            virtual bool          sendFile(uuid_type const& /*srcUUID*/, uuid_type const& /*dstUUID*/,
+            virtual xfer_result   sendFile(uuid_type const& /*srcUUID*/, uuid_type const& /*dstUUID*/,
                                            off_t /*todo*/, dataaddrlist_type const& /*remote*/);
-            virtual bool          getFile (uuid_type const& /*srcUUID*/, uuid_type const& /*dstUUID*/,
-                                           off_t /*todo*/, dataaddrlist_type const& /*remote*/) NOTIMPLEMENTED;
+            virtual xfer_result   getFile (uuid_type const& /*srcUUID*/, uuid_type const& /*dstUUID*/,
+                                          off_t /*todo*/, dataaddrlist_type const& /*remote*/) NOTIMPLEMENTED;
 
             virtual bool          removeUUID(etdc::uuid_type const&);
             virtual std::string   status( void ) const NOTIMPLEMENTED;
