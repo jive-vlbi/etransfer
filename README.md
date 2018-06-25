@@ -11,7 +11,11 @@ multiple files irrespective of wether they are remote or local.
   [[UDT](https://github.com/netvirt/udt4)] over both IPv4 and IPv6. The UDT
 protocol is orders of magnitude faster on long, fat, network connections.
 
-- The etransfer tools do not yet have authentication or authorization built in
+- The etransfer tools do not yet have authentication or authorization built in.
+
+- Memory data source and/or sink available for throughput/bottleneck testing; either
+  disk read, disk write or both can be avoided by replacement with
+    `/dev/zero:<size>` (source) and/or `/dev/null` (destination)
 
 
 ## After cloning ...
