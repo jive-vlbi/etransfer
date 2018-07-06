@@ -189,10 +189,10 @@ namespace etdc {
         template <typename T>
         struct is_iomanip :
             std::integral_constant<bool,
-                                   std::is_same<T, decltype(std::setw(0))>::value ||
-                                   std::is_same<T, decltype(std::setfill(' '))>::value ||
-                                   std::is_same<T, decltype(std::setbase(0))>::value ||
-                                   std::is_same<T, decltype(std::setprecision(0))>::value ||
+                                   std::is_same<T, decltype(std::setw(std::declval<int>()))>::value ||
+                                   std::is_same<T, decltype(std::setfill(std::declval<char>()))>::value ||
+                                   std::is_same<T, decltype(std::setbase(std::declval<int>()))>::value ||
+                                   std::is_same<T, decltype(std::setprecision(std::declval<int>()))>::value ||
                                    std::is_same<T, decltype(std::setiosflags(std::declval<std::ios_base::fmtflags>()))>::value ||
                                    std::is_same<T, decltype(std::resetiosflags(std::declval<std::ios_base::fmtflags>()))>::value>
         {};
