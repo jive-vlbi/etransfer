@@ -74,7 +74,7 @@ namespace etdc {
         template <typename T, typename Type>
         struct memptr_holder: public empty_base {
             memptr_holder(Type (T::*p)): __ptr( p ) {}
-            Type (T::*__ptr);
+            Type T::*__ptr;
         };
     }
 

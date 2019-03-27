@@ -567,10 +567,10 @@ namespace argparse {
                     // If the required flag was set, at least one of the
                     // options in the xor group has to be present
                     if( required ) {
-                        auto rptr = xorGroup.begin();
-                        while( rptr!=xorGroup.end() && (*rptr)->__m_count==0 )
+                        auto rptr = xorGroup.cbegin();
+                        while( rptr!=xorGroup.cend() && (*rptr)->__m_count==0 )
                             rptr++;
-                        if( rptr==xorGroup.end() )
+                        if( rptr==xorGroup.cend() )
                             fatal_error(std::cerr, "None of the alternatives of the required group ", allOpts, " are present");
                     }
                     if( c )
