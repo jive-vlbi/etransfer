@@ -98,6 +98,31 @@ namespace argparse { namespace detail {
 
     ////////////////////////////////////////////////////////////////////////////
     //
+    //      Tests if T is an iterator type
+    //      https://stackoverflow.com/a/30766365
+    //
+    ////////////////////////////////////////////////////////////////////////////
+    template <typename T>
+    struct is_iterator {
+        using yes = char;
+        using no  = double;
+
+        template <typename U>
+        static no  test( ... );
+
+        template <typename U,
+                  typename ITraits=typename std::iterator_traits<U>,
+                  typename = typename ITraits::difference_type,
+                  typename = typename ITraits::pointer,
+                  typename = typename ITraits::reference,
+                  typename = typename ITraits::iterator_category>
+        static yes test(U*);
+
+        static const bool value = (sizeof(test<T>(nullptr))==sizeof(yes));
+    };
+
+    ////////////////////////////////////////////////////////////////////////////
+    //
     // Tests if T has "Ret operator()(Args...)" defined
     // (yes, also checks the return type)
     //

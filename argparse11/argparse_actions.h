@@ -73,7 +73,7 @@
 //                              a std::set<int>, surprisingly enough
 //
 //      collect_into(T& t)    Allow user to specificy a variable to collect
-//                            converted values into. Two supported types for
+//                            converted values into. Many supported types for
 //                            type "T":
 //                            1. T is an output_iterator. The type of
 //                               value(s) to be collected is inferred from the
@@ -84,6 +84,41 @@
 //                               to be collected is inferred from the
 //                               container.
 //                               Uses "t.insert(t.end(), <converted value>)"
+//
+//                            3. T is C++11 array    : std::array<T, N>
+//                            4. T is a C-style array: T[N]
+//
+//                               For both these cases the following holds:
+//
+//                               The type of the value(s) to be collected is
+//                               inferred from the array type. Successive
+//                               values converted from the command line
+//                               replace successive elements in the target
+//                               array; the system executes:
+//                                  *ptr++ = <converted value>
+//                               ('ptr' is initialized to 'std::begin(t)')
+//
+//                               The system automatically places a
+//                               maximum on the number of values that will
+//                               be converted based on the size of the
+//                               target array.
+//
+//      collect_into(Iter f, Iter l)
+//                            Allow the user to collect converted values in
+//                            a range, indicated by the first, last
+//                            iterators.
+//
+//                            The type of the value to be converted is
+//                            inferred from whatever the iterator is
+//                            iterating at.
+//                            Successive values converted from the command
+//                            line replace successive elements in the target
+//                            range.
+//
+//                            The system automatically places a
+//                            maximum on the number of values that will
+//                            be converted and overwritten based on
+//                               std::distance(first, last)
 //
 //
 //      print_help()          If these action(s) are triggered they print
@@ -737,6 +772,7 @@ namespace argparse {
 
             my_type __m_ref;
         };
+
     } //namespace detail
 
     // These are exposed to the user
@@ -1411,6 +1447,55 @@ namespace argparse {
     const detail::invisible_t hidden( void ) {
         return detail::invisible_t{};
     }
+
+
+    namespace detail {
+        // The collector which replaces elements by assignment
+        //using at_most_t = typename constraint_op<unsigned int, precondition, std::less>::Result;
+        using at_most_t = constraint_op<unsigned int, precondition, std::less>;
+
+        template <typename Iterator>
+        struct RangeCollector: action_t, Default<ignore_t>, at_most_t::Result {
+            using type         = ignore_t;
+            using element_type = typename std::decay<decltype(*std::declval<Iterator>())>::type;
+
+            RangeCollector() = delete;
+            explicit RangeCollector(Iterator first, Iterator last):
+                at_most_t::Result( at_most_t::mk(std::distance(first, last), "number elements replaced") ), __m_first(first)
+            {}
+            template <typename U>
+            void operator()(type& , U const& u) const {
+                *__m_first++ = u;
+            }
+
+            // We only need to keep __m_first because The System, thanks to
+            // the at_most_t precondition will ensure that we will never try
+            // to go past last :D
+            mutable Iterator    __m_first;
+        };
+    } // namespace detail 
+
+    // Collect into C-style array!
+    template <typename T, std::size_t N>
+    auto collect_into( T(&a)[N] ) -> detail::RangeCollector<T*> {
+        return detail::RangeCollector<T*>(std::begin(a), std::end(a));
+    }
+    // Collect into a std::array
+    template <typename T, std::size_t N>
+    auto collect_into(std::array<T, N>& a) -> detail::RangeCollector<typename std::array<T,N>::iterator> {
+        return detail::RangeCollector<typename std::array<T,N>::iterator>(std::begin(a), std::end(a));
+    }
+
+    // Collect into a bounded range - a range bounded by two iterators
+    // Converted command line arguments will replace successive elements:
+    //    *first++ = <converted_argument>
+    // as long as first != last
+    template <typename Iterator,
+              typename std::enable_if<detail::is_iterator<Iterator>::value, int>::type = 0>
+    auto collect_into(Iterator first, Iterator last) -> detail::RangeCollector<Iterator> {
+        return detail::RangeCollector<Iterator>(first, last);
+    }
+
 
 } // namespace argparse
 
