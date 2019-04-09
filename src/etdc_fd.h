@@ -600,7 +600,7 @@ namespace etdc {
             ////////// UDT server  (IPv4)
             {"udt", [](etdc_fdptr pSok, detail::server_settings const& srv) -> void {
                         // Bind to ipport
-                        int                sl( sizeof(struct sockaddr_in) );
+                        socklen_t          sl( sizeof(struct sockaddr_in) );
                         struct sockaddr_in sa;
                         
                         // Set a couple of socket options
@@ -639,7 +639,7 @@ namespace etdc {
 
                         // And we can now actually enable the accept function
                         pSok->accept = [=](int f) {
-                            int                 ipl( sizeof(struct sockaddr_in) );
+                            socklen_t           ipl( sizeof(struct sockaddr_in) );
                             struct sockaddr_in  ip;
                             UDTSOCKET           fd = UDT::accept(f, reinterpret_cast<struct sockaddr*>(&ip), &ipl);
                             UDT::ERRORINFO      udterr( UDT::getlasterror() );
@@ -654,7 +654,7 @@ namespace etdc {
             ////////// UDT server  (IPv6)
             {"udt6", [](etdc_fdptr pSok, detail::server_settings const& srv) -> void {
                         // Bind to ipport
-                        int                 sl( sizeof(struct sockaddr_in6) );
+                        socklen_t           sl( sizeof(struct sockaddr_in6) );
                         struct sockaddr_in6 sa;
                         
                         // Set a couple of socket options
@@ -701,7 +701,7 @@ namespace etdc {
 
                         // And we can now actually enable the accept function
                         pSok->accept = [=](int f) {
-                            int                  ipl( sizeof(struct sockaddr_in6) );
+                            socklen_t            ipl( sizeof(struct sockaddr_in6) );
                             struct sockaddr_in6  ip;
                             UDTSOCKET            fd = UDT::accept(f, reinterpret_cast<struct sockaddr*>(&ip), &ipl);
                             UDT::ERRORINFO       udterr( UDT::getlasterror() );

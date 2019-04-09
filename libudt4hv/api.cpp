@@ -496,7 +496,7 @@ UDTSTATUS CUDTUnited::getStatus(const UDTSOCKET u)
    return i->second->m_Status;   
 }
 
-int CUDTUnited::bind(const UDTSOCKET u, const sockaddr* name, int namelen)
+int CUDTUnited::bind(const UDTSOCKET u, const sockaddr* name, socklen_t namelen)
 {
    CUDTSocket* s = locate(u);
    if (NULL == s)
@@ -615,7 +615,7 @@ int CUDTUnited::listen(const UDTSOCKET u, int backlog)
    return 0;
 }
 
-UDTSOCKET CUDTUnited::accept(const UDTSOCKET listen, sockaddr* addr, int* addrlen)
+UDTSOCKET CUDTUnited::accept(const UDTSOCKET listen, sockaddr* addr, socklen_t* addrlen)
 {
    if ((NULL != addr) && (NULL == addrlen))
       throw CUDTException(5, 3, 0);
@@ -724,7 +724,7 @@ UDTSOCKET CUDTUnited::accept(const UDTSOCKET listen, sockaddr* addr, int* addrle
    return u;
 }
 
-int CUDTUnited::connect(const UDTSOCKET u, const sockaddr* name, int namelen)
+int CUDTUnited::connect(const UDTSOCKET u, const sockaddr* name, socklen_t namelen)
 {
    CUDTSocket* s = locate(u);
    if (NULL == s)
@@ -858,7 +858,7 @@ int CUDTUnited::close(const UDTSOCKET u)
    return 0;
 }
 
-int CUDTUnited::getpeername(const UDTSOCKET u, sockaddr* name, int* namelen)
+int CUDTUnited::getpeername(const UDTSOCKET u, sockaddr* name, socklen_t* namelen)
 {
    if (CONNECTED != getStatus(u))
       throw CUDTException(2, 2, 0);
@@ -882,7 +882,7 @@ int CUDTUnited::getpeername(const UDTSOCKET u, sockaddr* name, int* namelen)
    return 0;
 }
 
-int CUDTUnited::getsockname(const UDTSOCKET u, sockaddr* name, int* namelen)
+int CUDTUnited::getsockname(const UDTSOCKET u, sockaddr* name, socklen_t* namelen)
 {
    CUDTSocket* s = locate(u);
 
@@ -1584,7 +1584,7 @@ UDTSOCKET CUDT::socket(int af, int type, int)
    }
 }
 
-int CUDT::bind(UDTSOCKET u, const sockaddr* name, int namelen)
+int CUDT::bind(UDTSOCKET u, const sockaddr* name, socklen_t namelen)
 {
    try
    {
@@ -1653,7 +1653,7 @@ int CUDT::listen(UDTSOCKET u, int backlog)
    }
 }
 
-UDTSOCKET CUDT::accept(UDTSOCKET u, sockaddr* addr, int* addrlen)
+UDTSOCKET CUDT::accept(UDTSOCKET u, sockaddr* addr, socklen_t* addrlen)
 {
    try
    {
@@ -1671,7 +1671,7 @@ UDTSOCKET CUDT::accept(UDTSOCKET u, sockaddr* addr, int* addrlen)
    }
 }
 
-int CUDT::connect(UDTSOCKET u, const sockaddr* name, int namelen)
+int CUDT::connect(UDTSOCKET u, const sockaddr* name, socklen_t namelen)
 {
    try
    {
@@ -1712,7 +1712,7 @@ int CUDT::close(UDTSOCKET u)
    }
 }
 
-int CUDT::getpeername(UDTSOCKET u, sockaddr* name, int* namelen)
+int CUDT::getpeername(UDTSOCKET u, sockaddr* name, socklen_t* namelen)
 {
    try
    {
@@ -1730,7 +1730,7 @@ int CUDT::getpeername(UDTSOCKET u, sockaddr* name, int* namelen)
    }
 }
 
-int CUDT::getsockname(UDTSOCKET u, sockaddr* name, int* namelen)
+int CUDT::getsockname(UDTSOCKET u, sockaddr* name, socklen_t* namelen)
 {
    try
    {
@@ -2172,7 +2172,7 @@ UDTSOCKET socket(int af, int type, int protocol)
    return CUDT::socket(af, type, protocol);
 }
 
-int bind(UDTSOCKET u, const struct sockaddr* name, int namelen)
+int bind(UDTSOCKET u, const struct sockaddr* name, socklen_t namelen)
 {
    return CUDT::bind(u, name, namelen);
 }
@@ -2187,12 +2187,12 @@ int listen(UDTSOCKET u, int backlog)
    return CUDT::listen(u, backlog);
 }
 
-UDTSOCKET accept(UDTSOCKET u, struct sockaddr* addr, int* addrlen)
+UDTSOCKET accept(UDTSOCKET u, struct sockaddr* addr, socklen_t* addrlen)
 {
    return CUDT::accept(u, addr, addrlen);
 }
 
-int connect(UDTSOCKET u, const struct sockaddr* name, int namelen)
+int connect(UDTSOCKET u, const struct sockaddr* name, socklen_t namelen)
 {
    return CUDT::connect(u, name, namelen);
 }
@@ -2202,12 +2202,12 @@ int close(UDTSOCKET u)
    return CUDT::close(u);
 }
 
-int getpeername(UDTSOCKET u, struct sockaddr* name, int* namelen)
+int getpeername(UDTSOCKET u, struct sockaddr* name, socklen_t* namelen)
 {
    return CUDT::getpeername(u, name, namelen);
 }
 
-int getsockname(UDTSOCKET u, struct sockaddr* name, int* namelen)
+int getsockname(UDTSOCKET u, struct sockaddr* name, socklen_t* namelen)
 {
    return CUDT::getsockname(u, name, namelen);
 }

@@ -258,7 +258,7 @@ namespace etdc {
         int udt_sockname(int fd, struct sockaddr* addr, socklen_t* sl) {
             static_assert(sizeof(socklen_t)==sizeof(int), "UDT parameter int not compatible with socklen_t");
 
-            const int udt_rv = UDT::getsockname(fd, addr, reinterpret_cast<int*>(sl));
+            const int udt_rv = UDT::getsockname(fd, addr, sl);
             // OK that didn't work - need to extract the UDT error and translate to standard errno
             if( udt_rv==UDT::ERROR ) {
                 UDT::ERRORINFO   udtinfo( UDT::getlasterror() );
@@ -273,7 +273,7 @@ namespace etdc {
         int udt_peername(int fd, struct sockaddr* addr, socklen_t* sl) {
             static_assert(sizeof(socklen_t)==sizeof(int), "UDT parameter int not compatible with socklen_t");
 
-            const int udt_rv = UDT::getpeername(fd, addr, reinterpret_cast<int*>(sl));
+            const int udt_rv = UDT::getpeername(fd, addr, sl);
             // OK that didn't work - need to extract the UDT error and translate to standard errno
             if( udt_rv==UDT::ERROR ) {
                 UDT::ERRORINFO   udtinfo( UDT::getlasterror() );
