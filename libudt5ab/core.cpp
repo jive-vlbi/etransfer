@@ -221,7 +221,7 @@ void CUDT::setOpt(UDTOpt optName, const void* optval, int)
       if (m_bOpened)
          throw CUDTException(5, 1, 0);
 
-      if (*(const int*)optval < int(28 + CHandShake::m_iContentSize))
+      if (*(const int*)optval < (28 + CHandShake::m_iContentSize))
          throw CUDTException(5, 3, 0);
 
       m_iMSS = *(const int*)optval;
@@ -1661,7 +1661,7 @@ void CUDT::CCUpdate()
       return;
    const double minSP = 1000000.0 / (double(m_llMaxBW) / m_iMSS) * m_ullCPUFrequency;
    if (m_ullInterval < minSP)
-       m_ullInterval = minSP;
+       m_ullInterval = ::lround(minSP);
 }
 
 void CUDT::initSynch()
@@ -2462,8 +2462,20 @@ int CUDT::listen(sockaddr* addr, CPacket& packet)
    hs.deserialize(packet.m_pcData, packet.getLength());
 
    // SYN cookie
-   char clienthost[NI_MAXHOST];
-   char clientport[NI_MAXSERV];
+   // NI_MAX{HOST,SERV} are GNU-isms from glibc.
+   // The substituted values are taken from 
+   //     http://man7.org/linux/man-pages/man3/getnameinfo.3.html#NOTES
+   // where I believe that either value might be an overestimate of
+   // possible real values; according to:
+   //   https://stackoverflow.com/a/28918017
+   // ("What is the maximum number of characters for a host-name in Unix?")
+   // the RFCs say 255.
+   // Also the code requests NI_NUMERICHOST|NI_NUMERICSERV
+   // i.e. want to have dotted quad IPv4 or coloned hex IPv6
+   // either of which will easily fit in 255 bytes.
+   // (The port is smaller than the host name so only considering hostname)
+   char clienthost[1025/*NI_MAXHOST*/]; 
+   char clientport[32  /*NI_MAXSERV*/];
    getnameinfo(addr, (AF_INET == m_iVersion) ? sizeof(sockaddr_in) : sizeof(sockaddr_in6), clienthost, sizeof(clienthost), clientport, sizeof(clientport), NI_NUMERICHOST|NI_NUMERICSERV);
    int64_t timestamp = (CTimer::getTime() - m_StartTime) / 60000000; // secret changes every one minute
    stringstream cookiestr;

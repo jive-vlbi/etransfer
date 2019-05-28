@@ -153,11 +153,11 @@ const int CHandShake::m_iContentSize = 48;
 
 // Set up the aliases in the constructure
 CPacket::CPacket():
-m_iSeqNo((int32_t&)(m_nHeader[0])),
-m_iMsgNo((int32_t&)(m_nHeader[1])),
-m_iTimeStamp((int32_t&)(m_nHeader[2])),
-m_iID((int32_t&)(m_nHeader[3])),
-m_pcData((char*&)(m_PacketVector[1].iov_base)),
+m_iSeqNo(     m_nHeader[0] ),
+m_iMsgNo(     m_nHeader[1] ),
+m_iTimeStamp( m_nHeader[2] ),
+m_iID(        m_nHeader[3] ),
+m_pcData(     m_PacketVector[1].iov_base ),
 __pad()
 {
    for (int i = 0; i < 4; ++ i)
@@ -240,7 +240,6 @@ void CPacket::pack(int pkttype, void* lparam, void* rparam, int size)
       // control info filed is handshake info
       m_PacketVector[1].iov_base = (char *)rparam;
       m_PacketVector[1].iov_len = size; //sizeof(CHandShake);
-
       break;
 
    case 5: //0101 - Shutdown
@@ -295,16 +294,16 @@ void CPacket::pack(int pkttype, void* lparam, void* rparam, int size)
       break;
    }
 }
-
+#if 0
 iovec* CPacket::getPacketVector()
 {
    return m_PacketVector;
 }
-
+#endif
 int CPacket::getFlag() const
 {
    // read bit 0
-   return m_nHeader[0] >> 31;
+   return (m_nHeader[0] >> 31) & 0x1;
 }
 
 int CPacket::getType() const
@@ -328,7 +327,7 @@ int32_t CPacket::getAckSeqNo() const
 int CPacket::getMsgBoundary() const
 {
    // read [1] bit 0~1
-   return m_nHeader[1] >> 30;
+   return (m_nHeader[1] >> 30) & 0x3;
 }
 
 bool CPacket::getMsgOrderFlag() const
