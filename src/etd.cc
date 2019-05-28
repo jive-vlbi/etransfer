@@ -276,14 +276,14 @@ int main(int argc, char const*const*const argv) {
 
     // message level: higher = more verbose
     cmd.add( AP::store_into(message_level), AP::short_name('m'),
-             AP::maximum_value(5), AP::minimum_value(-1),
+             AP::maximum_value(5), AP::minimum_value(-1), AP::at_most(1),
              AP::docstring("Message level - higher = more output") );
 
     // Allow user to set network related options
-    cmd.add( AP::store_into(sockopts.MTU), AP::long_name("mss"),
+    cmd.add( AP::store_into(sockopts.MTU), AP::long_name("mss"), AP::at_most(1),
              AP::minimum_value((unsigned int)64), AP::maximum_value((unsigned int)65536), // UDP datagram limits
              AP::docstring(std::string("Set UDT maximum segment size. Not honoured if data channel is TCP. Default ")+etdc::repr(sockopts.MTU)) );
-    cmd.add( AP::store_into(sockopts.bufSize), AP::long_name("buffer"),
+    cmd.add( AP::store_into(sockopts.bufSize), AP::long_name("buffer"), AP::at_most(1),
              AP::docstring(std::string("Set send/receive buffer size. Default ")+etdc::repr(sockopts.bufSize)) );
 
     // command servers; we require at least one of 'm
