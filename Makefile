@@ -20,7 +20,6 @@ ifeq ($(shell uname),OpenBSD)
 	# OpenBSD system headers redeclare the same stuff many times ...
 	override CXXOPT += -Wno-redundant-decls
 endif
-
 ifeq ($(B2B),32)
 	override CC    += -m32
 	override CXX   += -m32 -ansi
@@ -83,7 +82,8 @@ etd_OBJS=$(call mkobjs,etd)
 
 # targets that etd depends upon
 # Link in support for UDT  
-etd_DEPS=libudt4hv pthread
+#etd_DEPS=libudt4hv pthread
+etd_DEPS=libudt5ab pthread
 
 # etransfer client
 etc_SRC=src/etc.cc src/reentrant.cc src/etdc_fd.cc src/etdc_etdserver.cc src/etdc_debug.cc
@@ -93,12 +93,17 @@ etc_OBJS=$(call mkobjs,etc)
 
 # targets that etd depends upon
 # Link in support for UDT  
-etc_DEPS=libudt4hv pthread
+#etc_DEPS=libudt4hv pthread
+etc_DEPS=libudt5ab pthread
 
 
 t3_SRC=src/t3.cc
 t3_VERSION=3
 t3_OBJS=$(call mkobjs,t3)
+
+tsp_SRC=src/tsp.cc 
+tsp_VERSION=1
+tsp_OBJS=$(call mkobjs,tsp)
 
 t4_SRC=src/t4.cc src/reentrant.cc src/etdc_fd.cc
 t4_VERSION=0
@@ -123,9 +128,11 @@ ifeq ($(TODO),)
 endif
 
 # If any of the targets need libutd4, add that include path
-ifneq ($(strip $(findstring libudt4hv, $(foreach P, $(TODO), $($(P)_DEPS)))),)
-	INCD+=-I$(shell pwd)/libudt4hv
-	PLATFORMLIBS+=-L./$(repos)/libudt4hv -ludt4hv
+ifneq ($(strip $(findstring libudt, $(foreach P, $(TODO), $($(P)_DEPS)))),)
+	INCD+=-I$(shell pwd)/libudt5ab
+	PLATFORMLIBS+=-L./$(repos)/libudt5ab -ludt5ab
+	#INCD+=-I$(shell pwd)/libudt4hv
+	#PLATFORMLIBS+=-L./$(repos)/libudt4hv -ludt4hv
 endif
 # If any of the targets need pthread, add that library
 ifneq ($(strip $(findstring pthread, $(foreach P, $(TODO), $($(P)_DEPS)))),)
@@ -135,7 +142,7 @@ endif
 
 
 # Hints to gmake 
-.PHONY: info clean %.depend %.version %.target libudt4hv pthread %.dep
+.PHONY: info clean %.depend %.version %.target libudt4hv libudt5ab pthread %.dep
 .PRECIOUS: $(repos)/src/%_version.cco $(repos)/%.d
 
 
@@ -155,6 +162,8 @@ clean: $(foreach P, $(DEFAULTTARGETS), $(addsuffix .clean, $(P)))
 
 libudt4hv: 
 	@$(MAKE) -C libudt4hv -f Makefile B2B="$(B2B)" CPP="$(CXX)" REPOS="$(repos)" BUILD="$(BUILD)"
+libudt5ab: 
+	@$(MAKE) -C libudt5ab -f Makefile B2B="$(B2B)" CPP="$(CXX)" REPOS="$(repos)" BUILD="$(BUILD)"
 
 %.target: %.version %.depend %.dep
 	$(LD) -o $* $($*_OBJS) $(repos)/src/$*_version.cco $(LIBD) $(PLATFORMLIBS) $($*F_LIBS)
