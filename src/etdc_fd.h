@@ -367,7 +367,15 @@ typename std::enable_if<etdc::is_integer_number_type<T>::value, etdc::port_type>
 // For everything else we attempt string => number [so we can also accept wstring and god knows what
 template <typename T>
 typename std::enable_if<!etdc::is_integer_number_type<T>::value, etdc::port_type>::type port(T const& s) {
-    return port( std::stoi(s) );
+    try {
+        return port( std::stoi(s) );
+    }
+    catch( std::exception const& e ) {
+        throw std::runtime_error(std::string("Failed to convert port '") + etdc::repr(s) + "' - " + e.what());
+    }
+    catch( ... ) {
+        throw std::runtime_error(std::string("Failed to convert port '") + etdc::repr(s) + "' - Unknown exception");
+    }
 }
 
 
