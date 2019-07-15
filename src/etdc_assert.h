@@ -41,12 +41,12 @@ namespace etdc {
         public:
             // Construct from any number of arguments - they'll be inserted into self
             template <typename... Ts>
-            stream(Ts... ts) { insert( std::forward<Ts>(ts)... ); }
+            stream(Ts&&... ts) { insert( std::forward<Ts>(ts)... ); }
 
             // Provide operator<< for all types
             template <typename T>
-            stream& operator<<(T const& t) {
-                return insert(t);
+            stream& operator<<(T&& t) {
+                return insert( std::forward<T>(t) );
             }
 
             inline std::string str( void ) const {
@@ -71,8 +71,8 @@ namespace etdc {
 
             // Strip off one parameter, insert to self and move on to nxt
             template <typename T, typename... Ts>
-            stream& insert(T const& t, Ts... ts) {
-                __m_stream << t;
+            stream& insert(T&& t, Ts... ts) {
+                __m_stream << std::forward<T>(t);
                 return insert( std::forward<Ts>(ts)... );
             }
     };
