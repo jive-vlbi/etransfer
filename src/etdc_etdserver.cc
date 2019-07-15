@@ -550,6 +550,7 @@ namespace etdc {
     static const std::regex            rxLine("([^\\r\\n]+)[\\r\\n]+");
     static const std::regex            rxReply("^(OK|ERR)(\\s+(\\S.*)?)?$", etdc_rxFlags);
                                              //  1       2    3   submatch numbers
+    static const bool                  noMatch = false;
     // Update Jun 2018: we need sendFile/getFile to return more detail than
     //              OK | ERR <reason>
     //     we need to be able to return #-of-bytes transferred (integer) and a time
@@ -569,7 +570,7 @@ namespace etdc {
         RetvalType endpos = 0;
         for(RegexIter line = RegexIter(f, l, rxLine); line!=rxIterEnd; line++) {
             // Found another line: append just the non-newline stuff to output and update endpos
-            *o++   = (*line)[1].str();
+            *o++   = line->str(1);
             endpos = line->position() + line->length();
         }
         return endpos;
@@ -666,10 +667,9 @@ namespace etdc {
             // did we read anything?
             ETDCASSERT(n>0, "Failed to read data from remote end");
             curPos += n;
-
             std::vector<std::string>  lines;
             auto                      endpos = getReplies(&buffer[0], &buffer[curPos], std::back_inserter(lines));
-            auto                      line = lines.begin();
+            auto                      line = lines.cbegin();
 
             // Check what we got back
             for(; !finished && line!=lines.end(); line++) {
@@ -677,20 +677,20 @@ namespace etdc {
 
                 if( std::regex_match(*line, fields, rxUUID) ) {
                     ETDCASSERT(!curUUID, "Server had already sent a UUID");
-                    curUUID = std::move( std::unique_ptr<uuid_type>(new uuid_type(fields[1].str())) );
+                    curUUID = std::move( std::unique_ptr<uuid_type>(new uuid_type(fields.str(1))) );
                 } else if( std::regex_match(*line, fields, rxAlreadyHave) ) {
                     ETDCASSERT(!filePos, "Server had already sent file position");
                     filePos = std::move( std::unique_ptr<off_t>(new off_t) );
-                    string2off_t(fields[1].str(), *filePos);
+                    string2off_t(fields.str(1), *filePos);
                 } else if( std::regex_match(*line, fields, rxReply) ) {
                     // We get OK (optional stuff)
                     // or     ERR (optional error message)
                     // Either will mean end-of-parsing
-                    status_s = fields[1].str();
-                    info     = fields[3].str();
+                    status_s = fields.str(1);
+                    info     = fields.str(3);
                     finished = true;
                 } else {
-                    ETDCASSERT(false, "requestFileWrite: the server sent a reply that we did not recognize: " << *line);
+                    ETDCASSERT(noMatch, "requestFileWrite: the server sent a reply we did not recognize: '" << *line << "'");
                 }
             }
             ETDCASSERT(line==lines.end(), "requestFileWrite: there are unprocessed lines of input left, this means the server sent an erroneous reply.");
@@ -736,9 +736,9 @@ namespace etdc {
             ETDCASSERT(n>0, "Failed to read data from remote end");
             curPos += n;
 
-            std::vector<std::string>  lines;
+            std::vector<std::string>  lines{};
             auto                      endpos = getReplies(&buffer[0], &buffer[curPos], std::back_inserter(lines));
-            auto                      line = lines.begin();
+            auto                      line = lines.cbegin();
 
             // Check what we got back
             for(; !finished && line!=lines.end(); line++) {
@@ -746,20 +746,20 @@ namespace etdc {
 
                 if( std::regex_match(*line, fields, rxUUID) ) {
                     ETDCASSERT(!curUUID, "Server already sent a UUID");
-                    curUUID = std::move( std::unique_ptr<uuid_type>(new uuid_type(fields[1].str())) );
+                    curUUID = std::move( std::unique_ptr<uuid_type>(new uuid_type(fields.str(1))) );
                 } else if( std::regex_match(*line, fields, rxRemain) ) {
                     ETDCASSERT(!remain, "Server already sent a file position");
                     remain = std::move( std::unique_ptr<off_t>(new off_t) );
-                    string2off_t(fields[1].str(), *remain);
+                    string2off_t(fields.str(1), *remain);
                 } else if( std::regex_match(*line, fields, rxReply) ) {
                     // We get OK (optional stuff)
                     // or     ERR (optional error message)
                     // Either will mean end-of-parsing
-                    status_s = fields[1].str();
-                    info     = fields[3].str(); 
+                    status_s = fields.str(1);
+                    info     = fields.str(3); 
                     finished = true;
                 } else {
-                    ETDCASSERT(false, "requestFileRead: the server sent a reply that we did not recognize: " << *line);
+                    ETDCASSERT(noMatch, "requestFileRead: the server sent a reply we did not recognize: " << *line);
                 }
             }
             ETDCASSERT(line==lines.end(), "requestFileRead: there are unprocessed lines of input left, this means the server sent an erroneous reply.");
