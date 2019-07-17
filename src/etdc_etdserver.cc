@@ -366,13 +366,15 @@ namespace etdc {
             std::ostringstream  msg_buf;
             msg_buf << "{ uuid:" << dstUUID << ", sz:" << todo << "}";
 
+            bool                remoteOK{ true };
             std::string         reason;
             const std::string   msg( msg_buf.str() );
             auto const          start_tm = std::chrono::high_resolution_clock::now();//system_clock::now();
             dstFD->write(dstFD->__m_fd, msg.data(), msg.size());
             while( todo>0 ) {
                 size_t const  n = std::min((size_t)todo, bufSz);
-                ssize_t       nWritten{0}, nRead = transfer.fd->read(transfer.fd->__m_fd, &buffer[0], n);
+                ssize_t       nWritten{0};
+                const ssize_t nRead = transfer.fd->read(transfer.fd->__m_fd, &buffer[0], n);
 
                 if( nRead<=0 ) {
                     reason = ((nRead==-1) ? std::string(etdc::strerror(errno)) : std::string("read() returned 0 - hung up"));
@@ -384,10 +386,10 @@ namespace etdc {
                     ssize_t const thisWrite = dstFD->write(dstFD->__m_fd, &buffer[nWritten], nRead-nWritten);
 
                     if( thisWrite<=0 ) {
-                        reason = ((thisWrite==-1) ? std::string(etdc::strerror(errno)) : std::string("write should never have returned 0"));
+                        reason   = ((thisWrite==-1) ? std::string(etdc::strerror(errno)) : std::string("write should never have returned 0"));
+                        remoteOK = false;
                         break;
                     }
-                    nRead    -= thisWrite;
                     nWritten += thisWrite;
                 }
                 if( nWritten<nRead )
@@ -397,10 +399,15 @@ namespace etdc {
             auto const          end_tm = std::chrono::high_resolution_clock::now();//system_clock::now();
             // if we make it out of the loop, todo should be <= 0 and terminate the outer loop
             // wait here until the recipient has acknowledged receipt of all bytes
-            char    ack;
-            ETDCDEBUG(4, "sendFile: waiting for remote ACK ..." << std::endl);
-            dstFD->read(dstFD->__m_fd, &ack, 1);
-            ETDCDEBUG(4, "sendFile: ... got it" << std::endl);
+            // But that only makes sense if the destination is still alive!
+            // (it should send an ACK as soon as it breaks from the loop and has flushed all bytes it has)
+            if( remoteOK ) {
+                char    ack;
+
+                ETDCDEBUG(4, "sendFile: waiting for remote ACK ..." << std::endl);
+                dstFD->read(dstFD->__m_fd, &ack, 1);
+                ETDCDEBUG(4, "sendFile: ... got it" << std::endl);
+            }
             return xfer_result(todo==0, nTodo - todo, reason, (end_tm-start_tm));
         }
         return xfer_result(false, 0, "Failed to get both locks", xfer_result::duration_type());
@@ -487,6 +494,7 @@ namespace etdc {
             std::ostringstream  msg_buf;
             msg_buf << "{ uuid:" << srcUUID << ", push:1, sz:" << todo << "}";
 
+            bool              remoteOK{ true };
             std::string       reason;
             std::string const msg( msg_buf.str() );
             auto const        start_tm = std::chrono::high_resolution_clock::now();//system_clock::now();
@@ -496,7 +504,8 @@ namespace etdc {
                 // Read at most bufSz bytes
                 // Note: we do blocking I/O so a read of size zero means
                 //       other side hung up
-                ssize_t       nWritten{0}, nRead = dstFD->read(dstFD->__m_fd, &buffer[0], bufSz);
+                ssize_t       nWritten{0};
+                const ssize_t nRead = dstFD->read(dstFD->__m_fd, &buffer[0], bufSz);
 
                 if( nRead<=0 ) {
                     reason = std::string("getFile/problem: ") + (nRead==0 ? std::string("remote side hung up") : etdc::strerror(errno));
@@ -506,10 +515,10 @@ namespace etdc {
                     ssize_t const thisWrite = transfer.fd->write(transfer.fd->__m_fd, &buffer[nWritten], nRead-nWritten);
 
                     if( thisWrite<=0 ) {
-                        reason = ((thisWrite==-1) ? std::string(etdc::strerror(errno)) : std::string("write should never have returned 0"));
+                        reason   = ((thisWrite==-1) ? std::string(etdc::strerror(errno)) : std::string("write should never have returned 0"));
+                        remoteOK = false;
                         break;
                     }
-                    nRead    -= thisWrite;
                     nWritten += thisWrite;
                 }
                 if( nWritten<nRead )
@@ -518,11 +527,13 @@ namespace etdc {
             }
             auto const end_tm = std::chrono::high_resolution_clock::now();//system_clock::now();
             // if we make it out of the loop, todo should be <= 0 and terminate the outer loop
-            // Send ACK 
-            const char ack{ 'y' };
-            ETDCDEBUG(4, "ETDServer::getFile/got all bytes, sending ACK ..." << std::endl);
-            dstFD->write(dstFD->__m_fd, &ack, 1);
-            ETDCDEBUG(4, "ETDServer::getFile/... done." << std::endl);
+            // Send ACK but only if it makes sense
+            if( remoteOK ) {
+                const char ack{ 'y' };
+                ETDCDEBUG(4, "ETDServer::getFile/got all bytes, sending ACK ..." << std::endl);
+                dstFD->write(dstFD->__m_fd, &ack, 1);
+                ETDCDEBUG(4, "ETDServer::getFile/... done." << std::endl);
+            }
             return xfer_result((todo==0), nTodo - todo, reason, (end_tm-start_tm));
         }
         return xfer_result(false, 0, "Failed to grab both locks", xfer_result::duration_type());
@@ -1345,7 +1356,6 @@ namespace etdc {
         
             // Attempt to read bytes. <0 is an error
             ETDCASSERT((aRead = src->read(src->__m_fd, &buf[wrEnd], nRead))>=0, "Failed to read bytes from client - " << etdc::strerror(errno));
-
             // Now we can bump wrEnd by that amount [at this point aRead might still be zero]
             wrEnd += aRead;
 
@@ -1355,7 +1365,6 @@ namespace etdc {
 
             // Now flush the amount of available bytes to the destination
             ETDCASSERTX(dst->write(dst->__m_fd, &buf[rdPos], wrEnd-rdPos)==ssize_t(wrEnd-rdPos));
-
             n -= (wrEnd - rdPos);
 
             // Now we are sure we can use the whole buffer for reading bytes
