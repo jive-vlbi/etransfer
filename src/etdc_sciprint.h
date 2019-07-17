@@ -139,10 +139,23 @@ namespace etdc {
         static prefixlist_type const prefixes_u  = { "y", "z", "a", "f", "n", u8"\u00b5", "m", "", "k", "M", "G", "T", "P", "E", "Z", "Y" };
         static prefixlist_type const prefixes_nu = { "y", "z", "a", "f", "n", "u", "m", "", "k", "M", "G", "T", "P", "E", "Z", "Y" };
 
+        // I was getting error: call to 'abs' is ambiguous (on OSX),
+        // that was for an unsigned type ... apparently you can't do 
+        // abs on an unsigned type.
+        template <typename T>
+        typename std::enable_if<std::is_unsigned<T>::value, T>::type
+        the_abs(T t) {
+            return t;
+        }
+        template <typename T>
+        typename std::enable_if<!std::is_unsigned<T>::value, T>::type
+        the_abs(T t) {
+            return std::abs( t );
+        }
 
         // Here we try to set the locale for the library based on the user's
         // preference. If that fails we default to "C"
-        std::locale getLocale( void ) {
+        static std::locale getLocale( void ) {
             try {
                 return std::locale("");
             }
@@ -155,7 +168,7 @@ namespace etdc {
 
         static std::locale            theEnvironment = getLocale();
 
-        static prefixlist_type const& prefixes( void ) {
+        static inline prefixlist_type const& prefixes( void ) {
 #ifdef __APPLE__
             // Bastard apple devs don't seem to give the environment a name
             // even it it was initialized from the user's environment
@@ -298,7 +311,8 @@ namespace etdc {
             const auto thousand = std::get<3>(reduced).__m_thousand;
 
             // If the reduced value is indescernible from 0 don't do anything either
-            if( std::abs(value) <= epsilon )
+            //if( std::abs(value) <= epsilon )
+            if( detail::the_abs(value) <= epsilon )
                 return p;
             // if value >=1 and < thousand we're also done
             if( value>=one && value<thousand )
