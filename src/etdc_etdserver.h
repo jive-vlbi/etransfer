@@ -181,6 +181,11 @@ namespace etdc {
             virtual bool          removeUUID(etdc::uuid_type const&);
             virtual std::string   status( void ) const NOTIMPLEMENTED;
 
+            template <typename... Options>
+            int setsockopt(Options&&... options) {
+                return etdc::setsockopt(__m_connection->__m_fd, std::forward<Options>(options)...);
+            }
+
             virtual ~ETDProxy() {}
 
         private:
