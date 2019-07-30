@@ -169,8 +169,12 @@ int main(int argc, char const*const*const argv) {
                                               "high speed file/directory transfers or it can be used "
                                               "to list the contents of a remote directory, if the remote "
                                               "etransfer daemon allows your credentials to do so."),
-                                AP::docstring("Remote URLs are formatted as ((tcp|udt)[6]://)[user@]host[#port]/path\n"
-                                              "Paths on the local machine are specified just as /<path> (i.e. absolute path)") );
+                                AP::docstring("Remote URLs are formatted as\n\t[[tcp|udt][6]://][user@]host[#port]:/path\n"
+                                              "Paths on the local machine are specified just as /<path> (i.e. absolute path)"),
+                                AP::docstring("The syntax on the remote URLs is slightly more complicated than e.g. scp(1) but that is "
+                                              "because this client can trigger remote daemon => remote daemon transfers."),
+                                AP::docstring("For each remote daemon it must be able to completely specify how to reach it; "
+                                              "TCP/IPv4 might the source and UDT/IPv6 might be the destination daemon's address family")  );
     // The URLs from the command line
     unsigned int           nLocal = 0;
     std::vector<url_type>  urls;

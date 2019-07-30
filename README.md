@@ -40,22 +40,39 @@ information.
 ## Running
 The tools operate as a standard daemon/client pair.
 
-The daemon /must/ have at least one command and one data channel:
+The daemon _must_ have at least one command and one data channel specified:
 
 ```bash
     server$ .../etd --command tcp://:4004 --data udt://:8008
 ```
 Now the daemon listens on all the machine's IPv4 addresses, port 4004 for client requests and data is
-transferred into the daemon using UDT over port 8008. (Note: these values are also the
-compiled in defaults).
+transferred into the daemon using UDT over port 8008. (Note: these port numbers are also the
+compiled in defaults, the protocols are NOT defaulted).
 
-I.e. to transfer some files from a machine into the server (it is important
-to prevent the shell from expanding the wildcard pattern):
+To transfer some files from your local machine into the server, use the
+e-transfer client `etc`:
 ```bash
-    client$ .../etc '/mnt/data/eg098a/*' server:4004/tmp/
+    client$ .../etc '/mnt/data/eg098a/*' server:/tmp/
 ```
+Note: it is important to prevent the shell from expanding the wildcard pattern!
 
-Both tools support the "--help" command line option explain all options.
+Remote source and/or destination paths are specified a little more complex
+than e.g. in simple `scp(1)`:
+```bash
+   [[tcp|udt][6]://][user@]host[#port]:/path 
+```
+So `host:/path` is the absolute minimum which needs to be specified for a
+remote URL and is shorthand for `tcp://host#4004:/path`.
+
+The reason the protocol type and version can be encoded in each URL is
+because the e-transfer client _specifically_ enables triggering remote
+daemon to remote daemon transfers. As such, having a global "use IPv6"
+option or "use port XXXX" (like in `scp(1)`) is not feasible; one remote
+daemon may be listening on TCP/IPv4:4004 whilst the other may be reachable
+over UDT/IPv6:46227.
+
+
+Both the e-transfer daemon and client support the "--help" command line option explain all options.
 
 
 ## File copy modes
