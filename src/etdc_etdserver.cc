@@ -688,10 +688,10 @@ namespace etdc {
 
                 if( std::regex_match(*line, fields, rxUUID) ) {
                     ETDCASSERT(!curUUID, "Server had already sent a UUID");
-                    curUUID = std::move( std::unique_ptr<uuid_type>(new uuid_type(fields.str(1))) );
+                    curUUID = std::unique_ptr<uuid_type>(new uuid_type(fields.str(1)));
                 } else if( std::regex_match(*line, fields, rxAlreadyHave) ) {
                     ETDCASSERT(!filePos, "Server had already sent file position");
-                    filePos = std::move( std::unique_ptr<off_t>(new off_t) );
+                    filePos = std::unique_ptr<off_t>(new off_t);
                     string2off_t(fields.str(1), *filePos);
                 } else if( std::regex_match(*line, fields, rxReply) ) {
                     // We get OK (optional stuff)
@@ -757,10 +757,10 @@ namespace etdc {
 
                 if( std::regex_match(*line, fields, rxUUID) ) {
                     ETDCASSERT(!curUUID, "Server already sent a UUID");
-                    curUUID = std::move( std::unique_ptr<uuid_type>(new uuid_type(fields.str(1))) );
+                    curUUID = std::unique_ptr<uuid_type>(new uuid_type(fields.str(1)));
                 } else if( std::regex_match(*line, fields, rxRemain) ) {
                     ETDCASSERT(!remain, "Server already sent a file position");
-                    remain = std::move( std::unique_ptr<off_t>(new off_t) );
+                    remain = std::unique_ptr<off_t>(new off_t);
                     string2off_t(fields.str(1), *remain);
                 } else if( std::regex_match(*line, fields, rxReply) ) {
                     // We get OK (optional stuff)

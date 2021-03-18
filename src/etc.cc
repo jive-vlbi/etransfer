@@ -365,11 +365,11 @@ int main(int argc, char const*const*const argv) {
         try {
             auto const outputFN = mkOutputPath(file);
             ETDCDEBUG(lvl, (push ? "PUSH" : "PULL" ) << " " << mode << " " << file << " -> " << outputFN << std::endl);
-            dstResult = std::move( unique_result(new etdc::result_type(servers[1]->requestFileWrite(outputFN, mode))) );
+            dstResult = unique_result(new etdc::result_type(servers[1]->requestFileWrite(outputFN, mode)));
             auto nByte = etdc::get_filepos(*dstResult);
 
             if( mode!=etdc::openmode_type::SkipExisting || nByte==0 ) {
-                srcResult      = std::move(  unique_result(new etdc::result_type(servers[0]->requestFileRead(file, nByte))) );
+                srcResult      = unique_result(new etdc::result_type(servers[0]->requestFileRead(file, nByte)));
                 auto nByteToGo = etdc::get_filepos(*srcResult);
 
                 if( nByteToGo>0 ) {
