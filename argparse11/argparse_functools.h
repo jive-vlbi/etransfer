@@ -142,7 +142,7 @@ namespace argparse { namespace functools {
     template <typename BinOp, typename T, typename U,
               typename std::enable_if<std::tuple_size<T>::value==0, int>::type = 0>
     auto foldl(BinOp&&, T&&, U&& u) -> typename std::decay<U>::type {
-        return u;
+        return std::move( u );
     }
 
     template <typename BinOp, typename T, typename U,

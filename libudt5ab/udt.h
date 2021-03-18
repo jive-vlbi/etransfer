@@ -204,6 +204,19 @@ class UDT_API CUDTException
 public:
    CUDTException(int major = 0, int minor = 0, int err = -1);
    CUDTException(const CUDTException& e);
+
+   CUDTException& operator=(CUDTException const& other) {
+        if( this!=&other ) {
+            m_iMajor = other.m_iMajor;
+            m_iMinor = other.m_iMinor;
+            m_iErrno = other.m_iErrno;
+            m_strMsg = other.m_strMsg;
+            m_strAPI = other.m_strAPI;
+            m_strDebug = other.m_strDebug;
+       }
+       return *this;
+   }
+
    virtual ~CUDTException();
 
       // Functionality:

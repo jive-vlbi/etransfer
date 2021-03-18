@@ -193,8 +193,11 @@ namespace etdc {
             thousands_type() = delete;
             thousands_type(T const& t): __m_thousand(t) {
                 // our algorithms only make sense if the thousand's value is greater than 1
-                if( __m_thousand<=T{1} )
-                    throw std::runtime_error("The thousands's value must be > 1");
+                if( __m_thousand<=T{1} ) {
+                    std::ostringstream es;
+                    es << "The thousands's value must be > 1 (passed value = " << __m_thousand << ", tested against " << T{1} << ")";
+                    throw std::runtime_error( es.str() );
+                }
             }
         };
 
@@ -231,6 +234,14 @@ namespace etdc {
             //                     0      1     2                     3
             auto rv =  sp_tuple<T>(value, unit, std::ostringstream(), thousands_type<T>(1000));
             std::get<2>(rv).imbue( theEnvironment ); 
+            return rv;
+        }
+        template <typename T>
+        auto mk_default_ptr(T const& value, std::string const& unit) -> std::shared_ptr<sp_tuple<T>> {
+            // remember the indices of the properties in the tuple:
+            //                     0      1     2                     3
+            auto rv =  std::make_shared<sp_tuple<T>>(value, unit, std::ostringstream(), thousands_type<T>(1000));
+            std::get<2>(*rv).imbue( theEnvironment ); 
             return rv;
         }
         
@@ -296,7 +307,7 @@ namespace etdc {
             update_sp_tuple(sp, std::forward<Args>(args)...);
         }
 
-        // Find the correct suffix
+        // Find the correct suffix - recursively
         template <typename T>
         prefixlist_type::const_iterator get_prefix(sp_tuple<T>& reduced, prefixlist_type::const_iterator p) {
             static const auto epsilon  = std::numeric_limits<T>::epsilon();
@@ -360,13 +371,15 @@ namespace etdc {
         // we know the empty string does appear in the list of prefixes
         detail::prefixlist_type::const_iterator  pfx = detail::get_prefix(settings, std::find(std::begin(detail::prefixes()), std::end(detail::prefixes()), ""));
         auto&                                    strm = std::get<2>(settings);
-            
+
+        strm.str( std::string() );
         if( pfx==detail::prefixes().end() )
             strm << value << " " << unit;
         else
             strm << std::get<0>(settings) << " " << *pfx << unit;
         return strm.str();
     }
+
     template <typename T, typename... Args>
     std::string to_string(T const& value, Args&&... args) {
         // Start from a default setting based on primary input
@@ -379,14 +392,49 @@ namespace etdc {
     }
 
     // Handy: make formatting function
-    //  you get to specify the type of the value because we can't infer that
+    // You get to specify the type of the value because we can't infer that
     template <typename T, typename... Args>
-    auto mk_formatter(std::string unit, Args&&... args) -> std::function<std::string(T const&)> {
-        return [&](T const& value) { return sciprint(value, unit, std::forward<Args>(args)...); };
+    auto mk_formatter(std::string const& unit, Args&&... args) -> std::function<std::string(T const&)> {
+        // Start from a default setting based on primary input
+        auto                                    settings = detail::mk_default_ptr(T{}, unit);
+        detail::prefixlist_type::const_iterator empty_pfx = std::find(std::begin(detail::prefixes()), std::end(detail::prefixes()), "");
+
+        // And allow customization
+        detail::update_sp_tuple(*settings, std::forward<Args>(args)...);
+
+        // Now that we've got the basic settings, we can generate the lambda
+        // that does the formattin' of any value according to our likin'
+        return [=](T const& value) {
+            // Copy the new value into the formatting tuple
+            std::get<0>(*settings) = value;
+
+            // After updating the value we can go look for a suitable SI prefix, if any
+            detail::prefixlist_type::const_iterator  pfx = detail::get_prefix(*settings, empty_pfx);
+            // Get reference to the ostringstream
+            auto&                                    strm = std::get<2>(*settings);
+            strm.str( std::string() );
+            // Output raw value w/ unit or reduced value w/ prefix and unit
+            if( pfx==detail::prefixes().end() )
+                strm << value << " " << std::get<1>(*settings);
+            else
+                strm << std::get<0>(*settings) << " " << *pfx << std::get<1>(*settings);
+            return strm.str();
+        };
     }
+
     template <typename T, typename... Args>
     auto mk_to_string(Args&&... args) -> std::function<std::string(T const&)> {
-        return [&](T const& value) { return to_string(value, std::forward<Args>(args)...); };
+        // Start from a default setting based on primary input
+        auto    settings = detail::mk_default_ptr(T{}, std::string());
+        // And allow customization
+        detail::update_sp_tuple(*settings, std::forward<Args>(args)...);
+        return [=](T const& value) {
+            auto&  strm = std::get<2>(*settings);
+            // Do them formattin'
+            strm.str( std::string() );
+            strm << value;
+            return strm.str();
+        };
     }
 
     ////////////////////////////////

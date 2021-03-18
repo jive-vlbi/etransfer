@@ -582,7 +582,7 @@ namespace etdc {
                         // mark the file as closed
                         close_fn([this](int) { __m_closed = true; return 0; }),
                         // setting blocking flag doesn't do /anything/
-                        setblocking_fn([this](int, bool) { return; })
+                        setblocking_fn([](int, bool) { return; })
         );
     }
 } // namespace etdc

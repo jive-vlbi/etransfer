@@ -124,7 +124,53 @@ HUMANREADABLE(etdc::openmode_type, "file copy mode")
 
 // Make sure our zignal handlert has C-linkage
 extern "C" {
+    // We need to be able to kick e.g. the main thread out of blocking
+    // systemcalls after closing file descriptors behind it's back.
+    // So this dummy handler can be installed to have the signal be
+    // "handled" by NOT the system, and profit from its sideeffects
     void dummy_signal_handler(int) { }
+}
+
+// This is supposed to execute in a separate thread and promises to deliver
+// the signal number that was raised
+using signallist_type = std::vector<int>;
+
+// A thread that just sits there to waiting for any of the signals listed to happen and if it
+// does takes affirmative action to cancel any transfers and "kill" the
+// indicated thread using the KillSignal when done.
+#define KILLMAINSIGNAL SIGUSR1
+
+template <int KillSignal>
+static void signal_thread(signallist_type const& sigs, etdc::etd_state& state, pthread_t tid) {
+    int       received;
+    sigset_t  sset;
+
+    // Before we actually unblock the signals, we prepare the sigset_t for
+    // signals we'll wait for
+    // Note: on some platforms sigemptyset() is a macro, not a fn call
+    //       so "::sigemptyset()" don't compile, unfortunately :-(
+    //       And likewise for sigaddset & friends
+    sigemptyset(&sset);
+    for(auto s: sigs)
+        sigaddset(&sset, s);
+
+    ETDCDEBUG(4, "sigwaiterthread: enter wait phase" << endl);
+    // ... and wait for any of them to happen
+    ::sigwait(&sset, &received);
+    ETDCDEBUG(4, "sigwaiterthread: got signal " << received << endl);
+
+    // Do the magic on the etransfer state
+    std::atomic_store(&state.cancelled, true);
+    // Loop over all transfers and close file descriptors?
+    etdc::scoped_lock   lk( state.lock );
+    for(auto xferptr = std::begin(state.transfers); xferptr!=std::end(state.transfers); xferptr++ ) {
+        if( xferptr->second->data_fd ) {
+            ETDCDEBUG(0, "sigwaiterthread: Closing " << xferptr->second->data_fd->getsockname( xferptr->second->data_fd->__m_fd ) << std::endl);
+            xferptr->second->data_fd->close( xferptr->second->data_fd->__m_fd );
+        }
+    }
+    ::pthread_kill(tid, KillSignal);
+    ETDCDEBUG(2, "sigwaiterthread: done." << std::endl);
 }
 
 struct socketoptions_type {
@@ -156,6 +202,7 @@ enum display_format { continental, imperial };
 int main(int argc, char const*const*const argv) {
     // First things first: block ALL signals
     etdc::BlockAll         ba;
+    etdc::etd_state        localState{};
     // Let's set up the command line parsing
     int                    message_level = 0;
     display_format         display( imperial );
@@ -197,8 +244,8 @@ int main(int argc, char const*const*const argv) {
              AP::docstring("Message level - higher = more output") );
 
     // verbosity
-    cmd.add( AP::store_false(), AP::short_name('v'), AP::long_name("verbose"),
-             AP::at_most(1), AP::docstring("Verbose output for each file transferred") );
+    cmd.add( AP::store_true(), AP::short_name('v'), AP::long_name("verbose"),
+             AP::at_most(1), AP::docstring("Enable verbose output for each file transferred") );
 
     // display format
     cmd.addXOR(
@@ -269,12 +316,16 @@ int main(int argc, char const*const*const argv) {
 
     // The size of the list of URLs is a proxy wether to list or not; a
     // list of length one is only accepted if '--list URL' was given
-    etdc::UnBlock                   s({SIGINT});
-    etdc::install_handler(dummy_signal_handler, {SIGINT});
-
     const bool                        verbose = cmd.get<bool>("verbose");
-    etdc::etd_state                   localState{};
     std::vector<etdc::etd_server_ptr> servers;
+
+    // Unblock the signal that can be used to wake us out of blocking system calls
+    // and install an empty handler such that the default handler doesn't
+    // kill us but we can benefit from observing the side effects of
+    // handling the signal by someone else (the sigwaiter thread, to be
+    // precise)
+    etdc::UnBlock                     s({KILLMAINSIGNAL});
+    etdc::install_handler(dummy_signal_handler, {KILLMAINSIGNAL});
 
     // We must transform the URL(s) into ETDServerInterface* 
     std::transform(std::begin(urls), std::end(urls), std::back_inserter(servers),
@@ -345,17 +396,23 @@ int main(int argc, char const*const*const argv) {
                             etdc::mk_to_string<decltype(etdc::xfer_result::__m_BytesTransferred)>(std::fixed, etdc::continental) :
                             etdc::mk_to_string<decltype(etdc::xfer_result::__m_BytesTransferred)>(std::fixed, etdc::imperial) );
     auto        fmt1000 = (display == continental ? 
-                            etdc::mk_formatter<decltype(etdc::xfer_result::__m_BytesTransferred)>("iB", etdc::continental) :
-                            etdc::mk_formatter<decltype(etdc::xfer_result::__m_BytesTransferred)>("iB", etdc::imperial) );
+                            etdc::mk_formatter<double>("iB", etdc::continental, std::setprecision(2)) :
+                            etdc::mk_formatter<double>("iB", etdc::imperial, std::setprecision(2)) );
     auto        fmtRate = (display == continental ?
                             etdc::mk_formatter<double>("Bps", etdc::thousand(1024), std::fixed, etdc::continental, std::setprecision(2)) :
                             etdc::mk_formatter<double>("Bps", etdc::thousand(1024), std::fixed, etdc::imperial, std::setprecision(2)) );
     auto        fmtTime = (display == continental ? 
-                            etdc::mk_formatter<double>("s", std::setprecision(3), etdc::continental) :
-                            etdc::mk_formatter<double>("s", std::setprecision(3), etdc::imperial) );
+                            etdc::mk_formatter<double>("s", std::setprecision(4), etdc::continental):
+                            etdc::mk_formatter<double>("s", std::setprecision(4), etdc::imperial) );
     const int 	lvl( verbose ? -1 : 9 );
 
+    // Enable killing by signal
+    etdc::thread(&signal_thread<KILLMAINSIGNAL>, signallist_type{{SIGINT, SIGSEGV, SIGTERM, SIGHUP}}, std::ref(localState), ::pthread_self()).detach();
+
     for(auto const& file: files2do) {
+        // Did someone say Cancel?
+        if( std::atomic_load(&localState.cancelled) )
+            break;
         // Skip directories
         if( file[file.size()-1]=='/' )
             continue;
@@ -365,18 +422,22 @@ int main(int argc, char const*const*const argv) {
         try {
             auto const outputFN = mkOutputPath(file);
             ETDCDEBUG(lvl, (push ? "PUSH" : "PULL" ) << " " << mode << " " << file << " -> " << outputFN << std::endl);
-            dstResult = std::move( unique_result(new etdc::result_type(servers[1]->requestFileWrite(outputFN, mode))) );
+            dstResult = unique_result(new etdc::result_type(servers[1]->requestFileWrite(outputFN, mode)));
             auto nByte = etdc::get_filepos(*dstResult);
 
             if( mode!=etdc::openmode_type::SkipExisting || nByte==0 ) {
-                srcResult      = std::move(  unique_result(new etdc::result_type(servers[0]->requestFileRead(file, nByte))) );
+                srcResult      = unique_result(new etdc::result_type(servers[0]->requestFileRead(file, nByte)));
                 auto nByteToGo = etdc::get_filepos(*srcResult);
 
                 if( nByteToGo>0 ) {
                     etdc::xfer_result result( fn(etdc::get_uuid(*srcResult), etdc::get_uuid(*dstResult), nByteToGo, dataChannels) );
                     auto const        dt = result.__m_DeltaT.count();
-                    std::cout << (result.__m_Finished ? "" : "Un") << "succesfully transferred " << fmt1000(result.__m_BytesTransferred) << " (" << fmtByte(result.__m_BytesTransferred) << " bytes) in " << fmtTime(dt) << " seconds "
-                              << "[" << fmtRate( dt>0 ? ((double)result.__m_BytesTransferred)/dt : 0.0) << "]" << std::endl;
+                    std::cout << (result.__m_Finished && std::atomic_load(&localState.cancelled)==false ? "" : "Un") << "finished; succesfully transferred "
+                              << fmt1000(result.__m_BytesTransferred)
+                              << " (" << fmtByte(result.__m_BytesTransferred) << " bytes) in "
+                              << fmtTime(dt) << " "
+                              << "[" << fmtRate( dt>0 ? ((double)result.__m_BytesTransferred)/dt : 0.0) << "]"
+                              << std::endl;
                 } else
                     ETDCDEBUG(lvl, "Destination is complete or is larger than source file" << std::endl);
             }
@@ -391,7 +452,7 @@ int main(int argc, char const*const*const argv) {
         if( eptr )
             std::rethrow_exception(eptr);
     }
-    return 0;
+    return (std::atomic_load(&localState.cancelled) == true ? 1 : 0);
 }
 
 

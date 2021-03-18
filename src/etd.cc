@@ -329,7 +329,7 @@ int main(int argc, char const*const*const argv) {
     if( daemonize ) {
         // We replace std::cerr's streambuf so from this moment on all
         // output goes to syslog - we are, after all, daemonizing
-        oldStreamBuf = std::move(etdc::redirect_to_syslog(std::cerr, argv[0]));
+        oldStreamBuf = etdc::redirect_to_syslog(std::cerr, argv[0]);
 
         do_daemonize();
     }

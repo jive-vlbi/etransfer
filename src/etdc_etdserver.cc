@@ -258,7 +258,7 @@ namespace etdc {
 
             // Now we must do try_lock on the transfer - if that fails we sleep and start from the beginning
             //std::unique_lock<std::mutex>     sh( *ptr->second.lockPtr, std::try_to_lock );
-            std::unique_lock<std::mutex>     sh( ptr->second->lock, std::try_to_lock );
+            std::unique_lock<std::mutex>     sh( ptr->second->xfer_lock, std::try_to_lock );
             if( !sh.owns_lock() ) {
                 // we must release the lock on shared state before sleeping
                 // for a bit or else no-one can change anything [because we
@@ -310,7 +310,7 @@ namespace etdc {
             
             // Now we must do try_lock on the transfer - if that fails we sleep and start from the beginning
             //std::unique_lock<std::mutex>     sh( *ptr->second.lockPtr, std::try_to_lock );
-            std::unique_lock<std::mutex>     sh( ptr->second->lock, std::try_to_lock );
+            std::unique_lock<std::mutex>     sh( ptr->second->xfer_lock, std::try_to_lock );
             if( !sh ) {
                 // we must manually unlock the shared state before sleeping
                 // or else no-one will be able to change anything
@@ -334,7 +334,6 @@ namespace etdc {
 
             // Great. Now we attempt to connect to the remote end
             const size_t        bufSz( 32*1024*1024 );
-            etdc::etdc_fdptr    dstFD;
             std::ostringstream  tried;
 
             for(auto addr: dataAddrs) {
@@ -344,9 +343,9 @@ namespace etdc {
 
                     // Pass all possible receive buf sizes - the mk_client
                     // will make sure only the right ones will be used
-                    dstFD = mk_client(get_protocol(addr), get_host(addr), get_port(addr),
-                                      /*etdc::udt_rcvbuf{bufSz}, etdc::udt_sndbuf{bufSz},*/ etdc::so_rcvbuf{bufSz}, etdc::so_sndbuf{bufSz});
-                                      //etdc::udt_sndbuf{bufSz}, etdc::udp_sndbuf{bufSz}, etdc::so_sndbuf{bufSz});
+                    transfer.data_fd = mk_client(get_protocol(addr), get_host(addr), get_port(addr),
+                                                /*etdc::udt_rcvbuf{bufSz}, etdc::udt_sndbuf{bufSz},*/ etdc::so_rcvbuf{bufSz}, etdc::so_sndbuf{bufSz});
+                                                //etdc::udt_sndbuf{bufSz}, etdc::udp_sndbuf{bufSz}, etdc::so_sndbuf{bufSz});
                     ETDCDEBUG(2, "sendFile/connected to " << addr << std::endl);
                     break;
                 }
@@ -357,9 +356,10 @@ namespace etdc {
                     tried << addr << ": unknown exception" << ", ";
                 }
             }
-            ETDCASSERT(dstFD, "Failed to connect to any of the data servers: " << tried.str());
+            ETDCASSERT(transfer.data_fd, "Failed to connect to any of the data servers: " << tried.str());
 
             // Weehee! we're connected!
+            // Need buffer and record the data channel
             std::unique_ptr<unsigned char[]> buffer(new unsigned char[bufSz]);
 
             // Create message header
@@ -370,7 +370,7 @@ namespace etdc {
             std::string         reason;
             const std::string   msg( msg_buf.str() );
             auto const          start_tm = std::chrono::high_resolution_clock::now();//system_clock::now();
-            dstFD->write(dstFD->__m_fd, msg.data(), msg.size());
+            transfer.data_fd->write(transfer.data_fd->__m_fd, msg.data(), msg.size());
             while( todo>0 ) {
                 size_t const  n = std::min((size_t)todo, bufSz);
                 ssize_t       nWritten{0};
@@ -383,7 +383,7 @@ namespace etdc {
 
                 // Keep on writing untill all bytes that were read are actually written
                 while( nWritten<nRead ) {
-                    ssize_t const thisWrite = dstFD->write(dstFD->__m_fd, &buffer[nWritten], nRead-nWritten);
+                    ssize_t const thisWrite = transfer.data_fd/*dstFD*/->write(transfer.data_fd/*dstFD*/->__m_fd, &buffer[nWritten], nRead-nWritten);
 
                     if( thisWrite<=0 ) {
                         reason   = ((thisWrite==-1) ? std::string(etdc::strerror(errno)) : std::string("write should never have returned 0"));
@@ -405,7 +405,7 @@ namespace etdc {
                 char    ack;
 
                 ETDCDEBUG(4, "sendFile: waiting for remote ACK ..." << std::endl);
-                dstFD->read(dstFD->__m_fd, &ack, 1);
+                transfer.data_fd->read(transfer.data_fd->__m_fd, &ack, 1);
                 ETDCDEBUG(4, "sendFile: ... got it" << std::endl);
             }
             return xfer_result(todo==0, nTodo - todo, reason, (end_tm-start_tm));
@@ -435,7 +435,7 @@ namespace etdc {
             
             // Now we must do try_lock on the transfer - if that fails we sleep and start from the beginning
             //std::unique_lock<std::mutex>     sh( *ptr->second.lockPtr, std::try_to_lock );
-            std::unique_lock<std::mutex>     sh( ptr->second->lock, std::try_to_lock );
+            std::unique_lock<std::mutex>     sh( ptr->second->xfer_lock, std::try_to_lock );
             if( !sh ) {
                 // Manually unlock the shared state or else nobody won't be
                 // able to change anything!
@@ -463,7 +463,7 @@ namespace etdc {
 
             // Great. Now we attempt to connect to the remote end
             const size_t        bufSz( 32*1024*1024 );
-            etdc::etdc_fdptr    dstFD;
+            //etdc::etdc_fdptr    dstFD;
             std::ostringstream  tried;
 
             for(auto addr: dataAddrs) {
@@ -473,8 +473,8 @@ namespace etdc {
 
                     // Pass all possible receive buf sizes - the mk_client
                     // will make sure only the right ones will be used
-                    dstFD = mk_client(get_protocol(addr), get_host(addr), get_port(addr),
-                                      /*etdc::udt_rcvbuf{bufSz}, etdc::udt_sndbuf{bufSz}, */etdc::so_rcvbuf{bufSz}, etdc::so_sndbuf{bufSz});
+                    transfer.data_fd = mk_client(get_protocol(addr), get_host(addr), get_port(addr),
+                                                 /*etdc::udt_rcvbuf{bufSz}, etdc::udt_sndbuf{bufSz}, */etdc::so_rcvbuf{bufSz}, etdc::so_sndbuf{bufSz});
                     ETDCDEBUG(2, "getFile/connected to " << addr << std::endl);
                     break;
                 }
@@ -485,7 +485,7 @@ namespace etdc {
                     tried << addr << ": unknown exception" << ", ";
                 }
             }
-            ETDCASSERT(dstFD, "Failed to connect to any of the data servers: " << tried.str());
+            ETDCASSERT(transfer.data_fd, "Failed to connect to any of the data servers: " << tried.str());
 
             // Weehee! we're connected!
             std::unique_ptr<unsigned char[]> buffer(new unsigned char[bufSz]);
@@ -498,14 +498,14 @@ namespace etdc {
             std::string       reason;
             std::string const msg( msg_buf.str() );
             auto const        start_tm = std::chrono::high_resolution_clock::now();//system_clock::now();
-            dstFD->write(dstFD->__m_fd, msg.data(), msg.size());
+            transfer.data_fd->write(transfer.data_fd->__m_fd, msg.data(), msg.size());
 
             while( todo>0 ) {
                 // Read at most bufSz bytes
                 // Note: we do blocking I/O so a read of size zero means
                 //       other side hung up
                 ssize_t       nWritten{0};
-                const ssize_t nRead = dstFD->read(dstFD->__m_fd, &buffer[0], bufSz);
+                const ssize_t nRead = transfer.data_fd->read(transfer.data_fd->__m_fd, &buffer[0], bufSz);
 
                 if( nRead<=0 ) {
                     reason = std::string("getFile/problem: ") + (nRead==0 ? std::string("remote side hung up") : etdc::strerror(errno));
@@ -531,7 +531,7 @@ namespace etdc {
             if( remoteOK ) {
                 const char ack{ 'y' };
                 ETDCDEBUG(4, "ETDServer::getFile/got all bytes, sending ACK ..." << std::endl);
-                dstFD->write(dstFD->__m_fd, &ack, 1);
+                transfer.data_fd->write(transfer.data_fd->__m_fd, &ack, 1);
                 ETDCDEBUG(4, "ETDServer::getFile/... done." << std::endl);
             }
             return xfer_result((todo==0), nTodo - todo, reason, (end_tm-start_tm));
@@ -688,10 +688,10 @@ namespace etdc {
 
                 if( std::regex_match(*line, fields, rxUUID) ) {
                     ETDCASSERT(!curUUID, "Server had already sent a UUID");
-                    curUUID = std::move( std::unique_ptr<uuid_type>(new uuid_type(fields.str(1))) );
+                    curUUID = std::unique_ptr<uuid_type>(new uuid_type(fields.str(1)));
                 } else if( std::regex_match(*line, fields, rxAlreadyHave) ) {
                     ETDCASSERT(!filePos, "Server had already sent file position");
-                    filePos = std::move( std::unique_ptr<off_t>(new off_t) );
+                    filePos = std::unique_ptr<off_t>(new off_t);
                     string2off_t(fields.str(1), *filePos);
                 } else if( std::regex_match(*line, fields, rxReply) ) {
                     // We get OK (optional stuff)
@@ -757,10 +757,10 @@ namespace etdc {
 
                 if( std::regex_match(*line, fields, rxUUID) ) {
                     ETDCASSERT(!curUUID, "Server already sent a UUID");
-                    curUUID = std::move( std::unique_ptr<uuid_type>(new uuid_type(fields.str(1))) );
+                    curUUID = std::unique_ptr<uuid_type>(new uuid_type(fields.str(1)));
                 } else if( std::regex_match(*line, fields, rxRemain) ) {
                     ETDCASSERT(!remain, "Server already sent a file position");
-                    remain = std::move( std::unique_ptr<off_t>(new off_t) );
+                    remain = std::unique_ptr<off_t>(new off_t);
                     string2off_t(fields.str(1), *remain);
                 } else if( std::regex_match(*line, fields, rxReply) ) {
                     // We get OK (optional stuff)
@@ -1240,11 +1240,11 @@ namespace etdc {
             // and do our thang
             const bool                       push = (pushptr!=kvpairs.end());
             etdc::etd_state&                 shared_state( __m_shared_state.get() );
-            std::unique_lock<std::mutex>     xfer_lock;
+            std::unique_lock<std::mutex>     transfer_lock;
             etdc::transfermap_type::iterator xfer_ptr;
 
             // Loop until we've got the lock acquired
-            while( !xfer_lock.owns_lock() /*true*/ ) {
+            while( !transfer_lock.owns_lock() /*true*/ ) {
                 // 2a. lock shared state
                 std::unique_lock<std::mutex>     lk( shared_state.lock );
                 // 2b. assert that there is an entry for the indicated uuid
@@ -1253,7 +1253,7 @@ namespace etdc {
                 ETDCASSERT(xfer_ptr!=shared_state.transfers.end(), "No transfer associated with the UUID");
 
                 // Now we must do try_lock on the transfer - if that fails we sleep and start from the beginning
-                std::unique_lock<std::mutex>     sh( xfer_ptr->second->lock, std::try_to_lock );
+                std::unique_lock<std::mutex>     sh( xfer_ptr->second->xfer_lock, std::try_to_lock );
                 if( !sh.owns_lock() ) {
                     // Manually unlock the shared state or else nobody won't be
                     // able to change anything!
@@ -1278,7 +1278,7 @@ namespace etdc {
                             "The referred-to transfer's open mode (" << xfer_ptr->second->openMode << ") is not compatible with the current data request");
                 // move the transfer lock out of this loop;
                 // breaking out of the loop will unlock the shared state
-                xfer_lock = std::move( sh );
+                transfer_lock = std::move( sh );
             }
             ETDCDEBUG(5, "ETDDataServer/owning transfer lock, now sucking data!" << std::endl);
 

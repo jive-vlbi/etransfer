@@ -186,7 +186,7 @@ namespace etdc {
             if( int r = ::pthread_sigmask(static_cast<int>(How), &__m_cur_sigmask, &__m_old_sigmask) )
                 throw std::runtime_error(std::string("Failed to install signalmask - ")+etdc::strerror(r));
         }
-        ~scoped_signal_mask() throw () {
+        ~scoped_signal_mask() noexcept(false) {
             // Restore old signal mask on destruction of instances that modified the signal mask
             if( How!=MaskOp::getMask ) {
                 if( int r = ::pthread_sigmask(static_cast<int>(MaskOp::setMask), &__m_old_sigmask, nullptr) )
