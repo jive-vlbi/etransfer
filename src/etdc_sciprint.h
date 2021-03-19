@@ -193,8 +193,12 @@ namespace etdc {
             thousands_type() = delete;
             thousands_type(T const& t): __m_thousand(t) {
                 // our algorithms only make sense if the thousand's value is greater than 1
-                if( __m_thousand<=T{1} )
-                    throw std::runtime_error("The thousands's value must be > 1");
+                if( __m_thousand<=T{1} ) {
+                    std::ostringstream es;
+                    es << "The thousands's value must be > 1 (passed value = " << __m_thousand << ", tested against " << T{1} << ")";
+                    throw std::runtime_error( es.str() );
+                    //throw std::runtime_error("The thousands's value must be > 1");
+                }
             }
         };
 
@@ -382,7 +386,7 @@ namespace etdc {
     //  you get to specify the type of the value because we can't infer that
     template <typename T, typename... Args>
     auto mk_formatter(std::string unit, Args&&... args) -> std::function<std::string(T const&)> {
-        return [&](T const& value) { return sciprint(value, unit, std::forward<Args>(args)...); };
+        return [&,unit](T const& value) { return sciprint(value, unit, std::forward<Args>(args)...); };
     }
     template <typename T, typename... Args>
     auto mk_to_string(Args&&... args) -> std::function<std::string(T const&)> {

@@ -351,8 +351,8 @@ int main(int argc, char const*const*const argv) {
                             etdc::mk_formatter<double>("Bps", etdc::thousand(1024), std::fixed, etdc::continental, std::setprecision(2)) :
                             etdc::mk_formatter<double>("Bps", etdc::thousand(1024), std::fixed, etdc::imperial, std::setprecision(2)) );
     auto        fmtTime = (display == continental ? 
-                            etdc::mk_formatter<double>("s", std::setprecision(3), etdc::continental) :
-                            etdc::mk_formatter<double>("s", std::setprecision(3), etdc::imperial) );
+                            etdc::mk_formatter<double>("s", std::setprecision(3), etdc::continental, std::setw(7), etdc::thousand(1000) ):
+                            etdc::mk_formatter<double>("s", std::setprecision(3), etdc::imperial, std::setw(7), etdc::thousand(1000)) );
     const int 	lvl( verbose ? -1 : 9 );
 
     for(auto const& file: files2do) {
@@ -375,8 +375,14 @@ int main(int argc, char const*const*const argv) {
                 if( nByteToGo>0 ) {
                     etdc::xfer_result result( fn(etdc::get_uuid(*srcResult), etdc::get_uuid(*dstResult), nByteToGo, dataChannels) );
                     auto const        dt = result.__m_DeltaT.count();
-                    std::cout << (result.__m_Finished ? "" : "Un") << "succesfully transferred " << fmt1000(result.__m_BytesTransferred) << " (" << fmtByte(result.__m_BytesTransferred) << " bytes) in " << fmtTime(dt) << " seconds "
-                              << "[" << fmtRate( dt>0 ? ((double)result.__m_BytesTransferred)/dt : 0.0) << "]" << std::endl;
+                    std::cout << (result.__m_Finished ? "" : "Un") << "succesfully transferred "
+                              << fmt1000(result.__m_BytesTransferred)
+                              << " (" << fmtByte(result.__m_BytesTransferred) << " bytes) in "
+                              << result.__m_DeltaT.count() << " seconds"
+                              << "[" << ( dt>0 ? ((double)result.__m_BytesTransferred)/dt : 0.0) << " Bps]"
+                              //<< fmtTime(dt) << " seconds "
+                              //<< "[" << fmtRate( dt>0 ? ((double)result.__m_BytesTransferred)/dt : 0.0) << "]"
+                              << std::endl;
                 } else
                     ETDCDEBUG(lvl, "Destination is complete or is larger than source file" << std::endl);
             }
