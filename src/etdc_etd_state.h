@@ -86,9 +86,9 @@ namespace etdc {
     // We keep per-transfer properties in here
     struct transferprops_type {
         std::string                 path;
-        etdc::etdc_fdptr            fd;
+        etdc::etdc_fdptr            fd, data_fd;
         const openmode_type         openMode;
-        std::mutex                  lock;
+        std::mutex                  xfer_lock;
 
         // we cannot be copied or default constructed! (because of our unique_ptr)
         transferprops_type()                          = delete;
