@@ -29,6 +29,7 @@
 
 // C++ standard headers
 #include <map>
+#include <chrono>
 #include <thread>
 #include <string>
 #include <vector>
@@ -121,6 +122,7 @@ std::basic_ostream<CharT, Traits>& operator<<(std::basic_ostream<CharT, Traits>&
 
 HUMANREADABLE(url_type, "URL")
 HUMANREADABLE(etdc::openmode_type, "file copy mode")
+HUMANREADABLE(std::chrono::duration<float>, "duration (s)")
 
 // Make sure our zignal handlert has C-linkage
 extern "C" {
@@ -201,15 +203,17 @@ enum display_format { continental, imperial };
 
 int main(int argc, char const*const*const argv) {
     // First things first: block ALL signals
-    etdc::BlockAll         ba;
-    etdc::etd_state        localState{};
+    etdc::BlockAll              ba;
+    etdc::etd_state             localState{};
     // Let's set up the command line parsing
-    int                    message_level = 0;
-    display_format         display( imperial );
+    int                          message_level = 0;
+    unsigned int                 maxRetry{ 2 }, nRetry{ 0 };
+    display_format               display( imperial );
 #if 0
     socketoptions_type     sockopts{};
 #endif
-    etdc::openmode_type    mode{ etdc::openmode_type::New };
+    etdc::openmode_type          mode{ etdc::openmode_type::New };
+    std::chrono::duration<float> retryDelay{ 10 };
     AP::ArgumentParser     cmd( AP::version( buildinfo() ),
                                 AP::docstring("'ftp' like etransfer client program.\n"
                                               "This is to be used with etransfer daemon (etd) for "
@@ -228,8 +232,9 @@ int main(int argc, char const*const*const argv) {
 
     // What does our command line look like?
     //
-    // <prog> [-h] [--help] [--version]
+    // <prog> [-h] [--help] [--version] [--max-retry N] [--retry-delay Y]
     //        [-m <int>] { [--list SRC] | SRC DST }
+    //        [--imperial|--continental]
     //
     cmd.add( AP::long_name("help"), AP::print_help(),
              AP::docstring("Print full help and exit succesfully") );
@@ -253,6 +258,16 @@ int main(int argc, char const*const*const argv) {
                    AP::docstring(std::string("Use imperial (American/English) formatting for number representation")+(display == imperial ? " (default)" : ""))),
         AP::option(AP::long_name("continental"), AP::store_const_into(continental, display),
                    AP::docstring(std::string("Use continental (European) formatting for number representation")+(display == continental ? " (default)" : ""))) );
+
+    // How many times to retry (so total # of tries is N+1) and how
+    // long to wait between retries
+    cmd.add( AP::long_name("max-retry"), AP::store_into(maxRetry),AP::at_most(1),
+             AP::docstring("Retry the transfer this many times, so total number of attempts is N+1") );
+    cmd.add( AP::long_name("retry-delay"), AP::store_into(retryDelay), AP::at_most(1),
+             AP::docstring("How many seconds to wait between retries"),
+             AP::constrain([](std::chrono::duration<float> const& v) { return v.count()>= 0; }, "duration should be >= 0s"),
+             //AP::minimum_value( std::chrono::duration<float>(0.0) ), // can't sleep a negative amount of time w/o inventing time travel
+             AP::convert([](std::string const& s) { return std::chrono::duration<float>(std::stof(s)); }) );
 
     // User can choose between:
     //  * the target file(s) may not exist [default]
@@ -410,6 +425,71 @@ int main(int argc, char const*const*const argv) {
     etdc::thread(&signal_thread<KILLMAINSIGNAL>, signallist_type{{SIGINT, SIGSEGV, SIGTERM, SIGHUP}}, std::ref(localState), ::pthread_self()).detach();
 
     for(auto const& file: files2do) {
+        // Skip directories
+        if( file[file.size()-1]=='/' )
+            continue;
+
+        // Keep these out of the while loop
+        bool               finished{ false };
+        std::exception_ptr eptr;
+        const unsigned int retryCountAtStart = nRetry;
+
+        // Did someone say Cancel? Or did we reach maximum number of retries?
+        while( !std::atomic_load(&localState.cancelled) && !finished && nRetry<maxRetry ) {
+            // Just checked that we weren't cancelled and if we're actually
+            // retrying a file we should sleep (new file => don't sleep)
+            // also make sure we reset current exception already
+            eptr = nullptr;
+            if( retryCountAtStart < nRetry ) {
+                ETDCDEBUG(4, "Retry #" << nRetry+1 << " (#" << (nRetry-retryCountAtStart)+1 << " for this file), go to sleep for " <<
+                             retryDelay.count() << "s" << std::endl);
+                std::this_thread::sleep_for( retryDelay );
+            }
+
+            // We must keep these outside the try/catch such that we can clean up?
+            unique_result      srcResult, dstResult;
+            try {
+                auto const outputFN = mkOutputPath(file);
+                ETDCDEBUG(lvl, (push ? "PUSH" : "PULL" ) << " " << mode << " " << file << " -> " << outputFN << std::endl);
+                dstResult = unique_result(new etdc::result_type(servers[1]->requestFileWrite(outputFN, mode)));
+                auto nByte = etdc::get_filepos(*dstResult);
+
+                if( mode!=etdc::openmode_type::SkipExisting || nByte==0 ) {
+                    srcResult      = unique_result(new etdc::result_type(servers[0]->requestFileRead(file, nByte)));
+                    auto nByteToGo = etdc::get_filepos(*srcResult);
+
+                    if( nByteToGo>0 ) {
+                        etdc::xfer_result result( fn(etdc::get_uuid(*srcResult), etdc::get_uuid(*dstResult), nByteToGo, dataChannels) );
+                        auto const        dt = result.__m_DeltaT.count();
+                        std::cout << (result.__m_Finished && std::atomic_load(&localState.cancelled)==false ? "" : "Un") << "finished; succesfully transferred "
+                                  << fmt1000(result.__m_BytesTransferred)
+                                  << " (" << fmtByte(result.__m_BytesTransferred) << " bytes) in "
+                                  << fmtTime(dt) << " "
+                                  << "[" << fmtRate( dt>0 ? ((double)result.__m_BytesTransferred)/dt : 0.0) << "]"
+                                  << std::endl;
+                        finished = result.__m_Finished;
+                    } else {
+                        ETDCDEBUG(lvl, "Destination is complete or is larger than source file" << std::endl);
+                        finished = true;
+                    }
+                }
+            }
+            catch( ... ) {
+                eptr = std::current_exception();
+            }
+            if( dstResult )
+                servers[1]->removeUUID( etdc::get_uuid(*dstResult) );
+            if( srcResult )
+                servers[0]->removeUUID( etdc::get_uuid(*srcResult) );
+            // If we didn't finish, we must retry
+            if( !finished )
+                nRetry++;
+        }
+        // If, leaving the loop, eptr indicates that there was an exception
+        // pending we rethrow that one
+        if( eptr )
+            std::rethrow_exception( eptr );
+#if 0
         // Did someone say Cancel?
         if( std::atomic_load(&localState.cancelled) )
             break;
@@ -451,6 +531,7 @@ int main(int argc, char const*const*const argv) {
             servers[0]->removeUUID( etdc::get_uuid(*srcResult) );
         if( eptr )
             std::rethrow_exception(eptr);
+#endif
     }
     return (std::atomic_load(&localState.cancelled) == true ? 1 : 0);
 }
