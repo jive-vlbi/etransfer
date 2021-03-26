@@ -775,17 +775,19 @@ namespace etdc {
 
         // client defaults per protocol type
         static const client_defaults_map client_defaults = {
+            // tcp doesn't need to do reconnect by default
             {"tcp", []() { return update_clnt.mk(blocking_type{true},
-                                                 numretry_type{2}, retrydelay_type{10},
+                                                 numretry_type{0}, retrydelay_type{0},
                                                  any_port );
                          }},
             {"tcp6", []() { return update_clnt.mk(blocking_type{true}, etdc::ipv6_only{true},
-                                                 numretry_type{2}, retrydelay_type{10},
+                                                 numretry_type{0}, retrydelay_type{0},
                                                  any_port );
                          }},
+            // for udt a non-zero default retry might not be a bad idea
             {"udt", []() { return update_clnt.mk(etdc::udt_mss{1500},
                                                  any_port, etdc::udt_linger{{0, 0}},
-                                                 numretry_type{2}, retrydelay_type{10},
+                                                 numretry_type{2}, retrydelay_type{5},
                                                  etdc::udt_sndbuf{defaultUDTBufSize},
                                                  etdc::udt_rcvbuf{defaultUDTBufSize},
                                                  etdc::udp_sndbuf{32*1024*1024},
@@ -796,7 +798,7 @@ namespace etdc {
                                                  // UDT does not allow direct access to the real socket so we can't really
                                                  // set an option at the IPPROTO_IPV6 level.
                                                  any_port, etdc::udt_linger{{0,0}},
-                                                 numretry_type{2}, retrydelay_type{10},
+                                                 numretry_type{2}, retrydelay_type{5},
                                                  etdc::udt_sndbuf{defaultUDTBufSize},
                                                  etdc::udt_rcvbuf{defaultUDTBufSize},
                                                  etdc::udp_sndbuf{32*1024*1024},
@@ -809,9 +811,7 @@ namespace etdc {
         static const std::map<std::string, std::function<void(etdc_fdptr, detail::client_settings const&)>> client_map = {
             {"tcp", [](etdc_fdptr pSok, detail::client_settings const& clnt) {
                         // connect to ipport
-                        bool               didConnect;
                         socklen_t          sl( sizeof(struct sockaddr_in) );
-                        unsigned int       retry{ 0 };
                         struct sockaddr_in sa;
                         
                         // Need to resolve? For clients we assume empty host means not OK!
@@ -833,20 +833,13 @@ namespace etdc {
                         pSok->setblocking(pSok->__m_fd, etdc::untag(clnt.blocking));
 
                         // Connect
-                        do {
-                            //ETDCSYSCALL(::connect(pSok->__m_fd, reinterpret_cast<struct sockaddr const*>(&sa), sl)==0,
-                            if( (didConnect = ::connect(pSok->__m_fd, reinterpret_cast<struct sockaddr const*>(&sa), sl)==0) )
-                                break;
-                            std::this_thread::sleep_for( untag(clnt.retryDelay) );
-                        } while( retry++ < untag(clnt.nRetry) );
+                        ETDCSYSCALL(::connect(pSok->__m_fd, reinterpret_cast<struct sockaddr const*>(&sa), sl)==0,
+                                    "connecting to tcp[" << sa << "] - " << etdc::strerror(errno));
                         // Not much else to do ...
-                        ETDCASSERT(didConnect, "connecting to tcp[" << sa << "] - " << etdc::strerror(errno));
                     }},
             {"tcp6", [](etdc_fdptr pSok, detail::client_settings const& clnt) {
                         // connect to ipport
-                        bool                didConnect;
                         socklen_t           sl( sizeof(struct sockaddr_in6) );
-                        unsigned int        retry{ 0 };
                         struct sockaddr_in6 sa;
                        
                         // Need to resolve? For clients we assume empty host means not OK!
@@ -876,23 +869,13 @@ namespace etdc {
                         pSok->setblocking(pSok->__m_fd, etdc::untag(clnt.blocking));
 
                         // Connect
-                        do {
-                            //ETDCSYSCALL(::connect(pSok->__m_fd, reinterpret_cast<struct sockaddr const*>(&sa), sl)==0,
-                            if( (didConnect = ::connect(pSok->__m_fd, reinterpret_cast<struct sockaddr const*>(&sa), sl)==0) )
-                                break;
-                            std::this_thread::sleep_for( untag(clnt.retryDelay) );
-                        } while( retry++ < untag(clnt.nRetry) );
-                        // Not much else to do ...
-                        ETDCASSERT(didConnect, "connecting to tcp6[" << sa << "] - " << etdc::strerror(errno));
-                        //ETDCSYSCALL(::connect(pSok->__m_fd, reinterpret_cast<struct sockaddr const*>(&sa), sl)==0,
-                        //            "connecting to tcp6[" << sa << "] - " << etdc::strerror(errno));
+                        ETDCSYSCALL(::connect(pSok->__m_fd, reinterpret_cast<struct sockaddr const*>(&sa), sl)==0,
+                                    "connecting to tcp6[" << sa << "] - " << etdc::strerror(errno));
                         // Not much else to do ...
                     }},
             {"udt", [](etdc_fdptr pSok, detail::client_settings const& clnt) {
                         // connect to ipport
-                        bool               didConnect;
                         int                sl( sizeof(struct sockaddr_in) );
-                        unsigned int       retry{ 0 };
                         struct sockaddr_in sa;
                         
                         // Need to resolve? For clients we assume empty host means not OK!
@@ -923,23 +906,13 @@ namespace etdc {
                         pSok->setblocking(pSok->__m_fd, etdc::untag(clnt.blocking));
 
                         // Connect
-                        do {
-                            //ETDCSYSCALL(::connect(pSok->__m_fd, reinterpret_cast<struct sockaddr const*>(&sa), sl)==0,
-                            if( (didConnect = ::connect(pSok->__m_fd, reinterpret_cast<struct sockaddr const*>(&sa), sl)==0) )
-                                break;
-                            std::this_thread::sleep_for( untag(clnt.retryDelay) );
-                        } while( retry++ < untag(clnt.nRetry) );
-                        // Not much else to do ...
-                        ETDCASSERT(didConnect, "connecting to udt[" << sa << "] - " << etdc::strerror(errno));
-                        //ETDCSYSCALL(UDT::connect(pSok->__m_fd, reinterpret_cast<struct sockaddr const*>(&sa), sl)!=UDT::ERROR,
-                        //            "connecting to udt[" << sa << "] - " << UDT::getlasterror().getErrorMessage());
+                        ETDCSYSCALL(UDT::connect(pSok->__m_fd, reinterpret_cast<struct sockaddr const*>(&sa), sl)!=UDT::ERROR,
+                                    "connecting to udt[" << sa << "] - " << UDT::getlasterror().getErrorMessage());
                         // Not much else to do ...
                     }},
             {"udt6", [](etdc_fdptr pSok, detail::client_settings const& clnt) {
                         // connect to ipport
-                        bool                didConnect;
                         int                 sl( sizeof(struct sockaddr_in6) );
-                        unsigned int        retry{ 0 };
                         struct sockaddr_in6 sa;
                         
                         // Need to resolve? For clients we assume empty host means not OK!
@@ -976,16 +949,8 @@ namespace etdc {
                         pSok->setblocking(pSok->__m_fd, etdc::untag(clnt.blocking));
 
                         // Connect
-                        do {
-                            //ETDCSYSCALL(::connect(pSok->__m_fd, reinterpret_cast<struct sockaddr const*>(&sa), sl)==0,
-                            if( (didConnect = ::connect(pSok->__m_fd, reinterpret_cast<struct sockaddr const*>(&sa), sl)==0) )
-                                break;
-                            std::this_thread::sleep_for( untag(clnt.retryDelay) );
-                        } while( retry++ < untag(clnt.nRetry) );
-                        // Not much else to do ...
-                        ETDCASSERT(didConnect, "connecting to udt6[" << sa << "] - " << etdc::strerror(errno));
-                        //ETDCSYSCALL(UDT::connect(pSok->__m_fd, reinterpret_cast<struct sockaddr const*>(&sa), sl)!=UDT::ERROR,
-                        //            "connecting to udt6[" << sa << "] - " << UDT::getlasterror().getErrorMessage());
+                        ETDCSYSCALL(UDT::connect(pSok->__m_fd, reinterpret_cast<struct sockaddr const*>(&sa), sl)!=UDT::ERROR,
+                                    "connecting to udt6[" << sa << "] - " << UDT::getlasterror().getErrorMessage());
                         // Not much else to do ...
                     }}
         };
@@ -1046,6 +1011,7 @@ etdc::etdc_fdptr mk_server(T const& proto, etdc::detail::server_settings const& 
 //    connection should have been succesfully made.
 //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+#if 0
 template <typename T, typename... Ts>
 etdc::etdc_fdptr mk_client(T const& proto, Ts... ts) {
     // Create socket and server defaults for the indicated protocol
@@ -1068,6 +1034,47 @@ etdc::etdc_fdptr mk_client(T const& proto, etdc::detail::client_settings const& 
     etdc::detail::client_map.find(proto)->second(pSok, clntSettings);
     return pSok;
 }
+#endif
+// Overload for if the user constructed his own clientdefaults
+template <typename T>
+etdc::etdc_fdptr mk_client(T const& proto, etdc::detail::client_settings const& clntSettings) {
+    unsigned int       retry{ 0 };
+    while( true ) {
+        std::exception_ptr eptr{ nullptr };
+        try {
+            auto pSok         = mk_socket(proto);
+
+            // And now transform the client settings + sokkit into a real client
+            etdc::detail::client_map.find(proto)->second(pSok, clntSettings);
+
+            return pSok;
+        }
+        catch( ... ) {
+            // That failed! 
+            eptr = std::current_exception();
+        }
+        // Only sleep if there will be a next attempt
+        if( retry++ < untag(clntSettings.nRetry) )
+            std::this_thread::sleep_for( untag(clntSettings.retryDelay) );
+        else if( eptr )
+            std::rethrow_exception(eptr);
+        else
+            break;
+    };
+    ETDCASSERT((1+1)==3, "mk_client(" << proto << ", clnt=" << clntSettings.clntHost << ":" << clntSettings.clntPort << ")/Fails w/o exception?!");
+}
+
+template <typename T, typename... Ts>
+etdc::etdc_fdptr mk_client(T const& proto, Ts... ts) {
+    // Create socket and server defaults for the indicated protocol
+    auto clntDefaults = etdc::detail::client_defaults.find(proto)->second();
+
+    // Update the defaults with what the user may have given us
+    etdc::detail::update_clnt(clntDefaults, std::forward<Ts>(ts)...);
+
+    return mk_client(proto, clntDefaults);
+}
+
 
 
 
