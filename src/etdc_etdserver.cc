@@ -246,6 +246,7 @@ namespace etdc {
         // and assume the iterator will remain valid after releasing the lock on shared_state
         etdc::etd_state&                    shared_state( __m_shared_state.get() );
         std::unique_ptr<transferprops_type> removed;
+
         while( true ) {
             // 1. lock shared state
             std::unique_lock<std::mutex>     lk( shared_state.lock );
@@ -259,11 +260,11 @@ namespace etdc {
             // If we're doing a transfer, make it fall out of the loop?
             // Note that the lock on the transfer itself is held during
             // the whole transfer
+            ptr->second->fd->close( ptr->second->fd->__m_fd );
             if( ptr->second->data_fd )
                 ptr->second->data_fd->close( ptr->second->data_fd->__m_fd );
 
             // Now we must do try_lock on the transfer - if that fails we sleep and start from the beginning
-            //std::unique_lock<std::mutex>     sh( *ptr->second.lockPtr, std::try_to_lock );
             std::unique_lock<std::mutex>     sh( ptr->second->xfer_lock, std::try_to_lock );
             if( !sh.owns_lock() ) {
                 // we must release the lock on shared state before sleeping
@@ -272,12 +273,9 @@ namespace etdc {
                 lk.unlock();
                 // *now* we sleep for a bit and then try again
                 std::this_thread::sleep_for( std::chrono::microseconds(42) );
-                //std::this_thread::sleep_for( std::chrono::seconds(1) );
                 continue;
             }
             // Right, we now hold both locks!
-            transferprops_type&  transfer( *ptr->second );
-            transfer.fd->close(transfer.fd->__m_fd);
 
             // We cannot erase the transfer immediately: we hold the lock that is contained in it
             // so what we do is transfer the lock out of the transfer and /then/ erase the entry.
@@ -285,7 +283,6 @@ namespace etdc {
             // deleted
             //transfer_lock = std::move(transfer.lockPtr);
             // move the data out of the transfermap
-            //std::swap(removed, ptr->second);
             removed.swap( ptr->second );
             // OK lock is now moved out of the transfer, so now it's safe to erase the entry
             // OK the uniqueptr to the transfer is now moved out of the transfermap, so now it's safe to erase the entry
