@@ -256,6 +256,12 @@ namespace etdc {
             if( ptr==shared_state.transfers.end() )
                 return false;
 
+            // If we're doing a transfer, make it fall out of the loop?
+            // Note that the lock on the transfer itself is held during
+            // the whole transfer
+            if( ptr->second->data_fd )
+                ptr->second->data_fd->close( ptr->second->data_fd->__m_fd );
+
             // Now we must do try_lock on the transfer - if that fails we sleep and start from the beginning
             //std::unique_lock<std::mutex>     sh( *ptr->second.lockPtr, std::try_to_lock );
             std::unique_lock<std::mutex>     sh( ptr->second->xfer_lock, std::try_to_lock );
@@ -272,6 +278,7 @@ namespace etdc {
             // Right, we now hold both locks!
             transferprops_type&  transfer( *ptr->second );
             transfer.fd->close(transfer.fd->__m_fd);
+
             // We cannot erase the transfer immediately: we hold the lock that is contained in it
             // so what we do is transfer the lock out of the transfer and /then/ erase the entry.
             // And when we finally return, then the lock will be unlocked and the unique pointer
