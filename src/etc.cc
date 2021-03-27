@@ -175,6 +175,68 @@ static void signal_thread(signallist_type const& sigs, etdc::etd_state& state, p
     ETDCDEBUG(2, "sigwaiterthread: done." << std::endl);
 }
 
+using unique_result = std::unique_ptr<etdc::result_type>;
+template <int KillSignal>
+static void signal_thread_new(signallist_type const& sigs, pthread_t tid,
+                              std::atomic<bool>& cancelled, std::mutex& mtx, std::vector<etdc::etd_server_ptr>& servers,
+                              unique_result (&results)[2]) {
+    int       received;
+    sigset_t  sset;
+
+    // Before we actually unblock the signals, we prepare the sigset_t for
+    // signals we'll wait for
+    // Note: on some platforms sigemptyset() is a macro, not a fn call
+    //       so "::sigemptyset()" don't compile, unfortunately :-(
+    //       And likewise for sigaddset & friends
+    sigemptyset(&sset);
+    for(auto s: sigs)
+        sigaddset(&sset, s);
+
+    ETDCDEBUG(4, "sigwaiterthread: enter wait phase" << endl);
+    // ... and wait for any of them to happen
+    ::sigwait(&sset, &received);
+    ETDCDEBUG(4, "sigwaiterthread: got signal " << received << endl);
+
+    // Do the magic on the etransfer state
+    std::atomic_store(&cancelled, true);
+
+    // Grab the lock on the pointers 
+    // so we can modify stuff
+    etdc::scoped_lock   lk( mtx );
+
+    // (try to) break down from back to front
+    // note: we MUST TRY ALL OF THEM
+    // so we cannot put them all in a single try-catch;
+    // a failure to close the first one does not imply
+    // that we cannot close the second one.
+    // And since the functions throw on wonky we must catch them separately
+    try {
+        if( results[1]  ) {
+            auto uuid = etdc::get_uuid(*results[1] );
+            ETDCDEBUG(4, "sigwaiterthread: removing DST uuid  " << uuid << std::endl);
+            servers[1]->removeUUID( uuid );
+            // after the UUID's been removed no need keeping the result around
+            results[1].reset( nullptr );
+        }
+    }
+    catch( ... ) { }
+    try {
+        if( results[0]  ) {
+            auto uuid = etdc::get_uuid(*results[0] );
+            ETDCDEBUG(4, "sigwaiterthread: removing SRC uuid  " << uuid << std::endl);
+            servers[0]->removeUUID( etdc::get_uuid(*results[0] ) );
+            // after the UUID's been removed no need keeping the result around
+            results[0].reset( nullptr );
+        }
+    }
+    catch( ... ) { }
+
+    // Now signal the main thread - blocking functions must be kicked so
+    // they can drop out of themselves with e.g. invalid file descriptor
+    ::pthread_kill(tid, KillSignal);
+    ETDCDEBUG(2, "sigwaiterthread: done." << std::endl);
+}
+
 struct socketoptions_type {
 
     socketoptions_type():
@@ -207,13 +269,16 @@ int main(int argc, char const*const*const argv) {
     etdc::etd_state             localState{};
     // Let's set up the command line parsing
     int                          message_level = 0;
-    unsigned int                 maxRetry{ 2 }, nRetry{ 0 };
+    unsigned int                 maxFileRetry{ 2 }, nFileRetry{ 0 };
+    std::chrono::duration<float> retryDelay{ 10 };
     display_format               display( imperial );
 #if 0
     socketoptions_type     sockopts{};
 #endif
     etdc::openmode_type          mode{ etdc::openmode_type::New };
-    std::chrono::duration<float> retryDelay{ 10 };
+    etdc::numretry_type          connRetry{ 2 };
+    etdc::retrydelay_type        connDelay{ 5 };
+
     AP::ArgumentParser     cmd( AP::version( buildinfo() ),
                                 AP::docstring("'ftp' like etransfer client program.\n"
                                               "This is to be used with etransfer daemon (etd) for "
@@ -259,15 +324,23 @@ int main(int argc, char const*const*const argv) {
         AP::option(AP::long_name("continental"), AP::store_const_into(continental, display),
                    AP::docstring(std::string("Use continental (European) formatting for number representation")+(display == continental ? " (default)" : ""))) );
 
-    // How many times to retry (so total # of tries is N+1) and how
+    // How many times to retry file (so total # of tries is N+1) and how
     // long to wait between retries
-    cmd.add( AP::long_name("max-retry"), AP::store_into(maxRetry),AP::at_most(1),
-             AP::docstring("Retry the transfer this many times, so total number of attempts is N+1") );
+    cmd.add( AP::long_name("max-retry"), AP::store_into(maxFileRetry),AP::at_most(1),
+             AP::docstring("Retry the file transfer this many times, so total number of attempts is N+1") );
     cmd.add( AP::long_name("retry-delay"), AP::store_into(retryDelay), AP::at_most(1),
-             AP::docstring("How many seconds to wait between retries"),
+             AP::docstring("How many seconds to wait between file retries"),
              AP::constrain([](std::chrono::duration<float> const& v) { return v.count()>= 0; }, "duration should be >= 0s"),
-             //AP::minimum_value( std::chrono::duration<float>(0.0) ), // can't sleep a negative amount of time w/o inventing time travel
              AP::convert([](std::string const& s) { return std::chrono::duration<float>(std::stof(s)); }) );
+
+    // For connections we have separate settings
+    cmd.add( AP::long_name("max-conn-retry"), AP::store_into(etdc::untag(connRetry)),AP::at_most(1),
+             AP::docstring("Retry to connect this many times, so total number of attempts is N+1") //,
+             /*AP::convert([](std::string const& s) { return etdc::numretry_type(std::stoi(s)); })*/  );
+    cmd.add( AP::long_name("retry-conn-delay"), AP::store_into(etdc::untag(connDelay)), AP::at_most(1),
+             AP::docstring("How many seconds to wait between connection retries"),
+             AP::constrain([](std::chrono::duration<float> const& v) { return /*etdc::untag(v)*/v.count()>= 0; }, "duration should be >= 0s"),
+             AP::convert([](std::string const& s) { return /*etdc::retrydelay_type(*/std::chrono::duration<float>(std::stof(s))/*)*/; }) );
 
     // User can choose between:
     //  * the target file(s) may not exist [default]
@@ -345,7 +418,7 @@ int main(int argc, char const*const*const argv) {
     // We must transform the URL(s) into ETDServerInterface* 
     std::transform(std::begin(urls), std::end(urls), std::back_inserter(servers),
                    [&](url_type const& url) {
-                        return url.isLocal ? ::mk_etdserver(std::ref(localState)) : ::mk_etdproxy(url.protocol, url.host, url.port);
+                        return url.isLocal ? ::mk_etdserver(std::ref(localState)) : ::mk_etdproxy(url.protocol, url.host, url.port, connRetry, connDelay);
                     });
 
     // Get the list of files to transfer (or to list if servers.size()==1)
@@ -406,7 +479,7 @@ int main(int argc, char const*const*const argv) {
           std::bind(&etdc::ETDServerInterface::getFile,  servers[1].get(), ph::_1, ph::_2, ph::_3, ph::_4));
 
     // Loop over all files to do ...
-    using unique_result = std::unique_ptr<etdc::result_type>;
+    //using unique_result = std::unique_ptr<etdc::result_type>;
     auto        fmtByte = (display == continental ? 
                             etdc::mk_to_string<decltype(etdc::xfer_result::__m_BytesTransferred)>(std::fixed, etdc::continental) :
                             etdc::mk_to_string<decltype(etdc::xfer_result::__m_BytesTransferred)>(std::fixed, etdc::imperial) );
@@ -422,7 +495,16 @@ int main(int argc, char const*const*const argv) {
     const int 	lvl( verbose ? -1 : 9 );
 
     // Enable killing by signal
-    etdc::thread(&signal_thread<KILLMAINSIGNAL>, signallist_type{{SIGINT, SIGSEGV, SIGTERM, SIGHUP}}, std::ref(localState), ::pthread_self()).detach();
+    // TODO XXX handle ^C completely different to also cancel remote->remote transfers!
+    //etdc::thread(&signal_thread<KILLMAINSIGNAL>, signallist_type{{SIGINT, SIGSEGV, SIGTERM, SIGHUP}}, std::ref(localState), ::pthread_self()).detach();
+
+    // Handling of ^C
+    std::mutex         resultLock;
+    unique_result      results[2];//srcResult, dstResult;
+    std::atomic<bool>  cancelled{ false };
+
+    etdc::thread(&signal_thread_new<KILLMAINSIGNAL>, signallist_type{{SIGINT, SIGSEGV, SIGTERM, SIGHUP}}, ::pthread_self(),
+                 std::ref(cancelled), std::ref(resultLock), std::ref(servers), std::ref(results)).detach();
 
     for(auto const& file: files2do) {
         // Skip directories
@@ -431,37 +513,38 @@ int main(int argc, char const*const*const argv) {
 
         // Keep these out of the while loop
         bool               finished{ false };
-        std::exception_ptr eptr;
-        const unsigned int retryCountAtStart = nRetry;
+//        std::exception_ptr eptr;
+        const unsigned int retryCountAtStart = nFileRetry;
 
         // Did someone say Cancel? Or did we reach maximum number of retries?
-        while( !std::atomic_load(&localState.cancelled) && !finished && nRetry<maxRetry ) {
+        //while( !std::atomic_load(&localState.cancelled) && !finished && nRetry<maxRetry ) {
+        while( !std::atomic_load(&cancelled) && !finished && nFileRetry<maxFileRetry ) {
             // Just checked that we weren't cancelled and if we're actually
             // retrying a file we should sleep (new file => don't sleep)
             // also make sure we reset current exception already
-            eptr = nullptr;
-            if( retryCountAtStart < nRetry ) {
-                ETDCDEBUG(4, "Retry #" << nRetry+1 << " (#" << (nRetry-retryCountAtStart)+1 << " for this file), go to sleep for " <<
+//            eptr = nullptr;
+            if( retryCountAtStart < nFileRetry ) {
+                ETDCDEBUG(4, "Retry #" << nFileRetry+1 << " (#" << (nFileRetry-retryCountAtStart)+1 << " for this file), go to sleep for " <<
                              retryDelay.count() << "s" << std::endl);
                 std::this_thread::sleep_for( retryDelay );
             }
 
             // We must keep these outside the try/catch such that we can clean up?
-            unique_result      srcResult, dstResult;
+            //unique_result      srcResult, dstResult;
             try {
                 auto const outputFN = mkOutputPath(file);
                 ETDCDEBUG(lvl, (push ? "PUSH" : "PULL" ) << " " << mode << " " << file << " -> " << outputFN << std::endl);
-                dstResult = unique_result(new etdc::result_type(servers[1]->requestFileWrite(outputFN, mode)));
-                auto nByte = etdc::get_filepos(*dstResult);
+                results[1].reset(/*dstResult = unique_result(*/new etdc::result_type(servers[1]->requestFileWrite(outputFN, mode)));
+                auto nByte = etdc::get_filepos(*results[1]/*dstResult*/);
 
                 if( mode!=etdc::openmode_type::SkipExisting || nByte==0 ) {
-                    srcResult      = unique_result(new etdc::result_type(servers[0]->requestFileRead(file, nByte)));
-                    auto nByteToGo = etdc::get_filepos(*srcResult);
+                    results[0].reset(/*srcResult      = unique_result(*/new etdc::result_type(servers[0]->requestFileRead(file, nByte)));
+                    auto nByteToGo = etdc::get_filepos(*results[0]/*srcResult*/);
 
                     if( nByteToGo>0 ) {
-                        etdc::xfer_result result( fn(etdc::get_uuid(*srcResult), etdc::get_uuid(*dstResult), nByteToGo, dataChannels) );
+                        etdc::xfer_result result( fn(etdc::get_uuid(*results[0]/*srcResult*/), etdc::get_uuid(*results[1]/*dstResult*/), nByteToGo, dataChannels) );
                         auto const        dt = result.__m_DeltaT.count();
-                        std::cout << (result.__m_Finished && std::atomic_load(&localState.cancelled)==false ? "" : "Un") << "finished; succesfully transferred "
+                        std::cout << (result.__m_Finished && std::atomic_load(&/*localState.*/cancelled)==false ? "" : "Un") << "finished; succesfully transferred "
                                   << fmt1000(result.__m_BytesTransferred)
                                   << " (" << fmtByte(result.__m_BytesTransferred) << " bytes) in "
                                   << fmtTime(dt) << " "
@@ -475,20 +558,29 @@ int main(int argc, char const*const*const argv) {
                 }
             }
             catch( ... ) {
-                eptr = std::current_exception();
+//                eptr = std::current_exception();
+            } 
+            // TODO  these throw if the daemon went away - aborting the
+            //       program in stead of retrying
+            try {
+                if( results[1]/*dstResult*/ )
+                    servers[1]->removeUUID( etdc::get_uuid(*results[1]/*dstResult*/) );
             }
-            if( dstResult )
-                servers[1]->removeUUID( etdc::get_uuid(*dstResult) );
-            if( srcResult )
-                servers[0]->removeUUID( etdc::get_uuid(*srcResult) );
+            catch( ... ) {}
+
+            try {
+                if( results[0]/*srcResult*/ )
+                    servers[0]->removeUUID( etdc::get_uuid(*results[0]/*srcResult*/) );
+            }
+            catch( ... ) {}
             // If we didn't finish, we must retry
             if( !finished )
-                nRetry++;
+                nFileRetry++;
         }
         // If, leaving the loop, eptr indicates that there was an exception
         // pending we rethrow that one
-        if( eptr )
-            std::rethrow_exception( eptr );
+//        if( eptr )
+//            std::rethrow_exception( eptr );
 #if 0
         // Did someone say Cancel?
         if( std::atomic_load(&localState.cancelled) )

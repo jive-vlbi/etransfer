@@ -1036,6 +1036,7 @@ etdc::etdc_fdptr mk_client(T const& proto, etdc::detail::client_settings const& 
 }
 #endif
 // Overload for if the user constructed his own clientdefaults
+// TODO XXX Should allow handling ^C in here
 template <typename T>
 etdc::etdc_fdptr mk_client(T const& proto, etdc::detail::client_settings const& clntSettings) {
     unsigned int       retry{ 0 };
@@ -1044,6 +1045,8 @@ etdc::etdc_fdptr mk_client(T const& proto, etdc::detail::client_settings const& 
         try {
             auto pSok         = mk_socket(proto);
 
+            ETDCDEBUG(4, "mk_client/attempt #" << retry+1  << "/" << untag(clntSettings.nRetry)+1 << " trying to connect to " <<
+                         proto << ":" << clntSettings.clntHost << ":" << clntSettings.clntPort << std::endl);
             // And now transform the client settings + sokkit into a real client
             etdc::detail::client_map.find(proto)->second(pSok, clntSettings);
 
@@ -1054,9 +1057,12 @@ etdc::etdc_fdptr mk_client(T const& proto, etdc::detail::client_settings const& 
             eptr = std::current_exception();
         }
         // Only sleep if there will be a next attempt
-        if( retry++ < untag(clntSettings.nRetry) )
-            std::this_thread::sleep_for( untag(clntSettings.retryDelay) );
-        else if( eptr )
+        if( retry++ < untag(clntSettings.nRetry) ) {
+            auto sleeptime = untag(clntSettings.retryDelay);
+            ETDCDEBUG(4, "mk_client/sleeping for " << sleeptime.count() << "s trying to connect to " <<
+                         proto << ":" << clntSettings.clntHost << ":" << clntSettings.clntPort << std::endl);
+            std::this_thread::sleep_for( sleeptime );
+        } else if( eptr )
             std::rethrow_exception(eptr);
         else
             break;
