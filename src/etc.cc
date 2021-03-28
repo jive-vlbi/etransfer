@@ -145,7 +145,7 @@ using unique_result   = std::unique_ptr<etdc::result_type>;
 
 template <int KillSignal>
 static void signal_thread( signallist_type const& sigs, pthread_t tid,
-                           std::atomic<bool>& cancelled, std::mutex& mtx, std::vector<etdc::etd_server_ptr>& servers,
+                           etdc::etd_state& state, std::vector<etdc::etd_server_ptr>& servers,
                            unique_result (&results)[2] ) {
     int       received;
     sigset_t  sset;
@@ -165,12 +165,19 @@ static void signal_thread( signallist_type const& sigs, pthread_t tid,
     ETDCDEBUG(4, "sigwaiterthread: got signal " << received << endl);
 
     // Do the magic on the etransfer state
-    std::atomic_store(&cancelled, true);
+    std::atomic_store(&state.cancelled, true);
 
     // Grab the lock on the pointers 
     // so we can modify stuff
-    etdc::scoped_lock   lk( mtx );
+    etdc::scoped_lock   lk( state.lock );
 
+    // Loop over all local transfers, if any, and close the data file descriptor
+	for(auto xferptr = std::begin(state.transfers); xferptr!=std::end(state.transfers); xferptr++ ) {
+		if( xferptr->second->data_fd ) {
+			ETDCDEBUG(0, "sigwaiterthread: Closing " << xferptr->second->data_fd->getsockname( xferptr->second->data_fd->__m_fd ) << std::endl);
+			xferptr->second->data_fd->close( xferptr->second->data_fd->__m_fd );
+		}
+	}
     // (try to) break down from back to front
     // note: we MUST TRY ALL OF THEM
     // so we cannot put them all in a single try-catch;
@@ -507,7 +514,6 @@ int main(int argc, char const*const*const argv) {
           std::bind(&etdc::ETDServerInterface::getFile,  servers[1].get(), ph::_1, ph::_2, ph::_3, ph::_4));
 
     // Loop over all files to do ...
-    //using unique_result = std::unique_ptr<etdc::result_type>;
     auto        fmtByte = (display == continental ? 
                             etdc::mk_to_string<decltype(etdc::xfer_result::__m_BytesTransferred)>(std::fixed, etdc::continental) :
                             etdc::mk_to_string<decltype(etdc::xfer_result::__m_BytesTransferred)>(std::fixed, etdc::imperial) );
@@ -523,12 +529,10 @@ int main(int argc, char const*const*const argv) {
     const int 	lvl( verbose ? -1 : 9 );
 
     // Enable killing by signal ^C
-    std::mutex         resultLock;
     unique_result      results[2];
-    std::atomic<bool>  cancelled{ false };
 
     etdc::thread(&signal_thread<KILLMAINSIGNAL>, signallist_type{{SIGINT, SIGSEGV, SIGTERM, SIGHUP}}, ::pthread_self(),
-                 std::ref(cancelled), std::ref(resultLock), std::ref(servers), std::ref(results)).detach();
+                 std::ref(localState), std::ref(servers), std::ref(results)).detach();
 
     for(auto const& file: files2do) {
         // Skip directories
@@ -540,7 +544,7 @@ int main(int argc, char const*const*const argv) {
         const unsigned int retryCountAtStart = nFileRetry;
 
         // Did someone say Cancel? Or did we reach maximum number of retries?
-        while( !std::atomic_load(&cancelled) && !finished && nFileRetry<maxFileRetry ) {
+        while( !std::atomic_load(&localState.cancelled) && !finished && nFileRetry<maxFileRetry ) {
             // Just checked that we weren't cancelled and if we're actually
             // retrying a file we should sleep (new file => don't sleep)
             // also make sure we reset current exception already
@@ -553,17 +557,23 @@ int main(int argc, char const*const*const argv) {
             try {
                 auto const outputFN = mkOutputPath(file);
                 ETDCDEBUG(lvl, (push ? "PUSH" : "PULL" ) << " " << mode << " " << file << " -> " << outputFN << std::endl);
-                results[1].reset( new etdc::result_type(servers[1]->requestFileWrite(outputFN, mode)) );
+                {
+                    etdc::scoped_lock lk( localState.lock );
+                    results[1].reset( new etdc::result_type(servers[1]->requestFileWrite(outputFN, mode)) );
+                }
                 auto nByte = etdc::get_filepos( *results[1] );
 
                 if( mode!=etdc::openmode_type::SkipExisting || nByte==0 ) {
-                    results[0].reset( new etdc::result_type(servers[0]->requestFileRead(file, nByte)) );
+                    {
+                        etdc::scoped_lock lk( localState.lock );
+                        results[0].reset( new etdc::result_type(servers[0]->requestFileRead(file, nByte)) );
+                    }
                     auto nByteToGo = etdc::get_filepos( *results[0] );
 
                     if( nByteToGo>0 ) {
                         etdc::xfer_result result( fn(etdc::get_uuid(*results[0]), etdc::get_uuid(*results[1]), nByteToGo, dataChannels) );
                         auto const        dt = result.__m_DeltaT.count();
-                        std::cout << (result.__m_Finished && std::atomic_load(&cancelled)==false ? "" : "Un") << "finished; succesfully transferred "
+                        std::cout << (result.__m_Finished && std::atomic_load(&localState.cancelled)==false ? "" : "Un") << "finished; succesfully transferred "
                                   << fmt1000(result.__m_BytesTransferred)
                                   << " (" << fmtByte(result.__m_BytesTransferred) << " bytes) in "
                                   << fmtTime(dt) << " "
@@ -598,7 +608,5 @@ int main(int argc, char const*const*const argv) {
                 nFileRetry++;
         }
     }
-    return (std::atomic_load(&cancelled) == true ? 1 : 0);
+    return (std::atomic_load(&localState.cancelled) == true ? 1 : 0);
 }
-
-
