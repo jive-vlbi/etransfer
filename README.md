@@ -16,6 +16,8 @@ protocol is orders of magnitude faster on long, fat, network connections.
 - Memory data source and/or sink available for throughput/bottleneck testing; either
   disk read, disk write or both can be avoided by replacement with
     `/dev/zero:<size>` (source) and/or `/dev/null` (destination)
+    with `<size>` being `<number>[kMGT]B` to indicate how many bytes to
+    transfer.
 
 
 ## After cloning ...
