@@ -51,16 +51,35 @@ namespace etdc {
         return;
     }
 
+
+    // protocol version dependent sockname2string 
+    std::string sockname2str_v0( sockname_type const& sn ) {
+        std::ostringstream oss;
+        oss << "<" << std::get<0>(sn) << "/" << bracket(std::get<1>(sn)) << ":" << std::get<2>(sn) << ">";
+        return oss.str();
+    }
+    // protocol version 1 allows passing socket parameters
+    std::string sockname2str_v1( sockname_type const& sn ) {
+        std::ostringstream oss;
+        oss << "<" << std::get<0>(sn) << "/" << bracket(std::get<1>(sn)) << ":" << std::get<2>(sn)
+            // here is where the extra options are present
+            << "/mss=" << std::get<3>(sn) << ">";
+        return oss.str();
+    }
+
     // For std::bind( ..., _1, ...) &cet
     using namespace std::placeholders;
 
     namespace detail {
+        // The no-op function for not extracting MSS from the socket
+        static int no_mss_fn(int /*fd*/) { return 0; }
+
         // Template for getsockname/getpeername - it's all the same error
         // checking and return value creation, only which bit of the address
         // to process is different
-        template <int (*fptr)(int, struct sockaddr*, socklen_t*)>
+        template <int (*fptr)(int, struct sockaddr*, socklen_t*), int (*mss_fn)(int) = no_mss_fn>
         sockname_type ipv4_sockname(int fd, std::string const& p, std::string const& s) {
-            socklen_t          len( sizeof(struct sockaddr_in) );
+            socklen_t          len{ sizeof(struct sockaddr_in) };
             struct sockaddr_in saddr;
 
             ETDCASSERT( fptr(fd, reinterpret_cast<struct sockaddr*>(&saddr), &len)==0,
@@ -70,12 +89,17 @@ namespace etdc {
 
             ETDCASSERT( ::inet_ntop(AF_INET, &saddr.sin_addr.s_addr, addr_s, len)!=nullptr,
                         "inet_ntop() fails - "<< etdc::strerror(errno) );
+
+            // Check if the MSS can be extracted
+            const int mss_v{ mss_fn(fd) };
+            if( mss_v )
+                return mk_sockname(proto(p), host(addr_s), port(etdc::ntohs_(saddr.sin_port)), mss(mss_v));
             return mk_sockname(proto(p), host(addr_s), port(etdc::ntohs_(saddr.sin_port)));
         }
 
 
         // Id. for IPv6 - we need different sockaddr + addrstrlen and address family
-        template <int (*fptr)(int, struct sockaddr*, socklen_t*)>
+        template <int (*fptr)(int, struct sockaddr*, socklen_t*), int (*mss_fn)(int) = no_mss_fn>
         sockname_type ipv6_sockname(int fd, std::string const& p, std::string const& s) {
             socklen_t           len( sizeof(struct sockaddr_in6) );
             struct sockaddr_in6 saddr;
@@ -87,6 +111,11 @@ namespace etdc {
 
             ETDCASSERT( ::inet_ntop(AF_INET6, &saddr.sin6_addr, addr_s, len)!=nullptr,
                         "inet_ntop() fails - "<< etdc::strerror(errno) );
+
+            // Check if the MSS can be extracted
+            const int mss_v{ mss_fn(fd) };
+            if( mss_v )
+                return mk_sockname(proto(p), host(std::string("[")+addr_s+"]"), port(etdc::ntohs_(saddr.sin6_port)), mss(mss_v));
             // IPv6 'coloned-hex' format does square brackets around it, to
             // be able to separate it from the ":port" suffix
             return mk_sockname(proto(p), host(std::string("[")+addr_s+"]"), port(etdc::ntohs_(saddr.sin6_port)));
@@ -186,6 +215,13 @@ namespace etdc {
     //                        UDT sockets
     ////////////////////////////////////////////////////////////////////////
     namespace detail {
+        // Provide a function that extracts the UDT::MSS value from a socket
+        static int udt_mss_fn(int s) {
+            etdc::udt_mss   mss;
+            etdc::getsockopt(s, mss);
+            return untag( mss );
+        }
+
         // provide correct wrappers around UDT::recv and UDT::send because
         // their signatures do not exactly match ::recv and ::send.
         // The wrapper's signatures do.
@@ -308,7 +344,7 @@ namespace etdc {
                                write_fn(std::bind(&detail::udtsend, _1, _2, _3, 0)),
                                close_fn( &UDT::close ),
                                getsockname_fn( [](int fd) {
-                                    return detail::ipv4_sockname<detail::udt_sockname>(fd, "udt", "getsockname"); } ),
+                                    return detail::ipv4_sockname<detail::udt_sockname, detail::udt_mss_fn>(fd, "udt", "getsockname"); } ),
                                getpeername_fn( [](int fd) {
                                     return detail::ipv4_sockname<detail::udt_peername>(fd, "udt", "getpeername"); } ),
                                // Setting blocking mode on an UDT socket is different 
@@ -345,7 +381,7 @@ namespace etdc {
 
         // Override the ones we need to for IPv6
         etdc::update_fd(*this, getsockname_fn( [](int fd) {
-                                    return detail::ipv6_sockname<detail::udt_sockname>(fd, "udt6", "getsockname"); } ),
+                                    return detail::ipv6_sockname<detail::udt_sockname, detail::udt_mss_fn>(fd, "udt6", "getsockname"); } ),
                                getpeername_fn( [](int fd) {
                                     return detail::ipv6_sockname<detail::udt_peername>(fd, "udt6", "getpeername"); } )
                         );

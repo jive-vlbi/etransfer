@@ -107,8 +107,10 @@ namespace etdc {
 
     // Keep global server state
     struct etd_state {
+        size_t                  bufSize{ 32*1024*1024 };
         std::mutex              lock;
         unsigned int            n_threads;
+        etdc::mss_type          MSS{ 1500 };
         cancellist_type         cancellations;
         transfermap_type        transfers;
         std::atomic<bool>       cancelled;

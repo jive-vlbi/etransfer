@@ -34,9 +34,21 @@
 #include <type_traits>
 
 namespace etdc {
-    using filelist_type     = std::list<std::string>;
-    using result_type       = std::tuple<etdc::uuid_type, off_t>;
+    using filelist_type        = std::list<std::string>;
+    using result_type          = std::tuple<etdc::uuid_type, off_t>;
+    using protocolversion_type = unsigned long int;
 
+
+    // protocol version dependent sockname2string 
+    std::string sockname2str_v0( sockname_type const& sn );
+    std::string sockname2str_v1( sockname_type const& sn );
+
+    // return the appropropritate sockname conversion function based on
+    // actual protocol version (taking into account "unknownProtocolVersion")
+    // Syntax tip from: https://stackoverflow.com/a/52111752
+    using sockname2string_fn = auto (*)( sockname_type const& ) -> std::string;
+
+    sockname2string_fn sockname2str( protocolversion_type v );
 
     // The result of a transfer
     struct xfer_result {
@@ -113,6 +125,14 @@ namespace etdc {
             virtual bool          removeUUID(etdc::uuid_type const&) = 0;
             virtual std::string   status( void ) const = 0;
 
+            // Which protocol version is this one speaking?
+            virtual protocolversion_type  protocolVersion( void ) const = 0;
+            virtual protocolversion_type  set_protocolVersion( protocolversion_type ) = 0;
+
+            // The version of the protocol this code understands
+            static const protocolversion_type currentProtocolVersion = 1;
+            static const protocolversion_type unknownProtocolVersion = ~((protocolversion_type)0);
+
             virtual ~ETDServerInterface() {}
     };
 
@@ -146,6 +166,9 @@ namespace etdc {
             virtual bool          removeUUID(etdc::uuid_type const&);
             virtual std::string   status( void ) const NOTIMPLEMENTED;
 
+            virtual protocolversion_type  protocolVersion( void ) const;
+            virtual protocolversion_type  set_protocolVersion( protocolversion_type ) NOTIMPLEMENTED;
+
             virtual ~ETDServer();
 
         private:
@@ -163,7 +186,7 @@ namespace etdc {
     class ETDProxy: public ETDServerInterface {
         public:
             explicit ETDProxy(etdc::etdc_fdptr conn):
-                __m_connection( conn )
+                __m_connection( conn ), __m_protocolVersion( ETDServerInterface::unknownProtocolVersion )
             { ETDCASSERT(__m_connection, "The proxy must have a valid connection"); }
 
             virtual filelist_type     listPath(std::string const& /*path*/, bool /*allow tilde expansion*/) const;
@@ -181,6 +204,10 @@ namespace etdc {
             virtual bool          removeUUID(etdc::uuid_type const&);
             virtual std::string   status( void ) const NOTIMPLEMENTED;
 
+            virtual protocolversion_type  protocolVersion( void ) const;
+            // Returns previous protocol version
+            virtual protocolversion_type  set_protocolVersion( protocolversion_type pvn );
+
             template <typename... Options>
             int setsockopt(Options&&... options) {
                 return etdc::setsockopt(__m_connection->__m_fd, std::forward<Options>(options)...);
@@ -190,7 +217,8 @@ namespace etdc {
 
         private:
             // Because we are a proxy we only have a connection to the other end
-            etdc::etdc_fdptr    __m_connection;
+            etdc::etdc_fdptr             __m_connection;
+            mutable protocolversion_type __m_protocolVersion;
     };
 
     //////////////////////////////////////////////////////////////////////

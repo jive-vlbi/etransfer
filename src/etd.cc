@@ -75,18 +75,26 @@ void  do_daemonize( void );
 static std::map<std::string, std::function<void(etdc::etdc_fdptr, std::string const&)>>
 dbgMap = {
     {"udt", [](etdc::etdc_fdptr pSok, std::string const& s) {
+                                                                etdc::udt_mss     mss;
                                                                 etdc::udt_rcvbuf  rcv;
                                                                 etdc::udt_sndbuf  snd;
                                                                 etdc::udt_linger  linger;
-                                                                etdc::getsockopt(pSok->__m_fd, rcv, linger, snd);
-                                                                ETDCDEBUG(1, s << "/UDT rcvbuf = " << rcv << " sndbuf = " << snd << " linger=" << untag(linger).l_onoff << ":" << untag(linger).l_linger << endl);
+                                                                etdc::getsockopt(pSok->__m_fd, rcv, linger, snd, mss);
+                                                                ETDCDEBUG(1, s << "/UDT rcvbuf = " << rcv << " sndbuf = " << snd
+                                                                               << " linger=" << untag(linger).l_onoff << ":" << untag(linger).l_linger
+                                                                               << " mss=" << untag(mss)
+                                                                               << endl);
                                                             }},
     {"udt6", [](etdc::etdc_fdptr pSok, std::string const& s) {
+                                                                etdc::udt_mss      mss;
                                                                  etdc::udt_rcvbuf  rcv;
                                                                  etdc::udt_sndbuf  snd;
                                                                  etdc::udt_linger  linger;
-                                                                 etdc::getsockopt(pSok->__m_fd, rcv, linger);
-                                                                 ETDCDEBUG(1, s << "/UDT6 rcvbuf = " << rcv << " sndbuf = " << snd << " linger=" << untag(linger).l_onoff << ":" << untag(linger).l_linger << endl);
+                                                                 etdc::getsockopt(pSok->__m_fd, rcv, linger, mss);
+                                                                 ETDCDEBUG(1, s << "/UDT6 rcvbuf = " << rcv << " sndbuf = " << snd
+                                                                                << " linger=" << untag(linger).l_onoff << ":" << untag(linger).l_linger
+                                                                                << " mss=" << untag(mss)
+                                                                                << endl);
                                                              }},
     {"tcp", [](etdc::etdc_fdptr pSok, std::string const& s) {
                                                                 etdc::so_rcvbuf  rcv;
@@ -278,14 +286,14 @@ int main(int argc, char const*const*const argv) {
     cmd.add( AP::store_into(message_level), AP::short_name('m'),
              AP::maximum_value(5), AP::minimum_value(-1), AP::at_most(1),
              AP::docstring("Message level - higher = more output") );
-
+#if 1
     // Allow user to set network related options
     cmd.add( AP::store_into(sockopts.MTU), AP::long_name("mss"), AP::at_most(1),
              AP::minimum_value((unsigned int)64), AP::maximum_value((unsigned int)65536), // UDP datagram limits
              AP::docstring(std::string("Set UDT maximum segment size. Not honoured if data channel is TCP. Default ")+etdc::repr(sockopts.MTU)) );
+#endif
     cmd.add( AP::store_into(sockopts.bufSize), AP::long_name("buffer"), AP::at_most(1),
              AP::docstring(std::string("Set send/receive buffer size. Default ")+etdc::repr(sockopts.bufSize)) );
-
     // command servers; we require at least one of 'm
     cmd.add( AP::collect<std::string>(), AP::long_name("command"),
              // Constraints on the number + form of the argument

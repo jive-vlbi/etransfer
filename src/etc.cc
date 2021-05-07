@@ -169,7 +169,7 @@ static void signal_thread( signallist_type const& sigs, pthread_t tid,
 
     // Grab the lock on the pointers 
     // so we can modify stuff
-    etdc::scoped_lock   lk( state.lock );
+//    etdc::scoped_lock   lk( state.lock );
 
     // Loop over all local transfers, if any, and close the data file descriptor
 	for(auto xferptr = std::begin(state.transfers); xferptr!=std::end(state.transfers); xferptr++ ) {
@@ -281,19 +281,42 @@ struct socketoptions_type {
 
     size_t        bufSize;
     unsigned int  MTU;
-#if 0
+};
+
+// Namespace local to this to wrap mk_etdserver and make it retry if
+// protocolVersion is not supported
+namespace etc {
+
     template <typename... Args>
-    auto mk_etdserver(Args&&... args) -> decltype(::mk_etdserver()) {
-        return ::mk_etdserver(std::forward<Args>(args)..., etdc::udt_mss{ MTU }, etdc::udt_rcvbuf{ bufSize },
-                            etdc::udt_sndbuf{ bufSize }, etdc::so_rcvbuf{ bufSize }, etdc::so_sndbuf{ bufSize });
+    auto mk_etdproxy(Args&&... args) -> decltype( ::mk_etdserver(std::forward<Args>(args)...) ) {
+        // If the initial connection already fails we "pass on" the exception
+        auto rv = ::mk_etdproxy( std::forward<Args>(args)... );
+        try {
+            // the real trial is to execute this one. If this fails the
+            // remote end hung up becaus it didn't support the protocol
+            // version command i.e. version 0
+            rv->protocolVersion();
+        }
+        catch( ... ) {
+            // Oh crap ... reconnect and set the protocol version manually to 0
+            rv = ::mk_etdproxy( std::forward<Args>(args)... );
+            // And we should make sure that we only set it once - i.e. that
+            // the previous "supported protocol version" is not yet set
+            ETDCASSERT( rv->set_protocolVersion( 0 ) == etdc::ETDServerInterface::unknownProtocolVersion,
+                        "The proxy had its protocol version already set?!" );
+        }
+        return rv;
+//        return ::mk_etdserver(std::forward<Args>(args)..., etdc::udt_mss{ MTU }, etdc::udt_rcvbuf{ bufSize },
+//                            etdc::udt_sndbuf{ bufSize }, etdc::so_rcvbuf{ bufSize }, etdc::so_sndbuf{ bufSize });
     }
+#if 0
     template <typename... Args>
     auto mk_etdproxy(Args&&... args) -> decltype(::mk_etdserver()) {
         return ::mk_etdproxy(std::forward<Args>(args)..., etdc::udt_mss{ MTU }, etdc::udt_rcvbuf{ bufSize },
                            etdc::udt_sndbuf{ bufSize }, etdc::so_rcvbuf{ bufSize }, etdc::so_sndbuf{ bufSize });
     }
 #endif
-};
+}
 
 
 enum display_format { continental, imperial };
@@ -422,12 +445,13 @@ int main(int argc, char const*const*const argv) {
         );
 #if 0
     // Allow user to set network related options
-    cmd.add( AP::store_into(sockopts.MTU), AP::long_name("mss"),
-             AP::minimum_value((unsigned int)64), AP::maximum_value((unsigned int)65536), // UDP datagram limits
-             AP::docstring(std::string("Set UDT maximum segment size. Not honoured if data channel is TCP. Default ")+etdc::repr(sockopts.MTU)) );
-    cmd.add( AP::store_into(sockopts.bufSize), AP::long_name("buffer"),
-             AP::docstring(std::string("Set send/receive buffer size. Default ")+etdc::repr(sockopts.bufSize)) );
+    //cmd.add( AP::store_into(sockopts.MTU), AP::long_name("mss"),
+    cmd.add( AP::store_into(untag(localState.MSS)), AP::long_name("mss"),
+             AP::minimum_value(64), AP::maximum_value(64*1024*1024), // UDP datagram limits
+             AP::docstring(std::string("Set UDT maximum segment size. Not honoured if data channel is TCP. Default ")+etdc::repr(untag(localState.MSS))) );
 #endif
+    cmd.add( AP::store_into(localState.bufSize), AP::long_name("buffer"),
+             AP::docstring(std::string("Set send/receive buffer size. Default ")+etdc::repr(localState.bufSize)) );
     // Flag wether or not to wait
     //cmd.add(AP::store_true(), AP::short_name('b'), AP::docstring("Do not exit but do a blocking read instead"));
 
@@ -453,8 +477,14 @@ int main(int argc, char const*const*const argv) {
     // We must transform the URL(s) into ETDServerInterface* 
     std::transform(std::begin(urls), std::end(urls), std::back_inserter(servers),
                    [&](url_type const& url) {
-                        return url.isLocal ? ::mk_etdserver(std::ref(localState)) : ::mk_etdproxy(url.protocol, url.host, url.port, connRetry, connDelay);
+                        return url.isLocal ? ::mk_etdserver(std::ref(localState)) : etc::mk_etdproxy(url.protocol, url.host, url.port, connRetry, connDelay);
                     });
+
+
+    std::cout << "This client supports protocol version " << etdc::ETDServerInterface::currentProtocolVersion << std::endl;
+    for(const auto srv: servers) {
+        std::cout << "Server protocol version: " << srv->protocolVersion() << std::endl;
+    }
 
     // Get the list of files to transfer (or to list if servers.size()==1)
     static const auto isDir = [](std::string const& str) { return !str.empty() && str[str.size()-1]=='/'; };
@@ -542,6 +572,7 @@ int main(int argc, char const*const*const argv) {
         // Keep these out of the while loop
         bool               finished{ false };
         const unsigned int retryCountAtStart = nFileRetry;
+        std::exception_ptr eptr;
 
         // Did someone say Cancel? Or did we reach maximum number of retries?
         while( !std::atomic_load(&localState.cancelled) && !finished && nFileRetry<maxFileRetry ) {
@@ -554,23 +585,32 @@ int main(int argc, char const*const*const argv) {
                 std::this_thread::sleep_for( retryDelay );
             }
 
+std::cerr << "Entering into try/catch block" << std::endl;
             try {
                 auto const outputFN = mkOutputPath(file);
                 ETDCDEBUG(lvl, (push ? "PUSH" : "PULL" ) << " " << mode << " " << file << " -> " << outputFN << std::endl);
+                unique_result dstResult( new etdc::result_type(servers[1]->requestFileWrite(outputFN, mode)) );
                 {
+std::cerr << "moving dstResult to results[1]" << std::endl;
                     etdc::scoped_lock lk( localState.lock );
-                    results[1].reset( new etdc::result_type(servers[1]->requestFileWrite(outputFN, mode)) );
+                    results[1].reset( dstResult.release() );
                 }
                 auto nByte = etdc::get_filepos( *results[1] );
+std::cerr << "done that, nByte=" << nByte << std::endl;
 
                 if( mode!=etdc::openmode_type::SkipExisting || nByte==0 ) {
+std::cerr << "mode!=SkipExisting or there are bytes to transfer" << std::endl;
+                    unique_result srcResult( new etdc::result_type(servers[0]->requestFileRead(file, nByte)) );
+std::cerr << "moving srcResult to results[0]" << std::endl;
                     {
                         etdc::scoped_lock lk( localState.lock );
-                        results[0].reset( new etdc::result_type(servers[0]->requestFileRead(file, nByte)) );
+                        results[0].reset( srcResult.release() );
                     }
                     auto nByteToGo = etdc::get_filepos( *results[0] );
+std::cerr << "done that, nByteToGo=" << nByteToGo << std::endl;
 
                     if( nByteToGo>0 ) {
+std::cerr << "ACTUALLY CALLING TRANSFER FN" << std::endl;
                         etdc::xfer_result result( fn(etdc::get_uuid(*results[0]), etdc::get_uuid(*results[1]), nByteToGo, dataChannels) );
                         auto const        dt = result.__m_DeltaT.count();
                         std::cout << (result.__m_Finished && std::atomic_load(&localState.cancelled)==false ? "" : "Un") << "finished; succesfully transferred "
@@ -580,14 +620,23 @@ int main(int argc, char const*const*const argv) {
                                   << "[" << fmtRate( dt>0 ? ((double)result.__m_BytesTransferred)/dt : 0.0) << "]"
                                   << std::endl;
                         finished = result.__m_Finished;
+                        if( !finished )
+                            std::cout << "--> Reason: " << result.__m_Reason << std::endl;
                     } else {
                         ETDCDEBUG(lvl, "Destination is complete or is larger than source file" << std::endl);
                         finished = true;
                     }
                 }
             }
+            catch( const std::exception& e ) {
+                ETDCDEBUG(3, "Got exception: " << e.what() << std::endl);
+                eptr = std::current_exception();
+            }
             catch( ... ) {
+                eptr = std::current_exception();
+                ETDCDEBUG(3, "Got unknown exception: " << std::endl);
             } 
+std::cerr << "And we're outside the try/catch block" << std::endl;
             // ..->removeUUID() may throw, but we really must try to do them
             // both, so even if the first one threw we must still try to remove
             // the 2nd one as well, and neither should have the program be
@@ -606,6 +655,8 @@ int main(int argc, char const*const*const argv) {
             // If we didn't finish, we must retry
             if( !finished )
                 nFileRetry++;
+            if( nFileRetry>maxFileRetry && eptr )
+                std::rethrow_exception( eptr );
         }
     }
     return (std::atomic_load(&localState.cancelled) == true ? 1 : 0);

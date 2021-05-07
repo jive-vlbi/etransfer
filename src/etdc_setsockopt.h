@@ -312,7 +312,7 @@ namespace etdc {
         if( UDT::setsockopt(s, level, opt_name, (char const*)&opt_val, int(sizeof(typename native_type::type)))==UDT::ERROR ) {
             UDT::ERRORINFO & udterr( UDT::getlasterror() );
             throw std::runtime_error("Failed to set UDT option "+detail::udt_option_str(opt_name)+": "+
-                                      udterr.getErrorMessage()+" ("+etdc::repr(udterr.getErrorCode())+"/fd="+etdc::repr(s));
+                                      udterr.getErrorMessage()+" ("+etdc::repr(udterr.getErrorCode())+"/fd="+etdc::repr(s)+")");
         }
 
         // OK, this option done, carry on with rest

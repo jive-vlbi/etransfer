@@ -85,7 +85,7 @@ namespace etdc {
     // flexible type-based updating of struct fields - i.e. can tell
     // different "int" properties apart by their tag.
     namespace tags {
-        struct mtu_tag        {};
+        struct mss_tag        {};
         struct port_tag       {};
         struct backlog_tag    {};
         struct blocking_tag   {};
@@ -93,7 +93,7 @@ namespace etdc {
         struct retrydelay_tag {};
     }
 
-    using mtu_type        = etdc::tagged<unsigned int, tags::mtu_tag>; // MTU<0 don't make sense
+    using mss_type        = etdc::tagged<int, tags::mss_tag>; // only >=64 and <= 64kB are allowed (and enforced)
     using port_type       = etdc::tagged<unsigned short, tags::port_tag>;
     using backlog_type    = etdc::tagged<int, tags::backlog_tag>;
     using blocking_type   = etdc::tagged<bool, tags::blocking_tag>;
@@ -102,9 +102,9 @@ namespace etdc {
     static constexpr port_type any_port = port_type{ (unsigned short)0 };
 
     // ipport_type:   <host> : <port>
-    // sockname_type: <type> / <host> : <port>
+    // sockname_type: <type> / <host> : <port> / mss = <mss>
     using ipport_type   = std::tuple<host_type, port_type>;
-    using sockname_type = std::tuple<protocol_type, host_type, port_type>;
+    using sockname_type = std::tuple<protocol_type, host_type, port_type, mss_type>;
 
     template <typename CharT, typename... Traits>
     std::basic_string<CharT, Traits...> bracket(std::basic_string<CharT, Traits...> const& s) {
@@ -134,9 +134,12 @@ namespace etdc {
     std::basic_ostream<CharT, Traits>& operator<<(std::basic_ostream<CharT, Traits>& os, ipport_type const& ipport) {
         return os << "<" << bracket(std::get<0>(ipport)) << ":" << std::get<1>(ipport) << ">";
     }
+
+    // Output to std::basic_ostream always outputs the current version
     template <class CharT, class Traits>
     std::basic_ostream<CharT, Traits>& operator<<(std::basic_ostream<CharT, Traits>& os, sockname_type const& sn) {
-        return os << "<" << std::get<0>(sn) << "/" << bracket(std::get<1>(sn)) << ":" << std::get<2>(sn) << ">";
+        //return os << "<" << std::get<0>(sn) << "/" << bracket(std::get<1>(sn)) << ":" << std::get<2>(sn) << ">";
+        return os << "<" << std::get<0>(sn) << "/" << bracket(std::get<1>(sn)) << ":" << std::get<2>(sn) << "/mss=" << std::get<3>(sn) << ">";
     }
 
     // Forward declare
@@ -351,8 +354,8 @@ etdc::ipport_type mk_ipport(T const& host, etdc::port_type port = etdc::any_port
 }
 
 template <typename T, typename U>
-etdc::sockname_type mk_sockname(T const& proto, U const& host, etdc::port_type port = etdc::any_port) {
-    return etdc::sockname_type(proto, host, port);
+etdc::sockname_type mk_sockname(T const& proto, U const& host, etdc::port_type port = etdc::any_port, etdc::mss_type mss = etdc::mss_type{1500}) {
+    return etdc::sockname_type(proto, host, port, mss);
 }
 
 template <typename T, typename... Args>
@@ -383,6 +386,35 @@ typename std::enable_if<!etdc::is_integer_number_type<T>::value, etdc::port_type
     }
     catch( ... ) {
         throw std::runtime_error(std::string("Failed to convert port '") + etdc::repr(s) + "' - Unknown exception");
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////
+//
+//   Only accept arguments that are sensible to convert to a maximum 
+//   segment size. IETF says "not < 64" and "not > 9000" for IP over 
+//   Ethernet. But OTOH max UDP datagramsize is 64kB
+//   Let's give the user the possibility to experiment w/ > 9000
+//
+///////////////////////////////////////////////////////////////////////////
+template <typename T>
+typename std::enable_if<etdc::is_integer_number_type<T>::value, etdc::mss_type>::type mss(T const& p) {
+    // Only accept numbers that are actual valid mss settings
+    ETDCASSERT(p>=64 && p<=(64*1024*1024), "MSS " << p << " out of range");
+    return static_cast<etdc::mss_type>(p);
+}
+
+// For everything else we attempt string => number [so we can also accept wstring and god knows what
+template <typename T>
+typename std::enable_if<!etdc::is_integer_number_type<T>::value, etdc::mss_type>::type mss(T const& s) {
+    try {
+        return mss( std::stoi(s) );
+    }
+    catch( std::exception const& e ) {
+        throw std::runtime_error(std::string("Failed to convert MSS '") + etdc::repr(s) + "' - " + e.what());
+    }
+    catch( ... ) {
+        throw std::runtime_error(std::string("Failed to convert MSS '") + etdc::repr(s) + "' - Unknown exception");
     }
 }
 
@@ -418,6 +450,11 @@ etdc::port_type get_port(Ts... t) {
 template <typename... Ts>
 etdc::protocol_type get_protocol(Ts... t) {
     return std::get< etdc::index_of<etdc::protocol_type, Ts...>::value >( t... );
+}
+
+template <typename... Ts>
+etdc::mss_type get_mss(Ts... t) {
+    return std::get< etdc::index_of<etdc::mss_type, Ts...>::value >( t... );
 }
 
 
@@ -980,6 +1017,16 @@ etdc::etdc_fdptr mk_socket(T const& proto) {
 //    call the "accept(...)" function to extract incoming connections
 //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+//
+// Overload for if the user constructed his own serverdefaults
+template <typename T>
+etdc::etdc_fdptr mk_server(T const& proto, etdc::detail::server_settings const& srvSettings) {
+    auto pSok         = mk_socket(proto);
+    // And now transform the server settings + sokkit into a real servert
+    etdc::detail::server_map.find(proto)->second(pSok, srvSettings);
+    return pSok;
+}
+
 template <typename T, typename... Ts>
 etdc::etdc_fdptr mk_server(T const& proto, Ts... ts) {
     // Create socket and server defaults for the indicated protocol
@@ -992,16 +1039,6 @@ etdc::etdc_fdptr mk_server(T const& proto, Ts... ts) {
     etdc::detail::server_map.find(proto)->second(pSok, srvDefaults);
     return pSok;
 }
-
-// Overload for if the user constructed his own serverdefaults
-template <typename T>
-etdc::etdc_fdptr mk_server(T const& proto, etdc::detail::server_settings const& srvSettings) {
-    auto pSok         = mk_socket(proto);
-    // And now transform the server settings + sokkit into a real servert
-    etdc::detail::server_map.find(proto)->second(pSok, srvSettings);
-    return pSok;
-}
-
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //
