@@ -788,6 +788,12 @@ namespace etdc {
         //
         //////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+        // holder for function to test if the call is to be cancelled
+        using cancelfn_type = std::function<bool(void)>;
+        static bool noCancelFn( void ) {
+            return false;
+        }
+
         struct client_settings {
             blocking_type    blocking   {};
             host_type        clntHost   {}; 
@@ -803,6 +809,7 @@ namespace etdc {
             etdc::udp_rcvbuf udpRcvBufSize {};
             etdc::ipv6_only  ipv6_only  {};
             etdc::udt_linger udtLinger  {};
+            cancelfn_type    cancel_fn  {};
         };
         const etdc::construct<client_settings>  update_clnt( &client_settings::blocking,
                                                              &client_settings::clntPort,
@@ -817,7 +824,8 @@ namespace etdc {
                                                              &client_settings::udpBufSize,
                                                              &client_settings::udpRcvBufSize,
                                                              &client_settings::ipv6_only,
-                                                             &client_settings::udtLinger );
+                                                             &client_settings::udtLinger,
+                                                             &client_settings::cancel_fn );
 
         using client_defaults_map = std::map<std::string, std::function<client_settings(void)>>;
 
@@ -827,11 +835,11 @@ namespace etdc {
             // tcp doesn't need to do reconnect by default
             {"tcp", []() { return update_clnt.mk(blocking_type{true},
                                                  numretry_type{0}, retrydelay_type{0},
-                                                 any_port );
+                                                 any_port, noCancelFn );
                          }},
             {"tcp6", []() { return update_clnt.mk(blocking_type{true}, etdc::ipv6_only{true},
                                                  numretry_type{0}, retrydelay_type{0},
-                                                 any_port );
+                                                 any_port, noCancelFn );
                          }},
             // for udt a non-zero default retry might not be a bad idea
             {"udt", []() { return update_clnt.mk(etdc::udt_mss{1500},
@@ -841,7 +849,8 @@ namespace etdc {
                                                  etdc::udt_rcvbuf{defaultUDTBufSize},
                                                  etdc::udp_sndbuf{32*1024*1024},
                                                  etdc::udp_rcvbuf{32*1024*1024},
-                                                 blocking_type{true});
+                                                 blocking_type{true},
+                                                 noCancelFn );
                          }},
             {"udt6", []() { return update_clnt.mk(etdc::udt_mss{1500},
                                                  // UDT does not allow direct access to the real socket so we can't really
@@ -852,7 +861,8 @@ namespace etdc {
                                                  etdc::udt_rcvbuf{defaultUDTBufSize},
                                                  etdc::udp_sndbuf{32*1024*1024},
                                                  etdc::udp_rcvbuf{32*1024*1024},
-                                                 blocking_type{true});
+                                                 blocking_type{true},
+                                                 noCancelFn );
                          }}
         };
 
@@ -1089,7 +1099,7 @@ etdc::etdc_fdptr mk_client(T const& proto, etdc::detail::client_settings const& 
 template <typename T>
 etdc::etdc_fdptr mk_client(T const& proto, etdc::detail::client_settings const& clntSettings) {
     unsigned int       retry{ 0 };
-    while( true ) {
+    while( !clntSettings.cancel_fn()/*true*/ ) {
         std::exception_ptr eptr{ nullptr };
         try {
             auto pSok         = mk_socket(proto);
@@ -1106,6 +1116,8 @@ etdc::etdc_fdptr mk_client(T const& proto, etdc::detail::client_settings const& 
             eptr = std::current_exception();
         }
         // Only sleep if there will be a next attempt
+        if( clntSettings.cancel_fn() )
+            break;
         if( retry++ < untag(clntSettings.nRetry) ) {
             auto sleeptime = untag(clntSettings.retryDelay);
             ETDCDEBUG(4, "mk_client/sleeping for " << sleeptime.count() << "s trying to connect to " <<
@@ -1115,7 +1127,9 @@ etdc::etdc_fdptr mk_client(T const& proto, etdc::detail::client_settings const& 
             std::rethrow_exception(eptr);
         else
             break;
-    };
+    }
+    if( clntSettings.cancel_fn() )
+        return etdc::etdc_fdptr{};
     ETDCASSERT((1+1)==3, "mk_client(" << proto << ", clnt=" << clntSettings.clntHost << ":" << clntSettings.clntPort << ")/Fails w/o exception?!");
 }
 
@@ -1129,8 +1143,6 @@ etdc::etdc_fdptr mk_client(T const& proto, Ts... ts) {
 
     return mk_client(proto, clntDefaults);
 }
-
-
 
 
 // Define global ostream operator for struct sockaddr_in, dat's handy
