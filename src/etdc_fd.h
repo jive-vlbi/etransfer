@@ -138,8 +138,20 @@ namespace etdc {
     // Output to std::basic_ostream always outputs the current version
     template <class CharT, class Traits>
     std::basic_ostream<CharT, Traits>& operator<<(std::basic_ostream<CharT, Traits>& os, sockname_type const& sn) {
-        //return os << "<" << std::get<0>(sn) << "/" << bracket(std::get<1>(sn)) << ":" << std::get<2>(sn) << ">";
         return os << "<" << std::get<0>(sn) << "/" << bracket(std::get<1>(sn)) << ":" << std::get<2>(sn) << "/mss=" << std::get<3>(sn) << ">";
+    }
+
+    //
+    // Update values in a sockname type.
+    //
+
+    // base case: nothing more to update
+    void update_sockname(sockname_type& );
+
+    template <typename T, typename... Rest>
+    void update_sockname(sockname_type& sn, T const& t, Rest&&... rest) {
+        std::get<etdc::index_of<T, sockname_type>::value>(sn) = t;
+        update_sockname(sn, std::forward<Rest>(rest)...);
     }
 
     // Forward declare

@@ -188,9 +188,10 @@ static void signal_thread( signallist_type const& sigs, pthread_t tid,
         if( results[1]  ) {
             auto uuid = etdc::get_uuid(*results[1] );
             ETDCDEBUG(4, "sigwaiterthread: removing DST uuid  " << uuid << std::endl);
-            servers[1]->removeUUID( uuid );
+            servers[1]->cancel( uuid );
             // after the UUID's been removed no need keeping the result around
-            results[1].reset( nullptr );
+            //servers[1]->removeUUID( uuid );
+            //results[1].reset( nullptr );
         }
     }
     catch( ... ) { }
@@ -198,9 +199,10 @@ static void signal_thread( signallist_type const& sigs, pthread_t tid,
         if( results[0]  ) {
             auto uuid = etdc::get_uuid(*results[0] );
             ETDCDEBUG(4, "sigwaiterthread: removing SRC uuid  " << uuid << std::endl);
-            servers[0]->removeUUID( etdc::get_uuid(*results[0] ) );
+            servers[0]->cancel( uuid );
             // after the UUID's been removed no need keeping the result around
-            results[0].reset( nullptr );
+            //servers[0]->removeUUID( etdc::get_uuid(*results[0] ) );
+            //results[0].reset( nullptr );
         }
     }
     catch( ... ) { }

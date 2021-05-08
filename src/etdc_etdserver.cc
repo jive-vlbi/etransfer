@@ -79,8 +79,31 @@ namespace etdc {
         ETDCDEBUG(4, "decode_data_addr: 1='" << fields[1].str() << "' 2='" << fields[2].str() << "' 9='" << fields[9].str() << "'" <<
                      " 11='" << fields[11].str() << "'" << std::endl);
 
-        // OK now extract the fields!
-        return mk_sockname(fields[1].str(), unbracket(fields[2].str()), port(fields[9].str()));
+        // Break up the options into key=value pairs and see if there's
+        // anything we recognize
+        sockname_type     sn{ mk_sockname(fields[1].str(), unbracket(fields[2].str()), port(fields[9].str())) };
+        std::string const opts{ fields[11].str() };
+
+        if( !opts.empty() ) {
+            std::vector<std::string>    keyvalues;
+
+            etdc::string_split(opts, ',', std::back_inserter(keyvalues));
+            for( const auto kv: keyvalues ) {
+                // We already know the option matches keyVal (see above)
+                // so this can be done basically blindly
+                std::string::size_type  equal = kv.find('=');
+                std::string const       key   = kv.substr(0, equal);
+                std::string const       val   = kv.substr(equal+1);
+
+                // *now* we can see if we recognize anything
+                if( key=="mss" ) {
+                    etdc::update_sockname(sn, mss(val));
+                } else {
+                    ETDCDEBUG(0, "Server sent unsupported socket option '" << kv << "' - ignoring");
+                }
+            }
+        }
+        return sn; 
     }
 
 
@@ -316,18 +339,22 @@ namespace etdc {
 
         // We need to protect our transfer so we need to do deadlock avoidance
         // with re-searching our UUID until we have both locks
-        bool                             have_both_locks( false );
+        bool                             have_both_locks{ false }, cancelled{ false };
         off_t const                      nTodo( todo );
         etdc::etd_state&                 shared_state( __m_shared_state.get() );
 
         // Make it loop until we got dem loks
-        while( !have_both_locks && !std::atomic_load(&shared_state.cancelled) ) {
+        while( !have_both_locks && !(cancelled = shared_state.cancelled.load()) ) {
             // 2a. lock shared state
             std::unique_lock<std::mutex>     lk( shared_state.lock );
             // 2b. assert that there is an entry for us, indicating that we ARE configured
             etdc::transfermap_type::iterator ptr = shared_state.transfers.find(__m_uuid);
 
             ETDCASSERT(ptr!=shared_state.transfers.end(), "This server was not initialized yet");
+
+            // We can read the state of the atomic bool
+            if( (cancelled = ptr->second->cancelled.load()) )
+                break;
             
             // Now we must do try_lock on the transfer - if that fails we sleep and start from the beginning
             //std::unique_lock<std::mutex>     sh( *ptr->second.lockPtr, std::try_to_lock );
@@ -361,7 +388,7 @@ namespace etdc {
             // Great. Now we attempt to connect to the remote end
 
             for(auto addr: dataAddrs) {
-                if( std::atomic_load(&shared_state.cancelled) )
+                if( (cancelled = (shared_state.cancelled.load() || transfer.cancelled.load())) )
                     break;
                 try {
                     // This is 'sendFile' so our data channel will have to
@@ -396,8 +423,8 @@ namespace etdc {
                     tried << addr << ": unknown exception" << ", ";
                 }
             }
-            if( std::atomic_load(&shared_state.cancelled) )
-                continue;
+            if( (cancelled = (shared_state.cancelled.load() || transfer.cancelled.load())) )
+                break;
 
             ETDCASSERT(transfer.data_fd, "Failed to connect to any of the data servers: " << tried.str());
 
@@ -414,7 +441,7 @@ namespace etdc {
             const std::string   msg( msg_buf.str() );
             auto const          start_tm = std::chrono::high_resolution_clock::now();
             transfer.data_fd->write(transfer.data_fd->__m_fd, msg.data(), msg.size());
-            while( todo>0 && !std::atomic_load(&shared_state.cancelled) ) {
+            while( todo>0 && !(cancelled = (shared_state.cancelled.load() || transfer.cancelled.load())) ) {
                 size_t const  n = std::min((size_t)todo, bufSz);
                 ssize_t       nWritten{0};
                 const ssize_t nRead = transfer.fd->read(transfer.fd->__m_fd, &buffer[0], n);
@@ -425,7 +452,7 @@ namespace etdc {
                 }
 
                 // Keep on writing untill all bytes that were read are actually written
-                while( nWritten<nRead && !std::atomic_load(&shared_state.cancelled) ) {
+                while( nWritten<nRead && !shared_state.cancelled.load() ) {
                     ssize_t const thisWrite = transfer.data_fd->write(transfer.data_fd->__m_fd, &buffer[nWritten], nRead-nWritten);
 
                     if( thisWrite<=0 ) {
@@ -438,6 +465,8 @@ namespace etdc {
                 if( nWritten<nRead )
                     break;
                 todo -= (off_t)nWritten;
+                if( (cancelled = (shared_state.cancelled.load() || transfer.cancelled.load())) )
+                    break;
             }
             auto const          end_tm = std::chrono::high_resolution_clock::now();//system_clock::now();
             // if we make it out of the loop, todo should be <= 0 and terminate the outer loop
@@ -451,9 +480,10 @@ namespace etdc {
                 transfer.data_fd->read(transfer.data_fd->__m_fd, &ack, 1);
                 ETDCDEBUG(4, "sendFile: ... got it" << std::endl);
             }
-            return xfer_result(todo==0, nTodo - todo, reason, (end_tm-start_tm));
+            return cancelled ? xfer_result(false, 0, "Cancelled", xfer_result::duration_type()) :
+                               xfer_result((todo==0), nTodo - todo, reason, (end_tm-start_tm));
         }
-        return xfer_result(false, 0, (std::atomic_load(&shared_state.cancelled) ? "Cancelled" : "Failed to get both locks"), xfer_result::duration_type());
+        return xfer_result(false, 0, (cancelled  ? "Cancelled" : "Failed to get both locks"), xfer_result::duration_type());
     }
 
     xfer_result ETDServer::getFile(uuid_type const& srcUUID, uuid_type const& dstUUID, 
@@ -463,18 +493,22 @@ namespace etdc {
 
         // We need to protect our transfer so we need to do deadlock avoidance
         // with re-searching our UUID until we have both locks
-        bool                             have_both_locks( false );
+        bool                             have_both_locks{ false }, cancelled{ false };
         off_t const                      nTodo( todo );
         etdc::etd_state&                 shared_state( __m_shared_state.get() );
 
         // Make it loop until we get both locks
-        while( !have_both_locks ) {
+        while( !have_both_locks && !(cancelled = shared_state.cancelled.load()) ) {
             // 2a. lock shared state
             std::unique_lock<std::mutex>     lk( shared_state.lock );
             // 2b. assert that there is an entry for us, indicating that we ARE configured
             etdc::transfermap_type::iterator ptr = shared_state.transfers.find(__m_uuid);
 
             ETDCASSERT(ptr!=shared_state.transfers.end(), "This server was not initialized yet");
+
+            // We can read the state of the atomic bool
+            if( (cancelled = ptr->second->cancelled.load()) )
+                break;
             
             // Now we must do try_lock on the transfer - if that fails we sleep and start from the beginning
             //std::unique_lock<std::mutex>     sh( *ptr->second.lockPtr, std::try_to_lock );
@@ -510,6 +544,8 @@ namespace etdc {
             std::ostringstream  tried;
 
             for(auto addr: dataAddrs) {
+                if( (cancelled = (shared_state.cancelled.load() || transfer.cancelled.load())) )
+                    break;
                 try {
                     // This is 'getFile' so our data channel will have to
                     // have a big read buffer
@@ -528,6 +564,8 @@ namespace etdc {
                     tried << addr << ": unknown exception" << ", ";
                 }
             }
+            if( (cancelled = (shared_state.cancelled.load() || transfer.cancelled.load())) )
+                break;
             ETDCASSERT(transfer.data_fd, "Failed to connect to any of the data servers: " << tried.str());
 
             // Weehee! we're connected!
@@ -543,7 +581,7 @@ namespace etdc {
             auto const        start_tm = std::chrono::high_resolution_clock::now();//system_clock::now();
             transfer.data_fd->write(transfer.data_fd->__m_fd, msg.data(), msg.size());
 
-            while( todo>0 ) {
+            while( todo>0 && !(cancelled = (shared_state.cancelled.load() || transfer.cancelled.load())) ) {
                 // Read at most bufSz bytes
                 // Note: we do blocking I/O so a read of size zero means
                 //       other side hung up
@@ -567,6 +605,8 @@ namespace etdc {
                 if( nWritten<nRead )
                     break;
                 todo -= (off_t)nWritten;
+                if( (cancelled = (shared_state.cancelled.load() || transfer.cancelled.load())) )
+                    break;
             }
             auto const end_tm = std::chrono::high_resolution_clock::now();//system_clock::now();
             // if we make it out of the loop, todo should be <= 0 and terminate the outer loop
@@ -577,9 +617,44 @@ namespace etdc {
                 transfer.data_fd->write(transfer.data_fd->__m_fd, &ack, 1);
                 ETDCDEBUG(4, "ETDServer::getFile/... done." << std::endl);
             }
-            return xfer_result((todo==0), nTodo - todo, reason, (end_tm-start_tm));
+            return cancelled ? xfer_result(false, 0, "Cancelled", xfer_result::duration_type()) :
+                               xfer_result((todo==0), nTodo - todo, reason, (end_tm-start_tm));
         }
-        return xfer_result(false, 0, "Failed to grab both locks", xfer_result::duration_type());
+        return xfer_result(false, 0, cancelled ? "Cancelled" : "Failed to grab both locks", xfer_result::duration_type());
+    }
+
+    // Cancel any ongoing data transfer
+    void ETDServer::cancel( etdc::uuid_type const& uuid ) {
+        ETDCASSERT(uuid==__m_uuid, "Cannot cancel someone else's UUID!");
+
+        // We need to do some thinking about locking sequence because we need
+        // a lock on the shared state *and* a lock on the transfer
+        // before we can attempt to remove it.
+        // To prevent deadlock we may have to relinquish the locks and start again.
+        // What that means is that if we fail to lock both atomically, we must start over:
+        //  lock shared state and (attempt to) find the transfer
+        // because after we've released the shared state lock, someone else may have snuck in
+        // and deleted or done something bad with the transfer i.e. we cannot do a ".find(uuid)" once 
+        // and assume the iterator will remain valid after releasing the lock on shared_state
+        etdc::etd_state&                    shared_state( __m_shared_state.get() );
+        std::unique_ptr<transferprops_type> removed;
+
+        // 1. lock shared state
+        std::unique_lock<std::mutex>     lk( shared_state.lock );
+        // 2. find if there is an entry in the map for us
+        etdc::transfermap_type::iterator ptr = shared_state.transfers.find(__m_uuid);
+
+        // No? OK then we're done
+        if( ptr==shared_state.transfers.end() )
+            return;
+
+        // If we're doing a transfer, make it fall out of the loop?
+        // Note that the lock on the transfer itself is held during
+        // the whole transfer
+        ptr->second->cancelled.store( true );
+        if( ptr->second->data_fd )
+            ptr->second->data_fd->close( ptr->second->data_fd->__m_fd );
+        return;
     }
 
     protocolversion_type ETDServer::protocolVersion( void ) const {
@@ -905,7 +980,7 @@ namespace etdc {
         msgBuf << "remove-uuid " << uuid << '\n';
         const std::string  msg( msgBuf.str() );
 
-        ETDCDEBUG(4, "ETDProxy::removeUUID/sending message '" << msg << "'" << std::endl);
+        ETDCDEBUG(4, "ETDProxy::removeUUID/sending message '" << msg << "'" << " fd=" << __m_connection->__m_fd << std::endl);
         ETDCASSERTX(__m_connection->write(__m_connection->__m_fd, msg.data(), msg.size())==(ssize_t)msg.size());
 
         // And await the reply. We only allow "OK" or "ERR <msg>"
@@ -940,6 +1015,7 @@ namespace etdc {
             // Otherwise we're done
             break;
         }
+        ETDCDEBUG(4, "ETDProxy::removeUUID/uuid removed succesfully" << std::endl);
         return true;
     }
 
@@ -961,7 +1037,7 @@ namespace etdc {
         msgBuf << '\n';
         const std::string  msg( msgBuf.str() );
 
-        ETDCDEBUG(4, "ETDProxy::sendFile/sending message '" << msg << "'" << std::endl);
+        ETDCDEBUG(4, "ETDProxy::sendFile/sending message '" << msg << "'" << " fd=" << __m_connection->__m_fd << std::endl);
         ETDCASSERTX(__m_connection->write(__m_connection->__m_fd, msg.data(), msg.size())==(ssize_t)msg.size());
 
         // The values we need to parse from the reply
@@ -1017,6 +1093,27 @@ namespace etdc {
         }
         return xfer_result(success, nbyte_transferred, reason, xfer_result::duration_type(delta_t));
     }
+
+    // Cancel the current transfer
+    void ETDProxy::cancel( etdc::uuid_type const& uuid ) {
+        // remote end w/ protocol version 0 doesn't have cancel so try removeUUID()
+        if( __m_protocolVersion==0 || __m_protocolVersion==ETDServerInterface::unknownProtocolVersion ) {
+            ETDCDEBUG(4, "ETDProxy::cancel(" << uuid << ") - remote end doesn't support it, trying removeUUID instead" << std::endl);
+            this->removeUUID( uuid );
+            return;
+        }
+        //  OK send cancel message
+        std::ostringstream       msgBuf;
+
+        msgBuf << "cancel " << uuid << '\n';
+        const std::string  msg( msgBuf.str() );
+        ETDCDEBUG(4, "ETDProxy::cancel/sending message '" << msg << "'" << std::endl);
+        ETDCASSERTX(__m_connection->write(__m_connection->__m_fd, msg.data(), msg.size())==(ssize_t)msg.size());
+
+        // This one does NOT solicit a reply
+        return;
+    }
+
 
     protocolversion_type ETDProxy::protocolVersion( void ) const {
         // If we already enquired the protocol Version no need to bother the
@@ -1120,9 +1217,9 @@ namespace etdc {
                                                 //                 srcUUID   dstUUID   todo        data-channel
                 static const std::regex  rxDataChannelAddr("^data-channel-addr(-ext)?$", etdc_rxFlags);
                                                 //                            1 extended info?
-                static const std::regex  rxRemoveUUID("^remove-uuid\\s+(\\S+)$", etdc_rxFlags);
-                                                //                     1
-                                                //                     UUID
+                static const std::regex  rxRemoveUUID("^(remove-uuid|cancel)\\s+(\\S+)$", etdc_rxFlags);
+                                                //      1              2
+                                                //      what to do     UUID
                 static const std::regex  rxProtocolVersion("^protocol-version$", etdc_rxFlags);
 
                 // Match it against the known commands
@@ -1203,9 +1300,18 @@ namespace etdc {
                         // and add a final OK
                         replies.emplace_back("OK");
                     } else if( std::regex_match(*line, fields, rxRemoveUUID) ) {
-                        const bool removeResult = __m_etdserver.removeUUID(uuid_type(fields[1].str()));
-                        ETDCDEBUG(4, "ETDServerWrapper: removeUUID(" << fields[1].str() << " yields " << removeResult << std::endl);
-                        replies.emplace_back( removeResult ? "OK" : "ERR Failed to remove UUID" );
+                        // Could be remove | cancel
+                        etdc::uuid_type const  uuid{ fields[2].str() };
+
+                        if( fields[1].str() == "cancel" ) {
+                            ETDCDEBUG(4, "ETDServerWrapper: canelling UUID " << uuid << std::endl);
+                            __m_etdserver.cancel( uuid );
+                            // note: this done does _not_ solicit a return
+                        } else {
+                            const bool removeResult = __m_etdserver.removeUUID( uuid );
+                            ETDCDEBUG(4, "ETDServerWrapper: removeUUID(" << uuid << " yields " << removeResult << std::endl);
+                            replies.emplace_back( removeResult ? "OK" : "ERR Failed to remove UUID" );
+                        }
                     } else if( std::regex_match(*line, fields, rxProtocolVersion) ) {
                         // and add a final OK
                         replies.emplace_back("OK "+repr(__m_etdserver.protocolVersion()));

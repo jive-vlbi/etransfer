@@ -89,13 +89,14 @@ namespace etdc {
         etdc::etdc_fdptr            fd, data_fd;
         const openmode_type         openMode;
         std::mutex                  xfer_lock;
+        std::atomic<bool>           cancelled;
 
         // we cannot be copied or default constructed! (because of our unique_ptr)
         transferprops_type()                          = delete;
 
         transferprops_type(etdc::etdc_fdptr efd, std::string const& p, openmode_type om):
             path(p), fd(efd), openMode(om)
-        {}
+        { cancelled.store( false ); }
     }; 
 
     using cancel_fn         = std::function<void(void)>;

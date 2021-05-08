@@ -67,10 +67,15 @@ namespace etdc {
         return oss.str();
     }
 
+    // The base case of update_sockname
+    void update_sockname(sockname_type&) { }
+
     // For std::bind( ..., _1, ...) &cet
     using namespace std::placeholders;
 
     namespace detail {
+
+
         // The no-op function for not extracting MSS from the socket
         static int no_mss_fn(int /*fd*/) { return 0; }
 

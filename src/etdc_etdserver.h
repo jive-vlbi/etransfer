@@ -125,6 +125,9 @@ namespace etdc {
             virtual bool          removeUUID(etdc::uuid_type const&) = 0;
             virtual std::string   status( void ) const = 0;
 
+            // Cancel any transfer
+            virtual void          cancel( etdc::uuid_type const& ) = 0;
+
             // Which protocol version is this one speaking?
             virtual protocolversion_type  protocolVersion( void ) const = 0;
             virtual protocolversion_type  set_protocolVersion( protocolversion_type ) = 0;
@@ -166,6 +169,8 @@ namespace etdc {
             virtual bool          removeUUID(etdc::uuid_type const&);
             virtual std::string   status( void ) const NOTIMPLEMENTED;
 
+            virtual void          cancel( etdc::uuid_type const&  );
+
             virtual protocolversion_type  protocolVersion( void ) const;
             virtual protocolversion_type  set_protocolVersion( protocolversion_type ) NOTIMPLEMENTED;
 
@@ -203,6 +208,8 @@ namespace etdc {
 
             virtual bool          removeUUID(etdc::uuid_type const&);
             virtual std::string   status( void ) const NOTIMPLEMENTED;
+
+            virtual void          cancel( etdc::uuid_type const& );
 
             virtual protocolversion_type  protocolVersion( void ) const;
             // Returns previous protocol version
