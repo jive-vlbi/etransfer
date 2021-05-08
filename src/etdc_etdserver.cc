@@ -381,7 +381,7 @@ namespace etdc {
 
             // Get a reference to the actual transfer properties
             transferprops_type&         transfer( *ptr->second );
-            etdc::detail::cancelfn_type isCancelled = [&]( void ) { return shared_state.cancelled.load() || transfer.cancelled.load(); };
+            etdc::detail::cancelfn_type isCancelled{ [&]( void ) { return shared_state.cancelled.load() || transfer.cancelled.load(); } };
 
             // Verify that indeed we are configured for file read
             ETDCASSERT(transfer.openMode==openmode_type::Read, "This server was initialized, but not for reading a file");
@@ -537,7 +537,7 @@ namespace etdc {
             // Note that we do NOT include 'skip existing' in here - the
             // point is that we don't want to write to such a file!
             transferprops_type&                        transfer( *ptr->second );
-            etdc::detail::cancelfn_type                isCancelled = [&]( void ) { return shared_state.cancelled.load() || transfer.cancelled.load(); };
+            etdc::detail::cancelfn_type                isCancelled{ [&]( void ) { return shared_state.cancelled.load() || transfer.cancelled.load(); } };
             static const std::set<etdc::openmode_type> allowedWriteModes{ openmode_type::OverWrite, openmode_type::New, openmode_type::Resume };
 
             ETDCASSERT(allowedWriteModes.find(transfer.openMode)!=allowedWriteModes.end(),

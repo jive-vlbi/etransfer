@@ -835,11 +835,11 @@ namespace etdc {
             // tcp doesn't need to do reconnect by default
             {"tcp", []() { return update_clnt.mk(blocking_type{true},
                                                  numretry_type{0}, retrydelay_type{0},
-                                                 any_port, noCancelFn );
+                                                 any_port, cancelfn_type{noCancelFn} );
                          }},
             {"tcp6", []() { return update_clnt.mk(blocking_type{true}, etdc::ipv6_only{true},
                                                  numretry_type{0}, retrydelay_type{0},
-                                                 any_port, noCancelFn );
+                                                 any_port, cancelfn_type{noCancelFn} );
                          }},
             // for udt a non-zero default retry might not be a bad idea
             {"udt", []() { return update_clnt.mk(etdc::udt_mss{1500},
@@ -850,7 +850,7 @@ namespace etdc {
                                                  etdc::udp_sndbuf{32*1024*1024},
                                                  etdc::udp_rcvbuf{32*1024*1024},
                                                  blocking_type{true},
-                                                 noCancelFn );
+                                                 cancelfn_type{noCancelFn} );
                          }},
             {"udt6", []() { return update_clnt.mk(etdc::udt_mss{1500},
                                                  // UDT does not allow direct access to the real socket so we can't really
@@ -862,7 +862,7 @@ namespace etdc {
                                                  etdc::udp_sndbuf{32*1024*1024},
                                                  etdc::udp_rcvbuf{32*1024*1024},
                                                  blocking_type{true},
-                                                 noCancelFn );
+                                                 cancelfn_type{noCancelFn} );
                          }}
         };
 
