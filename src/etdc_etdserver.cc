@@ -1278,6 +1278,24 @@ namespace etdc {
                                         std::sregex_iterator(), std::back_inserter(dataAddrs), 
                                         [](std::smatch const& sm) { return decode_data_addr(sm.str()); });
 
+                        // Execute the sendFile in a separate thread to free
+                        // up this handler
+                        std::thread( [=]() {
+                                ETDCDEBUG(4, "ETDServerWrapper: thread " << std::this_thread::get_id() << "/executing sendFile()" << std::endl);
+                                const xfer_result  rv = __m_etdserver.sendFile(src_uuid, dst_uuid, todo, dataAddrs);
+                                std::ostringstream reply_s;
+                                reply_s << (rv.__m_Finished ? "OK" : "ERR")
+                                        << ',' << rv.__m_BytesTransferred
+                                        // make sure we have seconds as units of duration
+                                        << ',' << rv.__m_DeltaT.count();
+                                if( !rv.__m_Reason.empty() )
+                                    reply_s << ' ' << rv.__m_Reason;
+                                reply_s << '\n';
+                                std::string const reply{ reply_s.str() };
+                                ETDCDEBUG(4, "ETDServerWrapper: thread " << std::this_thread::get_id() << "/sending sendFile() reply '" << reply << "'" << std::endl);
+                                __m_connection->write(__m_connection->__m_fd, reply.data(), reply.size());
+                            } ).detach();
+#if 0
                         const xfer_result  rv = __m_etdserver.sendFile(src_uuid, dst_uuid, todo, dataAddrs);
                         std::ostringstream reply_s;
                         reply_s << (rv.__m_Finished ? "OK" : "ERR")
@@ -1287,6 +1305,7 @@ namespace etdc {
                         if( !rv.__m_Reason.empty() )
                             reply_s << ' ' << rv.__m_Reason;
                         replies.emplace_back( reply_s.str() );
+#endif
                         //replies.emplace_back( rv ? "OK" : "ERR Failed to send file" );
                     } else if( std::regex_match(*line, fields, rxDataChannelAddr) ) {
                         // Did client ask for data-channel-addr-ext?
