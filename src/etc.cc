@@ -189,9 +189,6 @@ static void signal_thread( signallist_type const& sigs, pthread_t tid,
             auto uuid = etdc::get_uuid(*results[1] );
             ETDCDEBUG(4, "sigwaiterthread: removing DST uuid  " << uuid << std::endl);
             servers[1]->cancel( uuid );
-            // after the UUID's been removed no need keeping the result around
-            //servers[1]->removeUUID( uuid );
-            //results[1].reset( nullptr );
         }
     }
     catch( ... ) { }
@@ -200,9 +197,6 @@ static void signal_thread( signallist_type const& sigs, pthread_t tid,
             auto uuid = etdc::get_uuid(*results[0] );
             ETDCDEBUG(4, "sigwaiterthread: removing SRC uuid  " << uuid << std::endl);
             servers[0]->cancel( uuid );
-            // after the UUID's been removed no need keeping the result around
-            //servers[0]->removeUUID( etdc::get_uuid(*results[0] ) );
-            //results[0].reset( nullptr );
         }
     }
     catch( ... ) { }
@@ -445,7 +439,7 @@ int main(int argc, char const*const*const argv) {
                    AP::constrain([&](url_type const& url) { if( url.isLocal ) nLocal++; return nLocal<2; }, "At most one local PATH can be given"),
                    AP::docstring("SRC and DST URL/PATH"))
         );
-#if 0
+#if 1
     // Allow user to set network related options
     //cmd.add( AP::store_into(sockopts.MTU), AP::long_name("mss"),
     cmd.add( AP::store_into(untag(localState.MSS)), AP::long_name("mss"),
@@ -536,7 +530,7 @@ int main(int argc, char const*const*const argv) {
     // In the data channels, we must replace any of the wildcard IPs with a real host name
     std::regex  rxWildCard("^(::|0.0.0.0)$");
     for(auto ptr=dataChannels.begin(); ptr!=dataChannels.end(); ptr++)
-        *ptr = mk_sockname(get_protocol(*ptr), etdc::host_type(std::regex_replace(get_host(*ptr), rxWildCard, dstHost)), get_port(*ptr));
+        update_sockname(*ptr, etdc::host_type(std::regex_replace(get_host(*ptr), rxWildCard, dstHost)));
 
     // Before processing all file(s) we already know if we're going to push or pull
     std::function<etdc::xfer_result(etdc::uuid_type const&, etdc::uuid_type&, off_t, etdc::dataaddrlist_type const&)> fn;
@@ -567,6 +561,10 @@ int main(int argc, char const*const*const argv) {
                  std::ref(localState), std::ref(servers), std::ref(results)).detach();
 
     for(auto const& file: files2do) {
+        // Were we cancelled?
+        if( localState.cancelled.load() )
+            break;
+
         // Skip directories
         if( file[file.size()-1]=='/' )
             continue;
@@ -587,32 +585,32 @@ int main(int argc, char const*const*const argv) {
                 std::this_thread::sleep_for( retryDelay );
             }
 
-std::cerr << "Entering into try/catch block" << std::endl;
+//std::cerr << "Entering into try/catch block" << std::endl;
             try {
                 auto const outputFN = mkOutputPath(file);
                 ETDCDEBUG(lvl, (push ? "PUSH" : "PULL" ) << " " << mode << " " << file << " -> " << outputFN << std::endl);
                 unique_result dstResult( new etdc::result_type(servers[1]->requestFileWrite(outputFN, mode)) );
                 {
-std::cerr << "moving dstResult to results[1]" << std::endl;
+//std::cerr << "moving dstResult to results[1]" << std::endl;
                     etdc::scoped_lock lk( localState.lock );
                     results[1].reset( dstResult.release() );
                 }
                 auto nByte = etdc::get_filepos( *results[1] );
-std::cerr << "done that, nByte=" << nByte << std::endl;
+//std::cerr << "done that, nByte=" << nByte << std::endl;
 
                 if( mode!=etdc::openmode_type::SkipExisting || nByte==0 ) {
-std::cerr << "mode!=SkipExisting or there are bytes to transfer" << std::endl;
+//std::cerr << "mode!=SkipExisting or there are bytes to transfer" << std::endl;
                     unique_result srcResult( new etdc::result_type(servers[0]->requestFileRead(file, nByte)) );
-std::cerr << "moving srcResult to results[0]" << std::endl;
+//std::cerr << "moving srcResult to results[0]" << std::endl;
                     {
                         etdc::scoped_lock lk( localState.lock );
                         results[0].reset( srcResult.release() );
                     }
                     auto nByteToGo = etdc::get_filepos( *results[0] );
-std::cerr << "done that, nByteToGo=" << nByteToGo << std::endl;
+//std::cerr << "done that, nByteToGo=" << nByteToGo << std::endl;
 
                     if( nByteToGo>0 ) {
-std::cerr << "ACTUALLY CALLING TRANSFER FN" << std::endl;
+//std::cerr << "ACTUALLY CALLING TRANSFER FN" << std::endl;
                         etdc::xfer_result result( fn(etdc::get_uuid(*results[0]), etdc::get_uuid(*results[1]), nByteToGo, dataChannels) );
                         auto const        dt = result.__m_DeltaT.count();
                         std::cout << (result.__m_Finished && std::atomic_load(&localState.cancelled)==false ? "" : "Un") << "finished; succesfully transferred "
@@ -638,7 +636,7 @@ std::cerr << "ACTUALLY CALLING TRANSFER FN" << std::endl;
                 eptr = std::current_exception();
                 ETDCDEBUG(3, "Got unknown exception: " << std::endl);
             } 
-std::cerr << "And we're outside the try/catch block" << std::endl;
+//std::cerr << "And we're outside the try/catch block" << std::endl;
             // ..->removeUUID() may throw, but we really must try to do them
             // both, so even if the first one threw we must still try to remove
             // the 2nd one as well, and neither should have the program be
