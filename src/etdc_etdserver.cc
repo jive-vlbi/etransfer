@@ -357,7 +357,6 @@ namespace etdc {
                 break;
             
             // Now we must do try_lock on the transfer - if that fails we sleep and start from the beginning
-            //std::unique_lock<std::mutex>     sh( *ptr->second.lockPtr, std::try_to_lock );
             std::unique_lock<std::mutex>     sh( ptr->second->xfer_lock, std::try_to_lock );
             if( !sh ) {
                 // we must manually unlock the shared state before sleeping
@@ -389,32 +388,30 @@ namespace etdc {
             // Great. Now we attempt to connect to the remote end
 
             for(auto addr: dataAddrs) {
-                if( (cancelled = isCancelled()) ) //(shared_state.cancelled.load() || transfer.cancelled.load())) )
+                if( (cancelled = isCancelled()) ) 
                     break;
                 try {
                     // This is 'sendFile' so our data channel will have to
                     // have a big send buffer
                     const auto    proto = get_protocol(addr);
                     auto          clnt  = etdc::detail::client_defaults.find( untag(proto) )->second();
-                    etdc::udt_mss mss_to_use{};
+                    //etdc::udt_mss mss_to_use{};
 
-                    etdc::detail::update_clnt( clnt, get_host(addr), get_port(addr), /*mss_to_use,*/
+                    // Merge our settings with the default client settings
+                    etdc::detail::update_clnt( clnt, get_host(addr), get_port(addr),
                                                      etdc::udt_rcvbuf{bufSz}, etdc::udt_sndbuf{bufSz},
                                                      etdc::so_rcvbuf{bufSz}, etdc::so_sndbuf{bufSz},
                                                      isCancelled );
                     // decide on which mss to use
                     //untag(mss_to_use) = std::max((int)64, std::min(untag(ourMSS), untag(get_mss(addr))));
-                    untag(mss_to_use) = std::min(untag(ourMSS), untag(get_mss(addr)));
-                    ETDCDEBUG(4, "ETDServer::sendFile/use MSS=" << untag(mss_to_use) << " [ours=" << untag(ourMSS) << ", "
+                    //untag(mss_to_use) = std::min(untag(ourMSS), untag(get_mss(addr)));
+                    const auto mss_to_use = std::min(untag(ourMSS), untag(get_mss(addr)));
+                    //ETDCDEBUG(4, "ETDServer::sendFile/use MSS=" << untag(mss_to_use) << " [ours=" << untag(ourMSS) << ", "
+                    ETDCDEBUG(4, "ETDServer::sendFile/use MSS=" << mss_to_use << " [ours=" << untag(ourMSS) << ", "
                                                                 << get_host(addr) << "=" << untag(get_mss(addr)) << "]" << std::endl);
-//                    if( untag(mss_to_use) ) 
-//                        etdc::detail::update_clnt( clnt, mss_to_use );
+                    if( untag(mss_to_use) ) 
+                        etdc::detail::update_clnt( clnt, etdc::udt_mss{mss_to_use} );
 
-                    // Pass all possible receive buf sizes - the mk_client
-                    // will make sure only the right ones will be used
-//                    transfer.data_fd = mk_client(get_protocol(addr), get_host(addr), get_port(addr),
-//                                                /*etdc::udt_rcvbuf{bufSz}, etdc::udt_sndbuf{bufSz},*/ etdc::so_rcvbuf{bufSz}, etdc::so_sndbuf{bufSz});
-//                                                //etdc::udt_sndbuf{bufSz}, etdc::udp_sndbuf{bufSz}, etdc::so_sndbuf{bufSz});
                     transfer.data_fd = mk_client( get_protocol(addr), clnt );
                     ETDCDEBUG(2, "sendFile/connected to " << addr << std::endl);
                     break;
@@ -426,7 +423,7 @@ namespace etdc {
                     tried << addr << ": unknown exception" << ", ";
                 }
             }
-            if( (cancelled = isCancelled()) ) //(shared_state.cancelled.load() || transfer.cancelled.load())) )
+            if( (cancelled = isCancelled()) ) 
                 break;
 
             ETDCASSERT(transfer.data_fd, "Failed to connect to any of the data servers: " << tried.str());
@@ -444,8 +441,8 @@ namespace etdc {
             const std::string   msg( msg_buf.str() );
             auto const          start_tm = std::chrono::high_resolution_clock::now();
             transfer.data_fd->write(transfer.data_fd->__m_fd, msg.data(), msg.size());
-            //while( todo>0 && !(cancelled = (shared_state.cancelled.load() || transfer.cancelled.load())) ) {
-            while( todo>0 && !(cancelled = isCancelled()) ) { //   (shared_state.cancelled.load() || transfer.cancelled.load())) ) {
+
+            while( todo>0 && !(cancelled = isCancelled()) ) {
                 size_t const  n = std::min((size_t)todo, bufSz);
                 ssize_t       nWritten{0};
                 const ssize_t nRead = transfer.fd->read(transfer.fd->__m_fd, &buffer[0], n);
@@ -469,15 +466,15 @@ namespace etdc {
                 if( nWritten<nRead )
                     break;
                 todo -= (off_t)nWritten;
-                if( (cancelled = isCancelled()) ) //(shared_state.cancelled.load() || transfer.cancelled.load())) )
+                if( (cancelled = isCancelled()) )
                     break;
             }
-            auto const          end_tm = std::chrono::high_resolution_clock::now();//system_clock::now();
+            auto const          end_tm = std::chrono::high_resolution_clock::now();
             // if we make it out of the loop, todo should be <= 0 and terminate the outer loop
             // wait here until the recipient has acknowledged receipt of all bytes
             // But that only makes sense if the destination is still alive!
             // (it should send an ACK as soon as it breaks from the loop and has flushed all bytes it has)
-            if( remoteOK ) {
+            if( remoteOK && !cancelled ) {
                 char    ack;
 
                 ETDCDEBUG(4, "sendFile: waiting for remote ACK ..." << std::endl);
@@ -515,7 +512,6 @@ namespace etdc {
                 break;
             
             // Now we must do try_lock on the transfer - if that fails we sleep and start from the beginning
-            //std::unique_lock<std::mutex>     sh( *ptr->second.lockPtr, std::try_to_lock );
             std::unique_lock<std::mutex>     sh( ptr->second->xfer_lock, std::try_to_lock );
             if( !sh ) {
                 // Manually unlock the shared state or else nobody won't be
@@ -550,7 +546,7 @@ namespace etdc {
             std::ostringstream   tried;
 
             for(auto addr: dataAddrs) {
-                if( (cancelled = isCancelled()) ) //(shared_state.cancelled.load() || transfer.cancelled.load())) )
+                if( (cancelled = isCancelled()) )
                     break;
                 try {
                     // This is 'getFile' so our data channel will have to
@@ -559,7 +555,8 @@ namespace etdc {
                     auto          clnt  = etdc::detail::client_defaults.find( untag(proto) )->second();
                     etdc::udt_mss mss_to_use{};
 
-                    etdc::detail::update_clnt( clnt, get_host(addr), get_port(addr), /*mss_to_use,*/
+                    // Update client defaults with ours
+                    etdc::detail::update_clnt( clnt, get_host(addr), get_port(addr), 
                                                      etdc::udt_rcvbuf{bufSz}, etdc::udt_sndbuf{bufSz},
                                                      etdc::so_rcvbuf{bufSz}, etdc::so_sndbuf{bufSz},
                                                      isCancelled );
@@ -571,25 +568,9 @@ namespace etdc {
 //                    if( untag(mss_to_use) ) 
 //                        etdc::detail::update_clnt( clnt, mss_to_use );
 
-                    // Pass all possible receive buf sizes - the mk_client
-                    // will make sure only the right ones will be used
-//                    transfer.data_fd = mk_client(get_protocol(addr), get_host(addr), get_port(addr),
-//                                                /*etdc::udt_rcvbuf{bufSz}, etdc::udt_sndbuf{bufSz},*/ etdc::so_rcvbuf{bufSz}, etdc::so_sndbuf{bufSz});
-//                                                //etdc::udt_sndbuf{bufSz}, etdc::udp_sndbuf{bufSz}, etdc::so_sndbuf{bufSz});
                     transfer.data_fd = mk_client( get_protocol(addr), clnt );
                     ETDCDEBUG(2, "getFile/connected to " << addr << std::endl);
                     break;
-#if 0
-                    // This is 'getFile' so our data channel will have to
-                    // have a big read buffer
-
-                    // Pass all possible receive buf sizes - the mk_client
-                    // will make sure only the right ones will be used
-                    transfer.data_fd = mk_client(get_protocol(addr), get_host(addr), get_port(addr),
-                                                 /*etdc::udt_rcvbuf{bufSz}, etdc::udt_sndbuf{bufSz}, */etdc::so_rcvbuf{bufSz}, etdc::so_sndbuf{bufSz});
-                    ETDCDEBUG(2, "getFile/connected to " << addr << std::endl);
-                    break;
-#endif
                 }
                 catch( std::exception const& e ) {
                     tried << addr << ": " << e.what() << ", ";
@@ -598,7 +579,7 @@ namespace etdc {
                     tried << addr << ": unknown exception" << ", ";
                 }
             }
-            if( (cancelled = isCancelled()) ) //(shared_state.cancelled.load() || transfer.cancelled.load())) )
+            if( (cancelled = isCancelled()) )
                 break;
             ETDCASSERT(transfer.data_fd, "Failed to connect to any of the data servers: " << tried.str());
 
@@ -612,10 +593,10 @@ namespace etdc {
             bool              remoteOK{ true };
             std::string       reason;
             std::string const msg( msg_buf.str() );
-            auto const        start_tm = std::chrono::high_resolution_clock::now();//system_clock::now();
+            auto const        start_tm = std::chrono::high_resolution_clock::now();
             transfer.data_fd->write(transfer.data_fd->__m_fd, msg.data(), msg.size());
 
-            while( todo>0 && !(cancelled = isCancelled()) ) { //   (shared_state.cancelled.load() || transfer.cancelled.load())) ) {
+            while( todo>0 && !(cancelled = isCancelled()) ) {
                 // Read at most bufSz bytes
                 // Note: we do blocking I/O so a read of size zero means
                 //       other side hung up
@@ -639,13 +620,13 @@ namespace etdc {
                 if( nWritten<nRead )
                     break;
                 todo -= (off_t)nWritten;
-                if( (cancelled = isCancelled()) ) //(shared_state.cancelled.load() || transfer.cancelled.load())) )
+                if( (cancelled = isCancelled()) )
                     break;
             }
-            auto const end_tm = std::chrono::high_resolution_clock::now();//system_clock::now();
+            auto const end_tm = std::chrono::high_resolution_clock::now();
             // if we make it out of the loop, todo should be <= 0 and terminate the outer loop
             // Send ACK but only if it makes sense
-            if( remoteOK ) {
+            if( remoteOK && !cancelled ) {
                 const char ack{ 'y' };
                 ETDCDEBUG(4, "ETDServer::getFile/got all bytes, sending ACK ..." << std::endl);
                 transfer.data_fd->write(transfer.data_fd->__m_fd, &ack, 1);
@@ -1312,8 +1293,7 @@ namespace etdc {
                                         std::sregex_iterator(), std::back_inserter(dataAddrs), 
                                         [](std::smatch const& sm) { return decode_data_addr(sm.str()); });
 
-                        // Execute the sendFile in a separate thread to free
-                        // up this handler
+                        // Execute the sendFile in a separate thread to free up this handler
                         std::thread( [=]() {
                                 ETDCDEBUG(4, "ETDServerWrapper: thread " << std::this_thread::get_id() << "/executing sendFile()" << std::endl);
                                 const xfer_result  rv = __m_etdserver.sendFile(src_uuid, dst_uuid, todo, dataAddrs);
@@ -1329,17 +1309,6 @@ namespace etdc {
                                 ETDCDEBUG(4, "ETDServerWrapper: thread " << std::this_thread::get_id() << "/sending sendFile() reply '" << reply << "'" << std::endl);
                                 __m_connection->write(__m_connection->__m_fd, reply.data(), reply.size());
                             } ).detach();
-#if 0
-                        const xfer_result  rv = __m_etdserver.sendFile(src_uuid, dst_uuid, todo, dataAddrs);
-                        std::ostringstream reply_s;
-                        reply_s << (rv.__m_Finished ? "OK" : "ERR")
-                                << ',' << rv.__m_BytesTransferred
-                                // make sure we have seconds as units of duration
-                                << ',' << rv.__m_DeltaT.count();
-                        if( !rv.__m_Reason.empty() )
-                            reply_s << ' ' << rv.__m_Reason;
-                        replies.emplace_back( reply_s.str() );
-#endif
                         //replies.emplace_back( rv ? "OK" : "ERR Failed to send file" );
                     } else if( std::regex_match(*line, fields, rxDataChannelAddr) ) {
                         // Did client ask for data-channel-addr-ext?
