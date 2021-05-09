@@ -150,11 +150,11 @@ static std::string unbracket(std::string const& h) {
 struct socketoptions_type {
 
     socketoptions_type():
-        bufSize{ 32*1024*1024 }, MTU{ 1500 }
+        MTU{ 1500 }, bufSize{ 32*1024*1024 }
     {}
 
+    int           MTU;
     size_t        bufSize;
-    unsigned int  MTU;
 };
 
 
@@ -289,7 +289,7 @@ int main(int argc, char const*const*const argv) {
 #if 1
     // Allow user to set network related options
     cmd.add( AP::store_into(sockopts.MTU), AP::long_name("mss"), AP::at_most(1),
-             AP::minimum_value((unsigned int)64), AP::maximum_value((unsigned int)65536), // UDP datagram limits
+             AP::minimum_value((int)64), AP::maximum_value((int)65536), // UDP datagram limits
              AP::docstring(std::string("Set UDT maximum segment size. Not honoured if data channel is TCP. Default ")+etdc::repr(sockopts.MTU)) );
 #endif
     cmd.add( AP::store_into(sockopts.bufSize), AP::long_name("buffer"), AP::at_most(1),
@@ -352,6 +352,9 @@ int main(int argc, char const*const*const argv) {
     etdc::etd_state            serverState;
     const string2socket_type_m mk_cmd ( port(4004), sockopts );
     const string2socket_type_m mk_data( port(8008), sockopts );
+
+    // Make sure the mtu gets passed on into the shared state
+    serverState.MSS = sockopts.MTU;
 
     // data servers first such that the command servers know which data ports are available
     for(auto&& datasrv: cmd.get<std::list<std::string>>("data")) {
