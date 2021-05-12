@@ -111,7 +111,8 @@ namespace etdc {
         size_t                  bufSize{ 32*1024*1024 };
         std::mutex              lock;
         unsigned int            n_threads;
-        etdc::mss_type          MSS{ 1500 };
+        etdc::mss_type          udtMSS{ 0/*1500*/ };
+        etdc::max_bw_type       udtMaxBW{ 0/*-1*/ };
         cancellist_type         cancellations;
         transfermap_type        transfers;
         std::atomic<bool>       cancelled;

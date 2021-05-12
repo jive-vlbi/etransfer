@@ -64,11 +64,6 @@ namespace etdc {
         static const std::string    keyVal( "[^ \t\v,=>]+=[^ \t\v,>]+" );
         static const std::string    options( "(/("+keyVal+ "(," + keyVal + ")*))?" );
         //                                    1011          12
-#if 0
-        static const std::regex     rxSockName("^<([^/]+)/(\\["+ipv6_lit+"\\]|" + valid_host + "):([0-9]+)>$");
-                                            //    1       2                                       9 
-                                            //    proto   host                                    port
-#endif
         static const std::regex     rxSockName("^<([^/]+)/(\\["+ipv6_lit+"\\]|" + valid_host + "):([0-9]+)" + options + ">$");
                                             //    1       2                                       9 
                                             //    proto   host                                    port
@@ -96,11 +91,12 @@ namespace etdc {
                 std::string const       val   = kv.substr(equal+1);
 
                 // *now* we can see if we recognize anything
-                if( key=="mss" ) {
+                if( key=="mss" )
                     etdc::update_sockname(sn, mss(val));
-                } else {
-                    ETDCDEBUG(0, "Server sent unsupported socket option '" << kv << "' - ignoring");
-                }
+                else if( key=="max-bw" )
+                    etdc::update_sockname(sn, max_bw(val));
+                else
+                    ETDCDEBUG(0, "Server sent unsupported socket option '" << kv << "' - ignoring" << std::endl);
             }
         }
         return sn; 
@@ -371,9 +367,10 @@ namespace etdc {
 
             // Copy relevant values from shared state to here whilst we
             // still have the lock
-            const size_t         bufSz{ shared_state.bufSize };
-            const etdc::mss_type ourMSS{ shared_state.MSS };
-            std::ostringstream   tried;
+            const size_t            bufSz{ shared_state.bufSize };
+            const etdc::mss_type    ourMSS{ shared_state.udtMSS };
+            const etdc::max_bw_type ourBW{ shared_state.udtMaxBW };
+            std::ostringstream      tried;
             // At this point we don't need the shared_state lock anymore - we've found our entry and we've locked it
             // So no-one can remove the entry from under us until we're done
             lk.unlock();
@@ -395,7 +392,6 @@ namespace etdc {
                     // have a big send buffer
                     const auto    proto = get_protocol(addr);
                     auto          clnt  = etdc::detail::client_defaults.find( untag(proto) )->second();
-                    //etdc::udt_mss mss_to_use{};
 
                     // Merge our settings with the default client settings
                     etdc::detail::update_clnt( clnt, get_host(addr), get_port(addr),
@@ -403,14 +399,48 @@ namespace etdc {
                                                      etdc::so_rcvbuf{bufSz}, etdc::so_sndbuf{bufSz},
                                                      isCancelled );
                     // decide on which mss to use
-                    //untag(mss_to_use) = std::max((int)64, std::min(untag(ourMSS), untag(get_mss(addr))));
-                    //untag(mss_to_use) = std::min(untag(ourMSS), untag(get_mss(addr)));
-                    const auto mss_to_use = std::min(untag(ourMSS), untag(get_mss(addr)));
-                    //ETDCDEBUG(4, "ETDServer::sendFile/use MSS=" << untag(mss_to_use) << " [ours=" << untag(ourMSS) << ", "
-                    ETDCDEBUG(4, "ETDServer::sendFile/use MSS=" << mss_to_use << " [ours=" << untag(ourMSS) << ", "
-                                                                << get_host(addr) << "=" << untag(get_mss(addr)) << "]" << std::endl);
+                    // If set to 0 (default) do not change
+                    using key_type    = std::pair<bool, bool>;
+                    using mssmap_type = std::map<key_type, std::function<etdc::udt_mss(int, int)>>;
+                    static const mssmap_type mss_map{
+                        // If both sides have an MSS setting, use the minimum
+                        {key_type{true, true},   [](int o, int t) { return etdc::udt_mss{ std::min(o, t)}; }},
+                        // either have one set? use that one
+                        {key_type{true, false},  [](int o, int  ) { return etdc::udt_mss{ o }; }},
+                        {key_type{false, true},  [](int  , int t) { return etdc::udt_mss{ t }; }},
+                        // neither have set it, don't set it here either
+                        {key_type{false, false}, [](int  , int  ) { return etdc::udt_mss{ 0 }; }}
+                    };
+
+                    auto       oMSS{ untag(ourMSS) };
+                    auto       tMSS{ untag(get_mss(addr)) };
+                    const auto mss_to_use = mss_map.find( key_type{oMSS>0, tMSS>0} )->second(oMSS, tMSS);
+                    //etdc::udt_mss mss_to_use = mss_map.find( key_type{oMSS>0, tMSS>0} )->second(oMSS, tMSS);
+                    ETDCDEBUG(4, "ETDServer::sendFile/use MSS=" << untag(mss_to_use) << " [ours=" << oMSS << ", "
+                                                                << get_host(addr) << "=" << tMSS << "]" << std::endl);
                     if( untag(mss_to_use) ) 
-                        etdc::detail::update_clnt( clnt, etdc::udt_mss{mss_to_use} );
+                        etdc::detail::update_clnt( clnt, mss_to_use );
+
+                    // same applies to bandwidth constraints?
+                    auto     oBW{ untag(ourBW) };
+                    auto     tBW{ untag(get_max_bw(addr)) };
+
+                    // If either side has a bw restriction we adapt to that
+                    using maxbwmap_type = std::map<key_type, std::function<etdc::udt_max_bw(int64_t, int64_t)>>;
+                    static const maxbwmap_type maxbw_map{
+                        // both restricted - return minimum
+                        {key_type{true, true},   [](int64_t o, int64_t t) { return etdc::udt_max_bw{ std::min(o, t)}; }},
+                        {key_type{true, false},  [](int64_t o, int64_t  ) { return etdc::udt_max_bw{ o }; }},
+                        {key_type{false, true},  [](int64_t  , int64_t t) { return etdc::udt_max_bw{ t }; }},
+                        {key_type{false, false}, [](int64_t  , int64_t  ) { return etdc::udt_max_bw{ -1 }; }}
+                    };
+
+                    const auto maxbw = maxbw_map.find( key_type{oBW>0, tBW>0} )->second(oBW, tBW);
+
+                    ETDCDEBUG(4, "ETDServer::sendFile/use MaxBW=" << untag(maxbw) << " [ours=" << oBW << ", "
+                                                                << get_host(addr) << "=" << tBW << "]" << std::endl);
+                        
+                    etdc::detail::update_clnt( clnt, maxbw );
 
                     transfer.data_fd = mk_client( get_protocol(addr), clnt );
                     ETDCDEBUG(2, "sendFile/connected to " << addr << std::endl);
@@ -540,10 +570,10 @@ namespace etdc {
                        "This server was initialized, but not for writing to file");
 
             // Great. Now we attempt to connect to the remote end
-            const size_t         bufSz( 32*1024*1024 );
-            const etdc::mss_type ourMSS{ shared_state.MSS };
-            //etdc::etdc_fdptr    dstFD;
-            std::ostringstream   tried;
+            const size_t            bufSz( 32*1024*1024 );
+            const etdc::mss_type    ourMSS{ shared_state.udtMSS };
+            //const etdc::max_bw_type ourBW{ shared_state.udtMaxBW };
+            std::ostringstream      tried;
 
             for(auto addr: dataAddrs) {
                 if( (cancelled = isCancelled()) )
@@ -1288,7 +1318,7 @@ namespace etdc {
 
                         string2off_t(fields[3].str(), todo);
                         // transform data channel addresses into list-of-*
-                        static const std::regex data_sep("[^,]+");
+                        static const std::regex data_sep("<[^>]+>,?");
                         std::transform( std::sregex_iterator(std::begin(dataAddrs_s), std::end(dataAddrs_s), data_sep),
                                         std::sregex_iterator(), std::back_inserter(dataAddrs), 
                                         [](std::smatch const& sm) { return decode_data_addr(sm.str()); });

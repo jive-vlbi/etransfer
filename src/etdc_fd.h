@@ -87,6 +87,7 @@ namespace etdc {
     namespace tags {
         struct mss_tag        {};
         struct port_tag       {};
+        struct max_bw_tag     {};
         struct backlog_tag    {};
         struct blocking_tag   {};
         struct numretry_tag   {};
@@ -95,6 +96,7 @@ namespace etdc {
 
     using mss_type        = etdc::tagged<int, tags::mss_tag>; // only >=64 and <= 64kB are allowed (and enforced)
     using port_type       = etdc::tagged<unsigned short, tags::port_tag>;
+    using max_bw_type     = etdc::tagged<int64_t, tags::max_bw_tag>;
     using backlog_type    = etdc::tagged<int, tags::backlog_tag>;
     using blocking_type   = etdc::tagged<bool, tags::blocking_tag>;
     using numretry_type   = etdc::tagged<unsigned int, tags::numretry_tag>;
@@ -104,7 +106,7 @@ namespace etdc {
     // ipport_type:   <host> : <port>
     // sockname_type: <type> / <host> : <port> / mss = <mss>
     using ipport_type   = std::tuple<host_type, port_type>;
-    using sockname_type = std::tuple<protocol_type, host_type, port_type, mss_type>;
+    using sockname_type = std::tuple<protocol_type, host_type, port_type, mss_type, max_bw_type>;
 
     template <typename CharT, typename... Traits>
     std::basic_string<CharT, Traits...> bracket(std::basic_string<CharT, Traits...> const& s) {
@@ -138,8 +140,16 @@ namespace etdc {
     // Output to std::basic_ostream always outputs the current version
     template <class CharT, class Traits>
     std::basic_ostream<CharT, Traits>& operator<<(std::basic_ostream<CharT, Traits>& os, sockname_type const& sn) {
-        return os << "<" << std::get<0>(sn) << "/" << bracket(std::get<1>(sn)) << ":" << std::get<2>(sn) << "/mss=" << std::get<3>(sn) << ">";
+        os << "<" << std::get<0>(sn) << "/" << bracket(std::get<1>(sn)) << ":" << std::get<2>(sn);
+        // Only show udt options when applicable
+        if( untag(std::get<0>(sn)).find("udt")!=std::string::npos )
+            os << "/mss=" << std::get<3>(sn) << ",max-bw=" << std::get<4>(sn);
+        return os << ">";
     }
+
+    // protocol version dependent sockname2string 
+    std::string sockname2str_v0( sockname_type const& sn );
+    std::string sockname2str_v1( sockname_type const& sn );
 
     //
     // Update values in a sockname type.
@@ -430,6 +440,38 @@ typename std::enable_if<!etdc::is_integer_number_type<T>::value, etdc::mss_type>
     }
 }
 
+///////////////////////////////////////////////////////////////////////////
+//
+// Maximum bandwidts allowed are -1 or positive number
+//
+///////////////////////////////////////////////////////////////////////////
+template <typename T>
+typename std::enable_if<etdc::is_integer_number_type<T>::value, etdc::max_bw_type>::type max_bw(T const& bw) {
+    // Only accept numbers that are actual valid mss settings
+    ETDCASSERT(bw==-1 || bw>0, "MaxBW " << bw << " invalid - either -1 or >0 is allowed");
+    return static_cast<etdc::max_bw_type>(bw);
+}
+
+// Parse string to bandwidth in bytes per second
+// the pattern is <rate>[unit]
+// rate
+//             integer
+// unit can be 
+//        empty                           [base 1]
+//        bytes
+//             kBps,  MBps,  GBps,  TBps  [base 1024]
+//             kiBps, MiBps, GiBps, TiBps [base 1000]
+//        bits
+//             kbps,  Mbps,  Gbps,  Tbps  [base 1024]
+//             kibps, Mibps, Gibps, Tibps [base 1000]
+etdc::max_bw_type max_bw(std::string const& bandwidthstr);
+
+// For everything else we attempt conversion to int64_t 
+template <typename T>
+typename std::enable_if<!etdc::is_integer_number_type<T>::value, etdc::max_bw_type>::type max_bw(T const& v) {
+    return max_bw( static_cast<int64_t>(v) );
+}
+
 
 // And making a host
 template <typename T>
@@ -467,6 +509,11 @@ etdc::protocol_type get_protocol(Ts... t) {
 template <typename... Ts>
 etdc::mss_type get_mss(Ts... t) {
     return std::get< etdc::index_of<etdc::mss_type, Ts...>::value >( t... );
+}
+
+template <typename... Ts>
+etdc::max_bw_type get_max_bw(Ts... t) {
+    return std::get< etdc::index_of<etdc::max_bw_type, Ts...>::value >( t... );
 }
 
 
@@ -510,6 +557,7 @@ namespace etdc {
             etdc::udp_sndbuf udpSndBufSize {};
             etdc::ipv6_only  ipv6_only  {};
             etdc::udt_linger udtLinger  {};
+            etdc::udt_max_bw udtMaxBW   {};
         };
         const etdc::construct<server_settings>  update_srv( &server_settings::blocking,
                                                             &server_settings::backLog,
@@ -523,7 +571,8 @@ namespace etdc {
                                                             &server_settings::udpSndBufSize,
                                                             &server_settings::udtMSS,
                                                             &server_settings::ipv6_only,
-                                                            &server_settings::udtLinger );
+                                                            &server_settings::udtLinger,
+                                                            &server_settings::udtMaxBW );
 
         using server_defaults_map = std::map<std::string, std::function<server_settings(void)>>;
 
@@ -544,7 +593,8 @@ namespace etdc {
                                                 etdc::udp_sndbuf{32*1024*1024},
                                                 etdc::udp_rcvbuf{32*1024*1024},
                                                 any_port, etdc::udt_linger{{0,0}},
-                                                etdc::udt_mss{1500});
+                                                etdc::udt_mss{1500},
+                                                etdc::udt_max_bw{-1} );
                          }},
             {"udt6", []() { return update_srv.mk(backlog_type{4},
                                                 blocking_type{true},
@@ -553,7 +603,8 @@ namespace etdc {
                                                 etdc::udp_sndbuf{32*1024*1024},
                                                 etdc::udp_rcvbuf{32*1024*1024},
                                                 any_port, etdc::udt_linger{{0,0}},
-                                                etdc::udt_mss{1500});
+                                                etdc::udt_mss{1500},
+                                                etdc::udt_max_bw{-1} );
                          }}
         };
 
@@ -675,7 +726,8 @@ namespace etdc {
                         //       option from the server's configured values
                         const auto fc = (etdc::untag(srv.udtBufSize)/(etdc::untag(srv.udtMSS)-28))+256;
                         etdc::setsockopt(pSok->__m_fd, etdc::udt_reuseaddr{true}, etdc::udt_fc{fc}, 
-                                         srv.udtBufSize, srv.udtSndBufSize, srv.udtMSS, srv.udtLinger);
+                                         srv.udtBufSize, srv.udtSndBufSize, srv.udtMSS, srv.udtLinger,
+                                         srv.udtMaxBW);
 
                         if( srv.udpBufSize )
                             etdc::setsockopt(pSok->__m_fd, srv.udpBufSize);
@@ -730,7 +782,8 @@ namespace etdc {
                         //       option from the server's configured values
                         const auto fc = (etdc::untag(srv.udtBufSize)/(etdc::untag(srv.udtMSS)-28))+256;
                         etdc::setsockopt(pSok->__m_fd, etdc::udt_reuseaddr{true}, etdc::udt_fc{fc}, 
-                                         srv.udtBufSize, srv.udtSndBufSize, srv.udtMSS, srv.udtLinger);
+                                         srv.udtBufSize, srv.udtSndBufSize, srv.udtMSS, srv.udtLinger,
+                                         srv.udtMaxBW);
                         //etdc::setsockopt(pSok->__m_fd, etdc::udt_reuseaddr{true}, srv.udtBufSize, srv.udtSndBufSize, srv.udtMSS, srv.udtLinger);
 
                         if( srv.udpBufSize )
@@ -809,6 +862,7 @@ namespace etdc {
             etdc::udp_rcvbuf udpRcvBufSize {};
             etdc::ipv6_only  ipv6_only  {};
             etdc::udt_linger udtLinger  {};
+            etdc::udt_max_bw udtMaxBW   {};
             cancelfn_type    cancel_fn  {};
         };
         const etdc::construct<client_settings>  update_clnt( &client_settings::blocking,
@@ -825,6 +879,7 @@ namespace etdc {
                                                              &client_settings::udpRcvBufSize,
                                                              &client_settings::ipv6_only,
                                                              &client_settings::udtLinger,
+                                                             &client_settings::udtMaxBW,
                                                              &client_settings::cancel_fn );
 
         using client_defaults_map = std::map<std::string, std::function<client_settings(void)>>;
@@ -850,6 +905,7 @@ namespace etdc {
                                                  etdc::udp_sndbuf{32*1024*1024},
                                                  etdc::udp_rcvbuf{32*1024*1024},
                                                  blocking_type{true},
+                                                 etdc::udt_max_bw{-1},
                                                  cancelfn_type{noCancelFn} );
                          }},
             {"udt6", []() { return update_clnt.mk(etdc::udt_mss{1500},
@@ -862,6 +918,7 @@ namespace etdc {
                                                  etdc::udp_sndbuf{32*1024*1024},
                                                  etdc::udp_rcvbuf{32*1024*1024},
                                                  blocking_type{true},
+                                                 etdc::udt_max_bw{-1},
                                                  cancelfn_type{noCancelFn} );
                          }}
         };
@@ -953,8 +1010,8 @@ namespace etdc {
                         //       option from the server's configured values
                         const auto fc = (etdc::untag(clnt.udtRcvBufSize)/(etdc::untag(clnt.udtMSS)-28))+256;
                         etdc::setsockopt(pSok->__m_fd, etdc::udt_reuseaddr{true}, etdc::udt_fc{fc}, 
-                                         clnt.udtBufSize, clnt.udtRcvBufSize, clnt.udtMSS, clnt.udtLinger);
-                        //etdc::setsockopt(pSok->__m_fd, clnt.udtBufSize, clnt.udtRcvBufSize, clnt.udtMSS, clnt.udtLinger);
+                                         clnt.udtBufSize, clnt.udtRcvBufSize, clnt.udtMSS, clnt.udtLinger,
+                                         clnt.udtMaxBW);
 
                         if( clnt.udpBufSize )
                             etdc::setsockopt(pSok->__m_fd, clnt.udpBufSize);
@@ -996,8 +1053,8 @@ namespace etdc {
                         //       option from the server's configured values
                         const auto fc = (etdc::untag(clnt.udtRcvBufSize)/(etdc::untag(clnt.udtMSS)-28))+256;
                         etdc::setsockopt(pSok->__m_fd, etdc::udt_reuseaddr{true}, etdc::udt_fc{fc}, 
-                                         clnt.udtBufSize, clnt.udtRcvBufSize, clnt.udtMSS, clnt.udtLinger);
-                        //etdc::setsockopt(pSok->__m_fd, clnt.udtBufSize, clnt.udtRcvBufSize, clnt.udtMSS, clnt.udtLinger);
+                                         clnt.udtBufSize, clnt.udtRcvBufSize, clnt.udtMSS, clnt.udtLinger,
+                                         clnt.udtMaxBW);
 
                         if( clnt.udpBufSize )
                             etdc::setsockopt(pSok->__m_fd, clnt.udpBufSize);
@@ -1070,30 +1127,7 @@ etdc::etdc_fdptr mk_server(T const& proto, Ts... ts) {
 //    connection should have been succesfully made.
 //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-#if 0
-template <typename T, typename... Ts>
-etdc::etdc_fdptr mk_client(T const& proto, Ts... ts) {
-    // Create socket and server defaults for the indicated protocol
-    auto pSok         = mk_socket(proto);
-    auto clntDefaults = etdc::detail::client_defaults.find(proto)->second();
 
-    // Update the defaults with what the user may have given us
-    etdc::detail::update_clnt(clntDefaults, std::forward<Ts>(ts)...);
-
-    // And now transform the client details + sokkit into a real client
-    etdc::detail::client_map.find(proto)->second(pSok, clntDefaults);
-    return pSok;
-}
-
-// Overload for if the user constructed his own clientdefaults
-template <typename T>
-etdc::etdc_fdptr mk_client(T const& proto, etdc::detail::client_settings const& clntSettings) {
-    auto pSok         = mk_socket(proto);
-    // And now transform the client settings + sokkit into a real client
-    etdc::detail::client_map.find(proto)->second(pSok, clntSettings);
-    return pSok;
-}
-#endif
 // Overload for if the user constructed his own clientdefaults
 // TODO XXX Should allow handling ^C in here
 template <typename T>

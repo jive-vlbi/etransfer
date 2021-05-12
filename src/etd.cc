@@ -25,6 +25,7 @@
 #include <etdc_etd_state.h>
 #include <etdc_etdserver.h>
 #include <etdc_stringutil.h>
+#include <etdc_sciprint.h>
 #include <argparse.h>
 
 #include <map>
@@ -79,10 +80,12 @@ dbgMap = {
                                                                 etdc::udt_rcvbuf  rcv;
                                                                 etdc::udt_sndbuf  snd;
                                                                 etdc::udt_linger  linger;
-                                                                etdc::getsockopt(pSok->__m_fd, rcv, linger, snd, mss);
+                                                                etdc::udt_max_bw  max_bw;
+                                                                etdc::getsockopt(pSok->__m_fd, rcv, linger, snd, mss, max_bw);
                                                                 ETDCDEBUG(1, s << "/UDT rcvbuf = " << rcv << " sndbuf = " << snd
                                                                                << " linger=" << untag(linger).l_onoff << ":" << untag(linger).l_linger
                                                                                << " mss=" << untag(mss)
+                                                                               << " max_bw=" << (untag(max_bw)<0 ? "Inf" : etdc::sciprint(untag(max_bw), "Bps"))
                                                                                << endl);
                                                             }},
     {"udt6", [](etdc::etdc_fdptr pSok, std::string const& s) {
@@ -90,10 +93,12 @@ dbgMap = {
                                                                  etdc::udt_rcvbuf  rcv;
                                                                  etdc::udt_sndbuf  snd;
                                                                  etdc::udt_linger  linger;
-                                                                 etdc::getsockopt(pSok->__m_fd, rcv, linger, mss);
+                                                                 etdc::udt_max_bw  max_bw;
+                                                                 etdc::getsockopt(pSok->__m_fd, rcv, linger, mss, max_bw);
                                                                  ETDCDEBUG(1, s << "/UDT6 rcvbuf = " << rcv << " sndbuf = " << snd
                                                                                 << " linger=" << untag(linger).l_onoff << ":" << untag(linger).l_linger
                                                                                 << " mss=" << untag(mss)
+                                                                                << " max_bw=" << (untag(max_bw)<0 ? "Inf" : etdc::sciprint(untag(max_bw), "Bps"))
                                                                                 << endl);
                                                              }},
     {"tcp", [](etdc::etdc_fdptr pSok, std::string const& s) {
@@ -150,11 +155,12 @@ static std::string unbracket(std::string const& h) {
 struct socketoptions_type {
 
     socketoptions_type():
-        MTU{ 1500 }, bufSize{ 32*1024*1024 }
+        udtMSS{ 0 }, bufSize{ 32*1024*1024 }, udtBW{ 0 }
     {}
 
-    int           MTU;
-    size_t        bufSize;
+    int     udtMSS;
+    size_t  bufSize;
+    int64_t udtBW;
 };
 
 
@@ -172,16 +178,27 @@ struct string2socket_type_m {
         // unchecked.
         etdc::etdc_fdptr                                fd;
         std::match_results<std::string::const_iterator> m;
-
         std::regex_match(s, m, rxURL);
 
-        fd = mk_server(etdc::protocol_type(m[1]), etdc::host_type(unbracket(m[3])), // protocol + local addres (if any)
-                       (m[7].length() ? port(m[7]) :  __m_default_port), // port
-                       etdc::udt_mss{ __m_sockopts.MTU },
-                       //etdc::udt_rcvbuf{ __m_sockopts.bufSize }, etdc::udt_sndbuf{ __m_sockopts.bufSize },
-                       etdc::so_rcvbuf{ __m_sockopts.bufSize }, etdc::so_sndbuf{ __m_sockopts.bufSize },
-                       //etdc::udt_rcvbuf{32*1024*1024}, etdc::udt_sndbuf{32*1024*1024}, etdc::so_rcvbuf{4*1024},  // some socket options
-                       etdc::blocking_type{true});
+        // After having matched the fields out of the string we can use them
+        const auto  proto = etdc::protocol_type(m[1]);
+        auto        srvr  = etdc::detail::server_defaults.find( untag(proto) )->second();
+
+        // Merge our settings with the default client settings
+        etdc::detail::update_srv( srvr, etdc::host_type(unbracket(m[3])),
+                (m[7].length() ? port(m[7]) :  __m_default_port),
+                etdc::so_rcvbuf{ __m_sockopts.bufSize }, etdc::so_sndbuf{ __m_sockopts.bufSize },
+                etdc::udt_rcvbuf{ 32*1024*1024 },
+                etdc::blocking_type{ true });
+
+        // Any options overridden on the command line?
+        if( __m_sockopts.udtMSS )
+            etdc::detail::update_srv( srvr, etdc::udt_mss{ __m_sockopts.udtMSS } );
+
+        if( __m_sockopts.udtBW )
+            etdc::detail::update_srv( srvr, etdc::udt_max_bw{ __m_sockopts.udtBW } );
+
+        fd = mk_server( untag(proto), srvr );
 
         auto socknm =  fd->getsockname(fd->__m_fd);
         ETDCDEBUG(2, "etd: server is-at " << socknm << endl);
@@ -286,14 +303,23 @@ int main(int argc, char const*const*const argv) {
     cmd.add( AP::store_into(message_level), AP::short_name('m'),
              AP::maximum_value(5), AP::minimum_value(-1), AP::at_most(1),
              AP::docstring("Message level - higher = more output") );
-#if 1
+
     // Allow user to set network related options
-    cmd.add( AP::store_into(sockopts.MTU), AP::long_name("mss"), AP::at_most(1),
+    cmd.add( AP::store_into(sockopts.udtMSS), AP::long_name("udt-mss"), AP::at_most(1),
              AP::minimum_value((int)64), AP::maximum_value((int)65536), // UDP datagram limits
-             AP::docstring(std::string("Set UDT maximum segment size. Not honoured if data channel is TCP. Default ")+etdc::repr(sockopts.MTU)) );
-#endif
+             AP::docstring(std::string("Set UDT maximum segment size. Not honoured if data channel is TCP. Default: 1500")) );
+
+    // Allow server admin to limit bandwidth on data channels
+    cmd.add( AP::store_into(sockopts.udtBW), AP::long_name("udt-bw"), AP::at_most(1), AP::minimum_value((int64_t)1), 
+             AP::convert([](std::string const& s) { return untag(max_bw(s)); }),
+             AP::docstring(std::string("Set UDT maximum bandwidth to use. Can use SI prefixes kGM and [i](Bb)ps unit for base-1024 or base-1000 byte/bit rates. "
+                                       "Note: the UDT library works with bytes-per-second (Bps) internally so rates specified in bits-per-second will be "
+                                       "converted to bytes-per-second, possibly losing some precision. "
+                                       "Not honoured for TCP data channels. Default value: unlimited, default unit Bps.")) );
+
     cmd.add( AP::store_into(sockopts.bufSize), AP::long_name("buffer"), AP::at_most(1),
              AP::docstring(std::string("Set send/receive buffer size. Default ")+etdc::repr(sockopts.bufSize)) );
+
     // command servers; we require at least one of 'm
     cmd.add( AP::collect<std::string>(), AP::long_name("command"),
              // Constraints on the number + form of the argument
@@ -353,8 +379,12 @@ int main(int argc, char const*const*const argv) {
     const string2socket_type_m mk_cmd ( port(4004), sockopts );
     const string2socket_type_m mk_data( port(8008), sockopts );
 
-    // Make sure the mtu gets passed on into the shared state
-    serverState.MSS = sockopts.MTU;
+    // Make sure command line options get passed on into the shared state
+    serverState.bufSize = sockopts.bufSize;
+    if( sockopts.udtMSS )
+        serverState.udtMSS = sockopts.udtMSS;
+    if( sockopts.udtBW>0 )
+        serverState.udtMaxBW = sockopts.udtBW;
 
     // data servers first such that the command servers know which data ports are available
     for(auto&& datasrv: cmd.get<std::list<std::string>>("data")) {

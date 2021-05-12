@@ -302,16 +302,7 @@ namespace etc {
                         "The proxy had its protocol version already set?!" );
         }
         return rv;
-//        return ::mk_etdserver(std::forward<Args>(args)..., etdc::udt_mss{ MTU }, etdc::udt_rcvbuf{ bufSize },
-//                            etdc::udt_sndbuf{ bufSize }, etdc::so_rcvbuf{ bufSize }, etdc::so_sndbuf{ bufSize });
     }
-#if 0
-    template <typename... Args>
-    auto mk_etdproxy(Args&&... args) -> decltype(::mk_etdserver()) {
-        return ::mk_etdproxy(std::forward<Args>(args)..., etdc::udt_mss{ MTU }, etdc::udt_rcvbuf{ bufSize },
-                           etdc::udt_sndbuf{ bufSize }, etdc::so_rcvbuf{ bufSize }, etdc::so_sndbuf{ bufSize });
-    }
-#endif
 }
 
 
@@ -327,9 +318,6 @@ int main(int argc, char const*const*const argv) {
     unsigned int                 maxFileRetry{ 2 }, nFileRetry{ 0 };
     std::chrono::duration<float> retryDelay{ 10 };
     display_format               display( imperial );
-#if 0
-    socketoptions_type     sockopts{};
-#endif
     etdc::openmode_type          mode{ etdc::openmode_type::New };
     etdc::numretry_type          connRetry{ 2 };
     etdc::retrydelay_type        connDelay{ 5 };
@@ -439,13 +427,19 @@ int main(int argc, char const*const*const argv) {
                    AP::constrain([&](url_type const& url) { if( url.isLocal ) nLocal++; return nLocal<2; }, "At most one local PATH can be given"),
                    AP::docstring("SRC and DST URL/PATH"))
         );
-#if 1
+
     // Allow user to set network related options
-    //cmd.add( AP::store_into(sockopts.MTU), AP::long_name("mss"),
-    cmd.add( AP::store_into(untag(localState.MSS)), AP::long_name("mss"),
-             AP::minimum_value(64), AP::maximum_value(64*1024*1024), // UDP datagram limits
-             AP::docstring(std::string("Set UDT maximum segment size. Not honoured if data channel is TCP. Default ")+etdc::repr(untag(localState.MSS))) );
-#endif
+
+    // UDT parameters
+    cmd.add( AP::store_into(untag(localState.udtMSS)), AP::long_name("udt-mss"), AP::at_most(1), 
+             AP::minimum_value(64), AP::maximum_value(64*1024), // UDP datagram limits
+             AP::docstring(std::string("Set UDT maximum segment size. Not honoured if data channel is TCP or doing remote-to-remote transfers. Default ")+etdc::repr(untag(localState.udtMSS))) );
+
+    cmd.add( AP::store_into(untag(localState.udtMaxBW)), AP::long_name("udt-bw"), AP::at_most(1),
+             AP::convert([](std::string const& s) { return untag(max_bw(s)); }),
+             AP::constrain([](long long int v) { return v==-1 || v>0; }, "-1 (Inf) or > 0 for set rate"),
+             AP::docstring(std::string("Set UDT maximum bandwidth. Not honoured if data channel is TCP or doing remote-to-remote transfers. Default ")+etdc::repr(untag(localState.udtMaxBW))) );
+
     cmd.add( AP::store_into(localState.bufSize), AP::long_name("buffer"),
              AP::docstring(std::string("Set send/receive buffer size. Default ")+etdc::repr(localState.bufSize)) );
     // Flag wether or not to wait

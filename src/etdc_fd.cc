@@ -33,6 +33,36 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 
+// this one should live in the global namespace
+etdc::max_bw_type max_bw(std::string const& bandwidthstr) {
+    // Special case for "-1", every other string should pass the below code
+    if( bandwidthstr=="-1" )
+        return etdc::max_bw_type{ -1 };
+
+    // base and power lookups
+    static const std::map<std::string, int> exponents{ {"", 0}, {"k", 1}, {"M", 2}, {"G", 3}, {"T", 4} };
+    static const std::map<std::string, int> bitsbytes{ {"b", 1}, {"B", 8} };
+    // numbers below the regex identify submatch indices
+    static const std::regex rxBandwidth("^([0-9]+)(([kMGT])(i?)([Bb])ps)?$");
+    //                                    1       23       4   5
+
+    std::smatch fields;
+
+    ETDCASSERT(std::regex_match(bandwidthstr, fields, rxBandwidth),
+               std::string("Invalid bandwidth string '") + bandwidthstr + "' [expect <number>{kMGT[i](Bb)ps]}");
+
+    // do computation in bits per second; UDT lib expects bytes / second
+    // so we do the conversion after that
+    //int64_t const maxbw = static_cast<int64_t>(
+    return max_bw( static_cast<int64_t>(
+                        std::stoll(fields[1].str()) * /* rate */
+                        etdc::get(bitsbytes, fields[5].str(), 8) * /* bytes vs bits; if field[5] == empty => no unit, use implicit bytes */
+                        (fields[2].str().empty() ?     /* any unit following? */
+                           1 : /* nope */
+                           etdc::detail::ipow( (fields[4].str().empty() ? 1024 : 1000), /* yes, base**exp */
+                                                etdc::get(exponents, fields[3].str(), 1) ))
+                ) / 8 ); /* and convert to bytes / second*/
+}
 
 namespace etdc {
     // set file descriptor in blocking or non-blocking mode
@@ -63,7 +93,9 @@ namespace etdc {
         std::ostringstream oss;
         oss << "<" << std::get<0>(sn) << "/" << bracket(std::get<1>(sn)) << ":" << std::get<2>(sn)
             // here is where the extra options are present
-            << "/mss=" << std::get<3>(sn) << ">";
+            << "/mss=" << std::get<3>(sn)
+            << ",max-bw=" << std::get<4>(sn)
+            << ">";
         return oss.str();
     }
 
@@ -77,12 +109,13 @@ namespace etdc {
 
 
         // The no-op function for not extracting MSS from the socket
-        static int no_mss_fn(int /*fd*/) { return 0; }
+        static int     no_mss_fn(int /*fd*/) { return 0; }
+        static int64_t no_bw_fn(int /*fd*/ ) { return 0; }
 
         // Template for getsockname/getpeername - it's all the same error
         // checking and return value creation, only which bit of the address
         // to process is different
-        template <int (*fptr)(int, struct sockaddr*, socklen_t*), int (*mss_fn)(int) = no_mss_fn>
+        template <int (*fptr)(int, struct sockaddr*, socklen_t*), int (*mss_fn)(int) = no_mss_fn, int64_t(*bw_fn)(int) = no_bw_fn>
         sockname_type ipv4_sockname(int fd, std::string const& p, std::string const& s) {
             socklen_t          len{ sizeof(struct sockaddr_in) };
             struct sockaddr_in saddr;
@@ -95,16 +128,24 @@ namespace etdc {
             ETDCASSERT( ::inet_ntop(AF_INET, &saddr.sin_addr.s_addr, addr_s, len)!=nullptr,
                         "inet_ntop() fails - "<< etdc::strerror(errno) );
 
+            auto  sn = mk_sockname(proto(p), host(addr_s), port(etdc::ntohs_(saddr.sin_port)));
+
             // Check if the MSS can be extracted
             const int mss_v{ mss_fn(fd) };
             if( mss_v )
-                return mk_sockname(proto(p), host(addr_s), port(etdc::ntohs_(saddr.sin_port)), mss(mss_v));
-            return mk_sockname(proto(p), host(addr_s), port(etdc::ntohs_(saddr.sin_port)));
+                etdc::update_sockname(sn, etdc::mss_type{mss_v});
+
+            const int64_t bw_v{ bw_fn(fd) };
+            if( bw_v==0 )
+                etdc::update_sockname(sn, etdc::max_bw_type{-1});
+            else
+                etdc::update_sockname(sn, max_bw(bw_v));
+            return sn;
         }
 
 
         // Id. for IPv6 - we need different sockaddr + addrstrlen and address family
-        template <int (*fptr)(int, struct sockaddr*, socklen_t*), int (*mss_fn)(int) = no_mss_fn>
+        template <int (*fptr)(int, struct sockaddr*, socklen_t*), int (*mss_fn)(int) = no_mss_fn, int64_t(*bw_fn)(int) = no_bw_fn>
         sockname_type ipv6_sockname(int fd, std::string const& p, std::string const& s) {
             socklen_t           len( sizeof(struct sockaddr_in6) );
             struct sockaddr_in6 saddr;
@@ -117,13 +158,21 @@ namespace etdc {
             ETDCASSERT( ::inet_ntop(AF_INET6, &saddr.sin6_addr, addr_s, len)!=nullptr,
                         "inet_ntop() fails - "<< etdc::strerror(errno) );
 
+            // IPv6 'coloned-hex' format does square brackets around it, to
+            // be able to separate it from the ":port" suffix
+            auto  sn = mk_sockname(proto(p), host(std::string("[")+addr_s+"]"), port(etdc::ntohs_(saddr.sin6_port)));
+
             // Check if the MSS can be extracted
             const int mss_v{ mss_fn(fd) };
             if( mss_v )
-                return mk_sockname(proto(p), host(std::string("[")+addr_s+"]"), port(etdc::ntohs_(saddr.sin6_port)), mss(mss_v));
-            // IPv6 'coloned-hex' format does square brackets around it, to
-            // be able to separate it from the ":port" suffix
-            return mk_sockname(proto(p), host(std::string("[")+addr_s+"]"), port(etdc::ntohs_(saddr.sin6_port)));
+                etdc::update_sockname(sn, etdc::mss_type{mss_v});
+
+            const int64_t bw_v{ bw_fn(fd) };
+            if( bw_v==0 )
+                etdc::update_sockname(sn, etdc::max_bw_type{-1});
+            else
+                etdc::update_sockname(sn, max_bw(bw_v));
+            return sn;
         }
     }
 
@@ -225,6 +274,12 @@ namespace etdc {
             etdc::udt_mss   mss;
             etdc::getsockopt(s, mss);
             return untag( mss );
+        }
+        // and one that extracts the UDT_MAXBW setting
+        static int64_t udt_maxbw_fn(int s) {
+            etdc::udt_max_bw   maxBW;
+            etdc::getsockopt(s, maxBW);
+            return untag( maxBW );
         }
 
         // provide correct wrappers around UDT::recv and UDT::send because
@@ -349,7 +404,7 @@ namespace etdc {
                                write_fn(std::bind(&detail::udtsend, _1, _2, _3, 0)),
                                close_fn( &UDT::close ),
                                getsockname_fn( [](int fd) {
-                                    return detail::ipv4_sockname<detail::udt_sockname, detail::udt_mss_fn>(fd, "udt", "getsockname"); } ),
+                                    return detail::ipv4_sockname<detail::udt_sockname, detail::udt_mss_fn, detail::udt_maxbw_fn>(fd, "udt", "getsockname"); } ),
                                getpeername_fn( [](int fd) {
                                     return detail::ipv4_sockname<detail::udt_peername>(fd, "udt", "getpeername"); } ),
                                // Setting blocking mode on an UDT socket is different 
@@ -386,7 +441,7 @@ namespace etdc {
 
         // Override the ones we need to for IPv6
         etdc::update_fd(*this, getsockname_fn( [](int fd) {
-                                    return detail::ipv6_sockname<detail::udt_sockname, detail::udt_mss_fn>(fd, "udt6", "getsockname"); } ),
+                                    return detail::ipv6_sockname<detail::udt_sockname, detail::udt_mss_fn, detail::udt_maxbw_fn>(fd, "udt6", "getsockname"); } ),
                                getpeername_fn( [](int fd) {
                                     return detail::ipv6_sockname<detail::udt_peername>(fd, "udt6", "getpeername"); } )
                         );

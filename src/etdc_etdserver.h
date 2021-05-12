@@ -38,11 +38,6 @@ namespace etdc {
     using result_type          = std::tuple<etdc::uuid_type, off_t>;
     using protocolversion_type = unsigned long int;
 
-
-    // protocol version dependent sockname2string 
-    std::string sockname2str_v0( sockname_type const& sn );
-    std::string sockname2str_v1( sockname_type const& sn );
-
     // return the appropropritate sockname conversion function based on
     // actual protocol version (taking into account "unknownProtocolVersion")
     // Syntax tip from: https://stackoverflow.com/a/52111752
