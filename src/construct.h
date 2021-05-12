@@ -113,7 +113,7 @@ namespace etdc {
 
         // Strip off one type and update it if we find an entry for it
         template <typename T, typename... Args>
-        unsigned int operator()(Class& object, T const&& value, Args... args) const {
+        unsigned int operator()(Class& object, T const& value, Args&&... args) const {
             auto         entry = __m_tpmap.find( key_fn<T>() );
             unsigned int n = 0;
 
