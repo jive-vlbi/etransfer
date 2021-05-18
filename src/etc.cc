@@ -123,6 +123,8 @@ std::basic_ostream<CharT, Traits>& operator<<(std::basic_ostream<CharT, Traits>&
 HUMANREADABLE(url_type, "URL")
 HUMANREADABLE(etdc::openmode_type, "file copy mode")
 HUMANREADABLE(std::chrono::duration<float>, "duration (s)")
+HUMANREADABLE(etdc::mss_type, "int")
+HUMANREADABLE(etdc::max_bw_type, "float")
 
 // Make sure our zignal handlert has C-linkage
 extern "C" {
@@ -431,17 +433,19 @@ int main(int argc, char const*const*const argv) {
     // Allow user to set network related options
 
     // UDT parameters
-    cmd.add( AP::store_into(untag(localState.udtMSS)), AP::long_name("udt-mss"), AP::at_most(1), 
-             AP::minimum_value(64), AP::maximum_value(64*1024), // UDP datagram limits
+    cmd.add( AP::store_into(localState.udtMSS), AP::long_name("udt-mss"), AP::at_most(1), 
+             AP::minimum_value( etdc::mss_type{64} ), AP::maximum_value( etdc::mss_type{64*1024} ), // UDP datagram limits
+             AP::convert([](std::string const& s) { return mss(s); }),
              AP::docstring(std::string("Set UDT maximum segment size. Not honoured if data channel is TCP or doing remote-to-remote transfers. Default ")+etdc::repr(untag(localState.udtMSS))) );
 
-    cmd.add( AP::store_into(untag(localState.udtMaxBW)), AP::long_name("udt-bw"), AP::at_most(1),
-             AP::convert([](std::string const& s) { return untag(max_bw(s)); }),
-             AP::constrain([](long long int v) { return v==-1 || v>0; }, "-1 (Inf) or > 0 for set rate"),
+    cmd.add( AP::store_into(localState.udtMaxBW), AP::long_name("udt-bw"), AP::at_most(1),
+             AP::convert([](std::string const& s) { return max_bw(s); }),
+             AP::constrain([](etdc::max_bw_type const& v) { return untag(v)==-1 || untag(v)>0; }, "-1 (Inf) or > 0 for set rate"),
              AP::docstring(std::string("Set UDT maximum bandwidth. Not honoured if data channel is TCP or doing remote-to-remote transfers. Default ")+etdc::repr(untag(localState.udtMaxBW))) );
 
     cmd.add( AP::store_into(localState.bufSize), AP::long_name("buffer"),
              AP::docstring(std::string("Set send/receive buffer size. Default ")+etdc::repr(localState.bufSize)) );
+
     // Flag wether or not to wait
     //cmd.add(AP::store_true(), AP::short_name('b'), AP::docstring("Do not exit but do a blocking read instead"));
 
