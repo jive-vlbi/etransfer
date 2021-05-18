@@ -376,8 +376,9 @@ etdc::ipport_type mk_ipport(T const& host, etdc::port_type port = etdc::any_port
 }
 
 template <typename T, typename U>
-etdc::sockname_type mk_sockname(T const& proto, U const& host, etdc::port_type port = etdc::any_port, etdc::mss_type mss = etdc::mss_type{1500}) {
-    return etdc::sockname_type(proto, host, port, mss);
+etdc::sockname_type mk_sockname(T const& proto, U const& host, etdc::port_type port = etdc::any_port,
+                                etdc::mss_type mss = etdc::mss_type{1500}, etdc::max_bw_type bw = etdc::max_bw_type{-1}) {
+    return etdc::sockname_type(proto, host, port, mss, bw);
 }
 
 template <typename T, typename... Args>
