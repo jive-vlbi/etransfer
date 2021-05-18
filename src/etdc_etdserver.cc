@@ -502,7 +502,6 @@ namespace etdc {
                 if( (cancelled = isCancelled()) )
                     break;
             }
-            auto const          end_tm = std::chrono::high_resolution_clock::now();
             // if we make it out of the loop, todo should be <= 0 and terminate the outer loop
             // wait here until the recipient has acknowledged receipt of all bytes
             // But that only makes sense if the destination is still alive!
@@ -514,6 +513,7 @@ namespace etdc {
                 transfer.data_fd->read(transfer.data_fd->__m_fd, &ack, 1);
                 ETDCDEBUG(4, "sendFile: ... got it" << std::endl);
             }
+            auto const          end_tm = std::chrono::high_resolution_clock::now();
             return cancelled ? xfer_result(false, 0, "Cancelled", xfer_result::duration_type()) :
                                xfer_result((todo==0), nTodo - todo, reason, (end_tm-start_tm));
         }
