@@ -93,9 +93,12 @@ namespace etdc {
                 // *now* we can see if we recognize anything
                 if( key=="mss" )
                     etdc::update_sockname(sn, mss(val));
-                else if( key=="max-bw" )
-                    etdc::update_sockname(sn, max_bw(val));
-                else
+                else if( key=="max-bw" ) {
+                    // check for value of "0" - which means that the data
+                    // channel does not have an explicit limit set
+                    if( val!="0" )
+                        etdc::update_sockname(sn, max_bw(val));
+                } else
                     ETDCDEBUG(0, "Server sent unsupported socket option '" << kv << "' - ignoring" << std::endl);
             }
         }
