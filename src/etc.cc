@@ -123,8 +123,8 @@ std::basic_ostream<CharT, Traits>& operator<<(std::basic_ostream<CharT, Traits>&
 HUMANREADABLE(url_type, "URL")
 HUMANREADABLE(etdc::openmode_type, "file copy mode")
 HUMANREADABLE(std::chrono::duration<float>, "duration (s)")
-HUMANREADABLE(etdc::mss_type, "int")
-HUMANREADABLE(etdc::max_bw_type, "float")
+HUMANREADABLE(etdc::mss_type, "int (bytes)")
+HUMANREADABLE(etdc::max_bw_type, "int (bytes per second)")
 
 // Make sure our zignal handlert has C-linkage
 extern "C" {
@@ -308,7 +308,18 @@ namespace etc {
 }
 
 
-enum display_format { continental, imperial };
+enum display_format { continental, imperial, invalid };
+std::ostream& operator<<(std::ostream& os, display_format const& dp) {
+    switch( dp ) {
+        case continental:
+            return os << "continental";
+        case imperial:
+            return os << "imperial";
+        default:
+            break;
+    }
+    return os << "<INVALID display format>";
+}
 
 
 int main(int argc, char const*const*const argv) {
@@ -356,33 +367,46 @@ int main(int argc, char const*const*const argv) {
     // message level: higher = more verbose
     cmd.add( AP::store_into(message_level), AP::short_name('m'),
              AP::maximum_value(5), AP::minimum_value(-1), AP::at_most(1),
-             AP::docstring("Message level - higher = more output") );
+             AP::docstring(std::string("Message level - higher = more output. Default: ")+etdc::repr(message_level)) );
 
-    // verbosity
+    // y
     cmd.add( AP::store_true(), AP::short_name('v'), AP::long_name("verbose"),
              AP::at_most(1), AP::docstring("Enable verbose output for each file transferred") );
 
     // display format
+    cmd.add( AP::long_name("display-format"), AP::store_into(display), AP::at_most(1),
+             AP::is_member_of({imperial, continental}),
+             AP::convert([](std::string const& s) {
+                            static std::map<std::string, display_format> fmtMap{ {"imperial", imperial}, {"continental", continental}};
+                            return etdc::get(fmtMap, s, invalid); 
+                            }),
+            AP::docstring(std::string("Use imperial (American/English) or continental (European) formatting for number representation. Default: ")+etdc::repr(display)) );
+#if 0
     cmd.addXOR(
         AP::option(AP::long_name("imperial"), AP::store_const_into(imperial, display),
                    AP::docstring(std::string("Use imperial (American/English) formatting for number representation")+(display == imperial ? " (default)" : ""))),
         AP::option(AP::long_name("continental"), AP::store_const_into(continental, display),
                    AP::docstring(std::string("Use continental (European) formatting for number representation")+(display == continental ? " (default)" : ""))) );
+#endif
 
     // How many times to retry file (so total # of tries is N+1) and how
     // long to wait between retries
     cmd.add( AP::long_name("max-retry"), AP::store_into(maxFileRetry),AP::at_most(1),
-             AP::docstring("Retry the file transfer this many times, so total number of attempts is N+1") );
+             AP::docstring(std::string("Retry the file transfer this many times, so total number of attempts is N+1. Default: ")+
+                           etdc::repr(maxFileRetry)) );
     cmd.add( AP::long_name("retry-delay"), AP::store_into(retryDelay), AP::at_most(1),
-             AP::docstring("How many seconds to wait between file retries"),
+             AP::docstring(std::string("How many seconds to wait between file retries, e.g 0.01 to wait a 10 milliseconds. Default: ")+
+                           etdc::repr(retryDelay.count())),
              AP::constrain([](std::chrono::duration<float> const& v) { return v.count()>= 0; }, "duration should be >= 0s"),
              AP::convert([](std::string const& s) { return std::chrono::duration<float>(std::stof(s)); }) );
 
     // For connections we have separate settings
     cmd.add( AP::long_name("max-conn-retry"), AP::store_into(etdc::untag(connRetry)),AP::at_most(1),
-             AP::docstring("Retry to connect this many times, so total number of attempts is N+1") );
+             AP::docstring(std::string("Retry to connect this many times, so total number of attempts is N+1. Default: ")+
+                           etdc::repr(etdc::untag(connRetry))) );
     cmd.add( AP::long_name("retry-conn-delay"), AP::store_into(etdc::untag(connDelay)), AP::at_most(1),
-             AP::docstring("How many seconds to wait between connection retries"),
+             AP::docstring(std::string("How many seconds to wait between connection retries, e.g. 3.5 to wait three and a half second between connection retries. Default: ")+
+                           etdc::repr(etdc::untag(connDelay).count())),
              AP::constrain([](std::chrono::duration<float> const& v) { return v.count()>= 0; }, "duration should be >= 0s"),
              AP::convert([](std::string const& s) { return std::chrono::duration<float>(std::stof(s)); }) );
 
@@ -436,15 +460,15 @@ int main(int argc, char const*const*const argv) {
     cmd.add( AP::store_into(localState.udtMSS), AP::long_name("udt-mss"), AP::at_most(1), 
              AP::minimum_value( etdc::mss_type{64} ), AP::maximum_value( etdc::mss_type{64*1024} ), // UDP datagram limits
              AP::convert([](std::string const& s) { return mss(s); }),
-             AP::docstring(std::string("Set UDT maximum segment size. Not honoured if data channel is TCP or doing remote-to-remote transfers. Default ")+etdc::repr(untag(localState.udtMSS))) );
+             AP::docstring("Set UDT maximum segment size in bytes. Not honoured if data channel is TCP or doing remote-to-remote transfers. Default: 1500") );
 
     cmd.add( AP::store_into(localState.udtMaxBW), AP::long_name("udt-bw"), AP::at_most(1),
              AP::convert([](std::string const& s) { return max_bw(s); }),
              AP::constrain([](etdc::max_bw_type const& v) { return untag(v)==-1 || untag(v)>0; }, "-1 (Inf) or > 0 for set rate"),
-             AP::docstring(std::string("Set UDT maximum bandwidth. Not honoured if data channel is TCP or doing remote-to-remote transfers. Default ")+etdc::repr(untag(localState.udtMaxBW))) );
+             AP::docstring("Set UDT maximum bandwidth. Without suffix the number is interpreted as bytes per second. A suffix of 'kMG[Bb]i?ps' is supported: Bps = bytes per second, bps = bits per second; i[Bb]ps is base-1024, [Bb]ps is base-1000. Bits per second will be recomputed and rounded to nearest integer bytes per second lower than the value. Not honoured if data channel is TCP or doing remote-to-remote transfers. Default: unlimited.") );
 
     cmd.add( AP::store_into(localState.bufSize), AP::long_name("buffer"),
-             AP::docstring(std::string("Set send/receive buffer size. Default ")+etdc::repr(localState.bufSize)) );
+             AP::docstring(std::string("Set send/receive buffer size in bytes. No kMG suffix supported. Default ")+etdc::repr(localState.bufSize)) );
 
     // Flag wether or not to wait
     //cmd.add(AP::store_true(), AP::short_name('b'), AP::docstring("Do not exit but do a blocking read instead"));
@@ -475,9 +499,9 @@ int main(int argc, char const*const*const argv) {
                     });
 
 
-    std::cout << "This client supports protocol version " << etdc::ETDServerInterface::currentProtocolVersion << std::endl;
+    ETDCDEBUG(4, "This client supports protocol version " << etdc::ETDServerInterface::currentProtocolVersion << std::endl);
     for(const auto srv: servers) {
-        std::cout << "Server protocol version: " << srv->protocolVersion() << std::endl;
+        ETDCDEBUG(4, "Server protocol version: " << srv->protocolVersion() << std::endl);
     }
 
     // Get the list of files to transfer (or to list if servers.size()==1)

@@ -460,11 +460,11 @@ typename std::enable_if<etdc::is_integer_number_type<T>::value, etdc::max_bw_typ
 // unit can be 
 //        empty                           [base 1]
 //        bytes
-//             kBps,  MBps,  GBps,  TBps  [base 1024]
-//             kiBps, MiBps, GiBps, TiBps [base 1000]
+//             kBps,  MBps,  GBps,  TBps  [base 1000]
+//             kiBps, MiBps, GiBps, TiBps [base 1024]
 //        bits
-//             kbps,  Mbps,  Gbps,  Tbps  [base 1024]
-//             kibps, Mibps, Gibps, Tibps [base 1000]
+//             kbps,  Mbps,  Gbps,  Tbps  [base 1000]
+//             kibps, Mibps, Gibps, Tibps [base 1024]
 etdc::max_bw_type max_bw(std::string const& bandwidthstr);
 
 // For everything else we attempt conversion to int64_t 

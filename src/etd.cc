@@ -307,12 +307,12 @@ int main(int argc, char const*const*const argv) {
     // Allow user to set network related options
     cmd.add( AP::store_into(sockopts.udtMSS), AP::long_name("udt-mss"), AP::at_most(1),
              AP::minimum_value((int)64), AP::maximum_value((int)65536), // UDP datagram limits
-             AP::docstring(std::string("Set UDT maximum segment size. Not honoured if data channel is TCP. Default: 1500")) );
+             AP::docstring(std::string("Set UDT maximum segment size in bytes. Not honoured if data channel is TCP. Default: 1500")) );
 
     // Allow server admin to limit bandwidth on data channels
     cmd.add( AP::store_into(sockopts.udtBW), AP::long_name("udt-bw"), AP::at_most(1), AP::minimum_value((int64_t)1), 
              AP::convert([](std::string const& s) { return untag(max_bw(s)); }),
-             AP::docstring(std::string("Set UDT maximum bandwidth to use. Can use SI prefixes kGM and [i](Bb)ps unit for base-1024 or base-1000 byte/bit rates. "
+             AP::docstring(std::string("Set UDT maximum bandwidth to use. Can use SI prefixes kGM and [i](Bb)ps unit for base-1024 (i[Bb]ps) or base-1000 ([Bb]ps) byte/bit rates. "
                                        "Note: the UDT library works with bytes-per-second (Bps) internally so rates specified in bits-per-second will be "
                                        "converted to bytes-per-second, possibly losing some precision. "
                                        "Not honoured for TCP data channels. Default value: unlimited, default unit Bps.")) );
