@@ -418,7 +418,7 @@ namespace etdc {
                     auto       oMSS{ untag(ourMSS) };
                     auto       tMSS{ untag(get_mss(addr)) };
                     const auto mss_to_use = mss_map.find( key_type{oMSS>0, tMSS>0} )->second(oMSS, tMSS);
-                    //etdc::udt_mss mss_to_use = mss_map.find( key_type{oMSS>0, tMSS>0} )->second(oMSS, tMSS);
+
                     ETDCDEBUG(4, "ETDServer::sendFile/use MSS=" << untag(mss_to_use) << " [ours=" << oMSS << ", "
                                                                 << get_host(addr) << "=" << tMSS << "]" << std::endl);
                     if( untag(mss_to_use) ) 
@@ -575,7 +575,7 @@ namespace etdc {
             // Great. Now we attempt to connect to the remote end
             const size_t            bufSz( 32*1024*1024 );
             const etdc::mss_type    ourMSS{ shared_state.udtMSS };
-            //const etdc::max_bw_type ourBW{ shared_state.udtMaxBW };
+            const etdc::max_bw_type ourBW{ shared_state.udtMaxBW };
             std::ostringstream      tried;
 
             for(auto addr: dataAddrs) {
@@ -586,20 +586,57 @@ namespace etdc {
                     // have a big read buffer
                     const auto    proto = get_protocol(addr);
                     auto          clnt  = etdc::detail::client_defaults.find( untag(proto) )->second();
-                    etdc::udt_mss mss_to_use{};
 
                     // Update client defaults with ours
                     etdc::detail::update_clnt( clnt, get_host(addr), get_port(addr), 
                                                      etdc::udt_rcvbuf{bufSz}, etdc::udt_sndbuf{bufSz},
                                                      etdc::so_rcvbuf{bufSz}, etdc::so_sndbuf{bufSz},
                                                      isCancelled );
+
                     // decide on which mss to use
-                    //untag(mss_to_use) = std::max((int)64, std::min(untag(ourMSS), untag(get_mss(addr))));
-                    untag(mss_to_use) = std::min(untag(ourMSS), untag(get_mss(addr)));
-                    ETDCDEBUG(4, "ETDServer::getFile/use MSS=" << untag(mss_to_use) << " [ours=" << untag(ourMSS) << ", "
-                                                                << get_host(addr) << "=" << untag(get_mss(addr)) << "]" << std::endl);
-//                    if( untag(mss_to_use) ) 
-//                        etdc::detail::update_clnt( clnt, mss_to_use );
+                    // If set to 0 (default) do not change
+                    using key_type    = std::pair<bool, bool>;
+                    using mssmap_type = std::map<key_type, std::function<etdc::udt_mss(int, int)>>;
+                    static const mssmap_type mss_map{
+                        // If both sides have an MSS setting, use the minimum
+                        {key_type{true, true},   [](int o, int t) { return etdc::udt_mss{ std::min(o, t)}; }},
+                        // either have one set? use that one
+                        {key_type{true, false},  [](int o, int  ) { return etdc::udt_mss{ o }; }},
+                        {key_type{false, true},  [](int  , int t) { return etdc::udt_mss{ t }; }},
+                        // neither have set it, don't set it here either
+                        {key_type{false, false}, [](int  , int  ) { return etdc::udt_mss{ 0 }; }}
+                    };
+
+                    auto       oMSS{ untag(ourMSS) };
+                    auto       tMSS{ untag(get_mss(addr)) };
+                    const auto mss_to_use = mss_map.find( key_type{oMSS>0, tMSS>0} )->second(oMSS, tMSS);
+
+                    ETDCDEBUG(4, "ETDServer::getFile/use MSS=" << untag(mss_to_use) << " [ours=" << oMSS << ", "
+                                                               << get_host(addr) << "=" << tMSS << "]" << std::endl);
+                    if( untag(mss_to_use) ) 
+                        etdc::detail::update_clnt( clnt, mss_to_use );
+
+                    // same applies to bandwidth constraints?
+                    auto     oBW{ untag(ourBW) };
+                    auto     tBW{ untag(get_max_bw(addr)) };
+
+                    // If either side has a bw restriction we adapt to that
+                    using maxbwmap_type = std::map<key_type, std::function<etdc::udt_max_bw(int64_t, int64_t)>>;
+                    static const maxbwmap_type maxbw_map{
+                        // both restricted - return minimum
+                        {key_type{true, true},   [](int64_t o, int64_t t) { return etdc::udt_max_bw{ std::min(o, t)}; }},
+                        {key_type{true, false},  [](int64_t o, int64_t  ) { return etdc::udt_max_bw{ o }; }},
+                        {key_type{false, true},  [](int64_t  , int64_t t) { return etdc::udt_max_bw{ t }; }},
+                        {key_type{false, false}, [](int64_t  , int64_t  ) { return etdc::udt_max_bw{ -1 }; }}
+                    };
+
+                    const auto maxbw = maxbw_map.find( key_type{oBW>0, tBW>0} )->second(oBW, tBW);
+
+                    ETDCDEBUG(4, "ETDServer::getFile/use MaxBW=" << untag(maxbw) << " [ours=" << oBW << ", "
+                                                                 << get_host(addr) << "=" << tBW << "]" << std::endl);
+
+                    etdc::detail::update_clnt( clnt, maxbw );
+
 
                     transfer.data_fd = mk_client( get_protocol(addr), clnt );
                     ETDCDEBUG(2, "getFile/connected to " << addr << std::endl);
@@ -656,7 +693,6 @@ namespace etdc {
                 if( (cancelled = isCancelled()) )
                     break;
             }
-            auto const end_tm = std::chrono::high_resolution_clock::now();
             // if we make it out of the loop, todo should be <= 0 and terminate the outer loop
             // Send ACK but only if it makes sense
             if( remoteOK && !cancelled ) {
@@ -665,6 +701,7 @@ namespace etdc {
                 transfer.data_fd->write(transfer.data_fd->__m_fd, &ack, 1);
                 ETDCDEBUG(4, "ETDServer::getFile/... done." << std::endl);
             }
+            auto const end_tm = std::chrono::high_resolution_clock::now();
             return cancelled ? xfer_result(false, 0, "Cancelled", xfer_result::duration_type()) :
                                xfer_result((todo==0), nTodo - todo, reason, (end_tm-start_tm));
         }
