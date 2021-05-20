@@ -369,9 +369,9 @@ int main(int argc, char const*const*const argv) {
              AP::maximum_value(5), AP::minimum_value(-1), AP::at_most(1),
              AP::docstring(std::string("Message level - higher = more output. Default: ")+etdc::repr(message_level)) );
 
-    // y
-    cmd.add( AP::store_true(), AP::short_name('v'), AP::long_name("verbose"),
-             AP::at_most(1), AP::docstring("Enable verbose output for each file transferred") );
+    // Verbose by default, silent on request
+    cmd.add( AP::store_false(), AP::short_name('s'), AP::long_name("silent"),
+             AP::at_most(1), AP::docstring("Disable verbose output for each file transferred") );
 
     // display format
     cmd.add( AP::long_name("display-format"), AP::store_into(display), AP::at_most(1),
@@ -481,7 +481,7 @@ int main(int argc, char const*const*const argv) {
 
     // The size of the list of URLs is a proxy wether to list or not; a
     // list of length one is only accepted if '--list URL' was given
-    const bool                        verbose = cmd.get<bool>("verbose");
+    const bool                        verbose = cmd.get<bool>("silent");
     std::vector<etdc::etd_server_ptr> servers;
 
     // Unblock the signal that can be used to wake us out of blocking system calls
