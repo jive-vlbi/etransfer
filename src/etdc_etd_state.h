@@ -59,6 +59,7 @@ namespace etdc {
         SkipExisting = ~(O_WRONLY | O_CREAT | O_APPEND) 
     };
 
+
     static const std::map<openmode_type, std::string> om2string{ 
         {openmode_type::New,    "New"},    {openmode_type::OverWrite, "OverWrite"},
         {openmode_type::Resume, "Resume"}, {openmode_type::Read,      "Read"},

@@ -45,6 +45,7 @@
 
 // Plain-old-C
 #include <fcntl.h>
+#include <unistd.h>
 #include <libgen.h>
 #include <net/if.h>
 #include <sys/stat.h>
@@ -280,6 +281,7 @@ namespace etdc {
             void setup_basic_fns( void );
     };
 
+
     namespace detail {
         std::string normalize_path(std::string const&);
         std::string dirname(std::string const&);
@@ -288,7 +290,40 @@ namespace etdc {
         // Introduce the template which whill recursively create directories if necessary
         template <typename... Args>
         int open_file(std::string const& path, int mode, Args&&...);
+
+        // Policies to handle the result of "open_file(...)"
+
+        // Standard issue of opening a file is: it should never fail with -1
+        struct FailureIsNotAnOption {
+            template <typename... Args>
+            int operator()(std::string const& path, Args&&... args) const {
+                int __m_fd;
+                ETDCSYSCALL( (__m_fd=detail::open_file(path, std::forward<Args>(args)...))!=-1,
+                             "failed to open/create '" << path << "' - " << etdc::strerror(errno) );
+                return __m_fd;
+            }
+        };
+        // This policy throws itself in case of EEXISTS.
+        // If the open fails with EEXISTS than it means the New file write was invoked
+        // and that error case should be singled out - see
+        //    https://github.com/jive-vlbi/etransfer/issues/7
+        struct ThrowOnExistThatShouldNotExist {
+            template <typename... Args>
+            int operator()(std::string const& path, Args&&... args) const {
+                int __m_fd = detail::open_file(path, std::forward<Args>(args)...);
+
+                // Did we encounter our special condition?
+                if( __m_fd==-1 && errno==EEXIST )
+                    throw ThrowOnExistThatShouldNotExist();
+
+                // Otherwise verify that the open did acutally succeed
+                ETDCSYSCALL( __m_fd!=-1, "failed to open/create '" << path << "' - " << etdc::strerror(errno) );
+                return __m_fd;
+            }
+        };
     }
+
+    template <typename OpenFilePolicy = detail::FailureIsNotAnOption>
     struct etdc_file:
         public etdc_fd
     {
@@ -297,13 +332,28 @@ namespace etdc {
         // Take extra arguments that we can forward to ::open(2)
         template <typename... Args>
         explicit etdc_file(std::string const& path, Args&&... args) {
-            ETDCSYSCALL( (__m_fd=detail::open_file(path, std::forward<Args>(args)...))!=-1,
-                         "failed to open/create '" << path << "' - " << etdc::strerror(errno) );
+            static OpenFilePolicy openFilePolicy{};
+            __m_fd = openFilePolicy(path, std::forward<Args>(args)...);
             setup_basic_fns();
         }
 
         private:
-            void setup_basic_fns( void );
+            ////////////////////////////////////////////////////////////////
+            //   I/O to a regular file
+            ////////////////////////////////////////////////////////////////
+            void setup_basic_fns( void ) {
+                // Update basic read/write/close functions
+                // and on files seek() makes sense!
+                etdc::update_fd(*this, read_fn(&::read), write_fn(&::write), close_fn(&::close),
+                                       setblocking_fn(&setfdblockingmode),
+                                       // we wrap the ::lseek() inna error check'n lambda dat does error check'n
+                                       lseek_fn([](int fd, off_t offset, int whence) { 
+                                           off_t  rv;
+                                           ETDCASSERT((rv=::lseek(fd, offset, whence))!=(off_t)-1, "lseek fails - " << etdc::strerror(errno));
+                                           return rv;
+                                       })
+                );
+            }
     };
 
     namespace detail {

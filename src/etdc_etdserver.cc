@@ -211,7 +211,9 @@ namespace etdc {
 
         // Note: etdc_file(...) c'tor will create the whole directory tree if necessary.
         //       Because it may/may not have to create, we add the file permission bits
-        etdc_fdptr      fd( nPath=="/dev/null" ? mk_fd<devzeronull>(nPath, omode) : mk_fd<etdc_file>(nPath, omode, 0644) );
+        etdc_fdptr      fd( nPath=="/dev/null" ? mk_fd<devzeronull>(nPath, omode) :
+                            (mode==openmode_type::New ? mk_fd<etdc_file<detail::ThrowOnExistThatShouldNotExist>>(nPath, omode, 0644) :
+                                                        mk_fd<etdc_file<>>(nPath, omode, 0644)) );
         const off_t     fsize{ fd->lseek(fd->__m_fd, 0, SEEK_END) };
         //const uuid_type uuid{ uuid_type::mk() };
 
@@ -252,7 +254,7 @@ namespace etdc {
         // Note: etdc_file(...) c'tor will create the whole directory tree if necessary.
         // Because openmode is read, then we don't have to pass the file permissions; either it's there or it isn't
         //etdc_fdptr      fd( new etdc_file(nPath, omode) );
-        etdc_fdptr      fd( std::regex_match(nPath, etdc::rxDevZero) ? mk_fd<devzeronull>(nPath, omode) : mk_fd<etdc_file>(nPath, omode) );
+        etdc_fdptr      fd( std::regex_match(nPath, etdc::rxDevZero) ? mk_fd<devzeronull>(nPath, omode) : mk_fd<etdc_file<>>(nPath, omode) );
         const off_t     sz{ fd->lseek(fd->__m_fd, 0, SEEK_END) };
         //const uuid_type uuid{ uuid_type::mk() };
 
@@ -573,7 +575,7 @@ namespace etdc {
                        "This server was initialized, but not for writing to file");
 
             // Great. Now we attempt to connect to the remote end
-            const size_t            bufSz( 32*1024*1024 );
+            const size_t            bufSz( shared_state.bufSize );
             const etdc::mss_type    ourMSS{ shared_state.udtMSS };
             const etdc::max_bw_type ourBW{ shared_state.udtMaxBW };
             std::ostringstream      tried;
@@ -920,6 +922,16 @@ namespace etdc {
         // We must have consumed all output from the server
         ETDCASSERT(curPos==0, "requestFileWrite: there are " << curPos << " unconsumed server bytes left in the input. This is likely a protocol error.");
         // We must have seen a success reply
+        // Update: if the info contains the string 'File exists' we
+        // translate the error into the magic "exist that should not exist"
+        // error code
+        // If the user has not changed their system language it may even
+        // work with older versions of the daemon that send the strerror(3)
+        // message literally *fingers crossed*
+        // (Daemon w/ protocol version 1 and up send 'File exists' always.
+        if( info.find("File exists")!=std::string::npos )
+            throw etdc::detail::ThrowOnExistThatShouldNotExist{};
+
         ETDCASSERT(status_s=="OK", "requestFileWrite(" << file << ") failed - " << (info.empty() ? "<unknown reason>" : info));
         // And we must have received both a UUID as well as an AlreadyHave
         ETDCASSERT(filePos && curUUID, "requestFileWrite: the server did NOT send all required fields");
@@ -1424,6 +1436,10 @@ namespace etdc {
                 catch( std::string const& e ) {
                     ETDCDEBUG(-1, "ETDServerWrapper: terminating because of condition " << e << std::endl);
                     terminated = true;
+                }
+                catch( etdc::detail::ThrowOnExistThatShouldNotExist const& ) {
+                    // Thrown as result on request file write
+                    replies.emplace_back( "ERR File exists" );
                 }
                 catch( std::exception const& e ) {
                     replies.emplace_back( std::string("ERR ")+e.what() );

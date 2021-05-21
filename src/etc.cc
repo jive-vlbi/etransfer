@@ -650,13 +650,23 @@ int main(int argc, char const*const*const argv) {
                     }
                 }
             }
-            catch( const std::exception& e ) {
+            catch( std::exception const& e ) {
                 ETDCDEBUG(3, "Got exception: " << e.what() << std::endl);
                 eptr = std::current_exception();
             }
+            catch( etdc::detail::ThrowOnExistThatShouldNotExist const& ) {
+                eptr = std::current_exception();
+                // This one signifies that the file existed on the remote
+                // end and the file-write mode was not any of OverWrite, Resume or SkipExisting
+                // So basically need to tell the user she/he's bein' a DOMBÅS (IKEA cupboard ;-))
+                ETDCDEBUG(-1, "Destination file exists and default file copy mode 'New' prevents overwriting/appending/skipping." << std::endl);
+                // Trigger end-of-program
+                finished   = true;
+                nFileRetry = maxFileRetry;
+            }
             catch( ... ) {
                 eptr = std::current_exception();
-                ETDCDEBUG(3, "Got unknown exception: " << std::endl);
+                ETDCDEBUG(3, "Got unknown exception" << std::endl);
             } 
 //std::cerr << "And we're outside the try/catch block" << std::endl;
             // ..->removeUUID() may throw, but we really must try to do them

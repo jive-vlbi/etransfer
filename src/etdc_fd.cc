@@ -450,23 +450,6 @@ namespace etdc {
     etdc_udt6::~etdc_udt6() {}
 
 
-    ////////////////////////////////////////////////////////////////
-    //   I/O to a regular file
-    ////////////////////////////////////////////////////////////////
-    void etdc_file::setup_basic_fns( void ) {
-        // Update basic read/write/close functions
-        // and on files seek() makes sense!
-        etdc::update_fd(*this, read_fn(&::read), write_fn(&::write), close_fn(&::close),
-                               setblocking_fn(&setfdblockingmode),
-                               // we wrap the ::lseek() inna error check'n lambda dat does error check'n
-                               lseek_fn([](int fd, off_t offset, int whence) { 
-                                   off_t  rv;
-                                   ETDCASSERT((rv=::lseek(fd, offset, whence))!=(off_t)-1, "lseek fails - " << etdc::strerror(errno));
-                                   return rv;
-                               })
-        );
-    }
-
     namespace detail {
         // normalize path according to http://en.cppreference.com/w/cpp/filesystem/path
         // but we limit ourselves to '/' as preferred path separator.
