@@ -124,7 +124,9 @@ dbgMap = {
 
 // Introduce a readable overload for a fdptr so it'll render human readable
 // in the automatically generated help
-HUMANREADABLE(etdc::etdc_fdptr, "address")
+HUMANREADABLE(etdc::etdc_fdptr,  "address")
+HUMANREADABLE(etdc::mss_type,    "int (bytes)")
+HUMANREADABLE(etdc::max_bw_type, "int (bytes per second)");
 
 // Let's make the URL syntax at least somewhat similar to that of the client:
 //     protocol://[local address][:port]
@@ -155,12 +157,12 @@ static std::string unbracket(std::string const& h) {
 struct socketoptions_type {
 
     socketoptions_type():
-        udtMSS{ 0 }, bufSize{ 32*1024*1024 }, udtBW{ 0 }
+        bufSize{ 32*1024*1024 }, udtMSS{ 0 }, udtBW{ 0 }
     {}
 
-    int     udtMSS;
-    size_t  bufSize;
-    int64_t udtBW;
+    size_t            bufSize;
+    etdc::mss_type    udtMSS;
+    etdc::max_bw_type udtBW;
 };
 
 
@@ -192,11 +194,11 @@ struct string2socket_type_m {
                 etdc::blocking_type{ true });
 
         // Any options overridden on the command line?
-        if( __m_sockopts.udtMSS )
-            etdc::detail::update_srv( srvr, etdc::udt_mss{ __m_sockopts.udtMSS } );
+        if( untag(__m_sockopts.udtMSS) )
+            etdc::detail::update_srv( srvr, etdc::udt_mss{ untag(__m_sockopts.udtMSS) } );
 
-        if( __m_sockopts.udtBW )
-            etdc::detail::update_srv( srvr, etdc::udt_max_bw{ __m_sockopts.udtBW } );
+        if( untag(__m_sockopts.udtBW) )
+            etdc::detail::update_srv( srvr, etdc::udt_max_bw{ untag(__m_sockopts.udtBW) } );
 
         fd = mk_server( untag(proto), srvr );
 
@@ -302,20 +304,19 @@ int main(int argc, char const*const*const argv) {
     // message level: higher = more verbose
     cmd.add( AP::store_into(message_level), AP::short_name('m'),
              AP::maximum_value(5), AP::minimum_value(-1), AP::at_most(1),
-             AP::docstring("Message level - higher = more output") );
+             AP::docstring(std::string("Message level - higher = more output. Default: ")+etdc::repr(message_level)) );
 
     // Allow user to set network related options
     cmd.add( AP::store_into(sockopts.udtMSS), AP::long_name("udt-mss"), AP::at_most(1),
-             AP::minimum_value((int)64), AP::maximum_value((int)65536), // UDP datagram limits
+             AP::minimum_value( etdc::mss_type{64} ), AP::maximum_value( etdc::mss_type{65536} ), // UDP datagram limits
+             AP::convert([](std::string const& s) { return mss(s); }),
              AP::docstring(std::string("Set UDT maximum segment size in bytes. Not honoured if data channel is TCP. Default: 1500")) );
 
     // Allow server admin to limit bandwidth on data channels
-    cmd.add( AP::store_into(sockopts.udtBW), AP::long_name("udt-bw"), AP::at_most(1), AP::minimum_value((int64_t)1), 
-             AP::convert([](std::string const& s) { return untag(max_bw(s)); }),
-             AP::docstring(std::string("Set UDT maximum bandwidth to use. Can use SI prefixes kGM and [i](Bb)ps unit for base-1024 (i[Bb]ps) or base-1000 ([Bb]ps) byte/bit rates. "
-                                       "Note: the UDT library works with bytes-per-second (Bps) internally so rates specified in bits-per-second will be "
-                                       "converted to bytes-per-second, possibly losing some precision. "
-                                       "Not honoured for TCP data channels. Default value: unlimited, default unit Bps.")) );
+    cmd.add( AP::store_into(sockopts.udtBW), AP::long_name("udt-bw"), AP::at_most(1),
+             AP::convert([](std::string const& s) { return max_bw(s); }),
+             AP::docstring("Set UDT maximum bandwidth. Without suffix the number is interpreted as bytes per second. A suffix of 'kMG[Bb]i?ps' is supported: Bps = bytes per second, bps = bits per second; i[Bb]ps is base-1024, [Bb]ps is base-1000. Bits per second will be recomputed and rounded to nearest integer bytes per second lower than the value. Not honoured if data channel is TCP or doing remote-to-remote transfers. Default: unlimited.") );
+
 
     cmd.add( AP::store_into(sockopts.bufSize), AP::long_name("buffer"), AP::at_most(1),
              AP::docstring(std::string("Set send/receive buffer size. Default ")+etdc::repr(sockopts.bufSize)) );
@@ -383,8 +384,8 @@ int main(int argc, char const*const*const argv) {
     serverState.bufSize = sockopts.bufSize;
     if( sockopts.udtMSS )
         serverState.udtMSS = sockopts.udtMSS;
-    if( sockopts.udtBW>0 )
-        serverState.udtMaxBW = sockopts.udtBW;
+    if( untag(sockopts.udtBW)>0 )
+        serverState.udtMaxBW = untag(sockopts.udtBW);
 
     // data servers first such that the command servers know which data ports are available
     for(auto&& datasrv: cmd.get<std::list<std::string>>("data")) {
