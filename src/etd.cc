@@ -126,7 +126,7 @@ dbgMap = {
 // in the automatically generated help
 HUMANREADABLE(etdc::etdc_fdptr,  "address")
 HUMANREADABLE(etdc::mss_type,    "int (bytes)")
-HUMANREADABLE(etdc::max_bw_type, "int (bytes per second)");
+HUMANREADABLE(etdc::max_bw_type, "int (bytes per second)")
 
 // Let's make the URL syntax at least somewhat similar to that of the client:
 //     protocol://[local address][:port]
