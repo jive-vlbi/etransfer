@@ -19,6 +19,8 @@ protocol is orders of magnitude faster on long, fat, network connections.
     with `<size>` being `<number>[kMGT]B` to indicate how many bytes to
     transfer.
 
+[`Version 1.0`](https://github.com/jive-vlbi/etransfer/releases/tag/v1.0) was tagged on May 25 2021.
+Building a tagged version consists of downloading the `.tar.gz` or `.zip` archive, extracting it, and then executing `make` in the `etransfer` directory.
 
 ## After cloning ...
 The code uses [[C++11](https://en.wikipedia.org/wiki/C%2B%2B11)] so a
