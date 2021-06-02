@@ -19,7 +19,9 @@ multiple files irrespective of wether they are remote or local.
     with `<size>` being `<number>[kMGT]B` to indicate how many bytes to
     transfer.
 
+[`Version 1.0.1`](https://github.com/jive-vlbi/etransfer/releases/tag/v1.0.1) was tagged on Jun 02 2021; bug in v1.0 found after release: superfluous comma in regex for multiple data channel "parsing"
 [`Version 1.0`](https://github.com/jive-vlbi/etransfer/releases/tag/v1.0) was tagged on May 25 2021.
+
 Building a tagged version consists of downloading the `.tar.gz` or `.zip` archive, extracting it, and then executing `make` in the `etransfer` directory.
 
 ## After cloning ...
