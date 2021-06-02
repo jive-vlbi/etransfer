@@ -7,9 +7,9 @@ data does not flow through the client's machine and/or network.
 - The system natively supports remote wildcards; it is possible to transfer
 multiple files irrespective of wether they are remote or local.
 
-- The etransfer tools support TCP and
-  [[UDT](https://github.com/netvirt/udt4)] over both IPv4 and IPv6. The UDT
-protocol is orders of magnitude faster on long, fat, network connections.
+- The etransfer tools support TCP and [UDT](https://github.com/netvirt/udt4) over both IPv4 and IPv6. The UDT protocol is orders of magnitude faster on long, fat, network connections.
+
+- Single e-transfer daemon command and data channels are sufficient to support multiple parallel clients. The daemon allows specifiying multiple command and/or data channels for the purpose of offering the service over multiple protocols or to fine-tune support of specific protocol(s) on specific interfaces, see [Example](#Example).
 
 - The etransfer tools do not yet have authentication or authorization built in.
 
@@ -23,7 +23,7 @@ protocol is orders of magnitude faster on long, fat, network connections.
 Building a tagged version consists of downloading the `.tar.gz` or `.zip` archive, extracting it, and then executing `make` in the `etransfer` directory.
 
 ## After cloning ...
-The code uses [[C++11](https://en.wikipedia.org/wiki/C%2B%2B11)] so a
+The code uses [C++11](https://en.wikipedia.org/wiki/C%2B%2B11) so a
 suitable, C++11 compliant compiler is necessary.
 
 ```bash
@@ -122,3 +122,60 @@ is short for:
 ```bash
     server$ .../etd --command tcp://0.0.0.0:4004 --data udt://0.0.0.0:8008
 ```
+
+
+## Example
+
+On a multi-homed server with e.g. an internal network interface
+(non-routable) and an external one, the `etd` server administrator may want
+to offer a `tcp` based data channel on the internal interface (within a data
+centre `tcp` is faster than `udt`) whilst on the external interface it will
+offer the `udt` protocol:
+
+```bash
+    server$ .../etd --command tcp:// --data tcp://192.168.1.20 --data udt://192.42.120.32 ...
+```
+
+Explanation:
+
+A single, `tcp` based, command channel is enough to service all clients. The
+server will communicate the available data channels to the client in the
+order they were listed on its command line. The client will attempt to
+connect to all data channels in the received order and use the first
+channel that succesfully connects.
+
+In the example above, clients will first try to connect to the (unroutable) IP
+address, meaning that internal clients will use that one. External clients
+will see that connection attempt fail and will attempt to connect to the
+next data channel, in this case the `udt` one.
+
+
+Using multiple data channels it is possible to indicate a preference to use
+`tcp over IPv6` for the data by running the daemon like this:
+
+```bash
+    server$ .../etd --command tcp:// --command tcp6:// --data tcp6://192.168.1.20 --data tcp://192.168.1.20 ...
+```
+
+Explanation: `IPv6` and `IPv4` are separate address spaces so having the
+same port number should not collide. For the command channels the order does
+not matter since the user chooses on the `etc` command line which service
+(`tcp` or `tcp6`) to connect to.
+
+In this configuration a client connecting to the daemon's`tcp6` command channel may still end up using the `tcp over IPv4` data channel. If this is undesired the daemon should be
+started twice; once with `tcp` command+data channels and once with a `tcp6`
+command+data channels:
+
+```bash
+    server$ .../etd --command tcp:// --data tcp://192.168.1.20 --data udt://:8009
+    server$ .../etd --command tcp6:// --data tcp6://192.168.1.20 --data udt6://:8009 ...
+```
+
+> Note: for some unknown reason it is not very stable to run `udt` and
+> `tcp` data channels on the same port number, even though these protocols
+> _should_ be separate address spaces. 
+
+In case of problems with this (same port number on different address spaces)
+it should be easy enough to run the different protocols on different ports -
+it's transparent to the client, modulo firewall configuration(s) blocking
+those port(s) at either end of the transfer.
