@@ -1370,7 +1370,7 @@ namespace etdc {
 
                         string2off_t(fields[3].str(), todo);
                         // transform data channel addresses into list-of-*
-                        static const std::regex data_sep("<[^>]+>,?");
+                        static const std::regex data_sep( "<[^>]+>" );
                         std::transform( std::sregex_iterator(std::begin(dataAddrs_s), std::end(dataAddrs_s), data_sep),
                                         std::sregex_iterator(), std::back_inserter(dataAddrs), 
                                         [](std::smatch const& sm) { return decode_data_addr(sm.str()); });
