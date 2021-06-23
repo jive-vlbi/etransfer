@@ -27,6 +27,7 @@
 #include <etdc_resolve.h>
 #include <etdc_assert.h>
 #include <etdc_debug.h>
+#include <etdc_ctrlc.h>
 #include <construct.h>
 #include <reentrant.h>
 #include <tagged.h>
@@ -48,6 +49,7 @@
 #include <unistd.h>
 #include <libgen.h>
 #include <net/if.h>
+#include <pthread.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -997,7 +999,20 @@ namespace etdc {
                             etdc::setsockopt(pSok->__m_fd, clnt.rcvBufSize);
 
                         // Make sure sokkit is in correct blocking mode
+                        // XXX FIXME TODO The requested blocking mode should
+                        //                be set *after* a succesful connect()
+                        //                connect should be done in a
+                        //                predefined mode, to make the
+                        //                connect() call work predictably
                         pSok->setblocking(pSok->__m_fd, etdc::untag(clnt.blocking));
+
+                        pthread_t  tid = ::pthread_self();
+                        etdc::ScopedAction intrpt( etdc::ControlCAction([=](int s) {
+                                ::close( pSok->__m_fd );
+                                // need to kick this thread to make it
+                                // realize the filedescriptor's gone
+                                ::pthread_kill(tid, s);
+                            }) );
 
                         // Connect
                         ETDCSYSCALL(::connect(pSok->__m_fd, reinterpret_cast<struct sockaddr const*>(&sa), sl)==0,
@@ -1033,6 +1048,11 @@ namespace etdc {
                             etdc::setsockopt(pSok->__m_fd, clnt.rcvBufSize);
 
                         // Make sure sokkit is in correct blocking mode
+                        // XXX FIXME TODO The requested blocking mode should
+                        //                be set *after* a succesful connect()
+                        //                connect should be done in a
+                        //                predefined mode, to make the
+                        //                connect() call work predictably
                         pSok->setblocking(pSok->__m_fd, etdc::untag(clnt.blocking));
 
                         // Connect
@@ -1070,6 +1090,11 @@ namespace etdc {
                             etdc::setsockopt(pSok->__m_fd, clnt.udpRcvBufSize);
 
                         // Make sure sokkit is in correct blocking mode
+                        // XXX FIXME TODO The requested blocking mode should
+                        //                be set *after* a succesful connect()
+                        //                connect should be done in a
+                        //                predefined mode, to make the
+                        //                connect() call work predictably
                         pSok->setblocking(pSok->__m_fd, etdc::untag(clnt.blocking));
 
                         // Connect
@@ -1113,8 +1138,12 @@ namespace etdc {
                             etdc::setsockopt(pSok->__m_fd, clnt.udpRcvBufSize);
 
                         // Make sure sokkit is in correct blocking mode
+                        // XXX FIXME TODO The requested blocking mode should
+                        //                be set *after* a succesful connect()
+                        //                connect should be done in a
+                        //                predefined mode, to make the
+                        //                connect() call work predictably
                         pSok->setblocking(pSok->__m_fd, etdc::untag(clnt.blocking));
-
                         // Connect
                         ETDCSYSCALL(UDT::connect(pSok->__m_fd, reinterpret_cast<struct sockaddr const*>(&sa), sl)!=UDT::ERROR,
                                     "connecting to udt6[" << sa << "] - " << UDT::getlasterror().getErrorMessage());

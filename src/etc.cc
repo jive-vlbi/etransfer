@@ -25,6 +25,7 @@
 #include <etdc_stringutil.h>
 #include <etdc_streamutil.h>
 #include <etdc_sciprint.h>
+#include <etdc_ctrlc.h>
 #include <argparse.h>
 
 // C++ standard headers
@@ -144,6 +145,7 @@ using unique_result   = std::unique_ptr<etdc::result_type>;
 // does takes affirmative action to cancel any transfers and "kill" the
 // indicated thread using the KillSignal when done.
 #define KILLMAINSIGNAL SIGUSR1
+#define KILLINTRSIGNAL SIGUSR2
 
 template <int KillSignal>
 static void signal_thread( signallist_type const& sigs, pthread_t tid,
@@ -209,11 +211,7 @@ static void signal_thread( signallist_type const& sigs, pthread_t tid,
     ETDCDEBUG(2, "sigwaiterthread: done." << std::endl);
 }
 
-using unique_result = std::unique_ptr<etdc::result_type>;
-template <int KillSignal>
-static void signal_thread_new(signallist_type const& sigs, pthread_t tid,
-                              std::atomic<bool>& cancelled, std::mutex& mtx, std::vector<etdc::etd_server_ptr>& servers,
-                              unique_result (&results)[2]) {
+static void interrupt_connect(signallist_type const& sigs, etdc::etd_state& state) {
     int       received;
     sigset_t  sset;
 
@@ -226,49 +224,19 @@ static void signal_thread_new(signallist_type const& sigs, pthread_t tid,
     for(auto s: sigs)
         sigaddset(&sset, s);
 
-    ETDCDEBUG(4, "sigwaiterthread: enter wait phase" << endl);
+    ETDCDEBUG(4, "interrupt_connect: enter wait phase" << endl);
     // ... and wait for any of them to happen
     ::sigwait(&sset, &received);
-    ETDCDEBUG(4, "sigwaiterthread: got signal " << received << endl);
+    ETDCDEBUG(4, "interrupt_connect: got signal " << received << endl);
 
-    // Do the magic on the etransfer state
-    std::atomic_store(&cancelled, true);
+    // Only do our magic if we weren't told to shut down normally
+    if( received!=KILLINTRSIGNAL ) {
+        // Do the magic on the etransfer state
+        std::atomic_store(&state.cancelled, true);
 
-    // Grab the lock on the pointers 
-    // so we can modify stuff
-    etdc::scoped_lock   lk( mtx );
-
-    // (try to) break down from back to front
-    // note: we MUST TRY ALL OF THEM
-    // so we cannot put them all in a single try-catch;
-    // a failure to close the first one does not imply
-    // that we cannot close the second one.
-    // And since the functions throw on wonky we must catch them separately
-    try {
-        if( results[1]  ) {
-            auto uuid = etdc::get_uuid(*results[1] );
-            ETDCDEBUG(4, "sigwaiterthread: removing DST uuid  " << uuid << std::endl);
-            servers[1]->removeUUID( uuid );
-            // after the UUID's been removed no need keeping the result around
-            results[1].reset( nullptr );
-        }
+        // Now run all installed handlers
+        etdc::handleActions( received );
     }
-    catch( ... ) { }
-    try {
-        if( results[0]  ) {
-            auto uuid = etdc::get_uuid(*results[0] );
-            ETDCDEBUG(4, "sigwaiterthread: removing SRC uuid  " << uuid << std::endl);
-            servers[0]->removeUUID( etdc::get_uuid(*results[0] ) );
-            // after the UUID's been removed no need keeping the result around
-            results[0].reset( nullptr );
-        }
-    }
-    catch( ... ) { }
-
-    // Now signal the main thread - blocking functions must be kicked so
-    // they can drop out of themselves with e.g. invalid file descriptor
-    ::pthread_kill(tid, KillSignal);
-    ETDCDEBUG(2, "sigwaiterthread: done." << std::endl);
 }
 
 struct socketoptions_type {
@@ -287,8 +255,20 @@ namespace etc {
 
     template <typename... Args>
     auto mk_etdproxy(Args&&... args) -> decltype( ::mk_etdserver(std::forward<Args>(args)...) ) {
+        decltype( ::mk_etdserver(std::forward<Args>(args)...) )  rv;
         // If the initial connection already fails we "pass on" the exception
-        auto rv = ::mk_etdproxy( std::forward<Args>(args)... );
+        try {
+            rv = ::mk_etdproxy( std::forward<Args>(args)... );
+        }
+        catch( std::exception const& e ) {
+            ETDCDEBUG(-1, "Failed to create etdproxy: " << e.what() << std::endl);
+            return nullptr;
+        }
+        catch( ... ) {
+            ETDCDEBUG(-1, "Failed to create etdproxy (unknown exception)" << std::endl);
+            return nullptr;
+        }
+
         try {
             // the real trial is to execute this one. If this fails the
             // remote end hung up becaus it didn't support the protocol
@@ -490,13 +470,35 @@ int main(int argc, char const*const*const argv) {
     // handling the signal by someone else (the sigwaiter thread, to be
     // precise)
     etdc::UnBlock                     s({KILLMAINSIGNAL});
+    etdc::detail::cancelfn_type       isCancelled{ [&]( void ) { return localState.cancelled.load(); } };
+
     etdc::install_handler(dummy_signal_handler, {KILLMAINSIGNAL});
 
     // We must transform the URL(s) into ETDServerInterface* 
-    std::transform(std::begin(urls), std::end(urls), std::back_inserter(servers),
-                   [&](url_type const& url) {
-                        return url.isLocal ? ::mk_etdserver(std::ref(localState)) : etc::mk_etdproxy(url.protocol, url.host, url.port, connRetry, connDelay);
-                    });
+    {
+        std::thread                 thrd = etdc::thread(&interrupt_connect,
+                                                        signallist_type{{SIGINT, SIGTERM, SIGHUP, KILLINTRSIGNAL}},
+                                                        std::ref(localState));
+        auto                        native_id = thrd.native_handle();
+
+        std::transform(std::begin(urls), std::end(urls), std::back_inserter(servers),
+                       [&](url_type const& url) {
+                            if( isCancelled() )
+                                return etdc::etd_server_ptr();
+                            return url.isLocal ? ::mk_etdserver(std::ref(localState)) :
+                                                 etc::mk_etdproxy(url.protocol, url.host, url.port,
+                                                                  connRetry, connDelay, isCancelled) ;
+                        });
+        // If we weren't interrupted, we must kill the signal handling thread
+        if( !isCancelled() )
+            ::pthread_kill(native_id, SIGUSR2);
+        thrd.join();
+    }
+
+    if( isCancelled() ) {
+        ETDCDEBUG(-1, "Program startup cancelled by user" << std::endl);
+        return -1;
+    }
 
 
     ETDCDEBUG(4, "This client supports protocol version " << etdc::ETDServerInterface::currentProtocolVersion << std::endl);
