@@ -46,6 +46,7 @@
 
 // Plain-old-C
 #include <fcntl.h>
+#include <signal.h>   // somehow, pthread_kill() lives here on Loonix?!
 #include <unistd.h>
 #include <libgen.h>
 #include <net/if.h>
