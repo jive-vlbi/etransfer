@@ -203,7 +203,7 @@ struct string2socket_type_m {
         fd = mk_server( untag(proto), srvr );
 
         auto socknm =  fd->getsockname(fd->__m_fd);
-        ETDCDEBUG(2, "etd: server is-at " << socknm << endl);
+        ETDCDEBUG(1, "etd: server is-at " << socknm << endl);
         dbgMap[get_protocol(socknm)](fd, "server"); 
         return fd;
    }
@@ -387,6 +387,7 @@ int main(int argc, char const*const*const argv) {
     if( untag(sockopts.udtBW)>0 )
         serverState.udtMaxBW = untag(sockopts.udtBW);
 
+    ETDCDEBUG(1, "main: opening data channel(s)" << endl);
     // data servers first such that the command servers know which data ports are available
     for(auto&& datasrv: cmd.get<std::list<std::string>>("data")) {
         auto srv = mk_data( datasrv );
@@ -395,9 +396,11 @@ int main(int argc, char const*const*const argv) {
         serverState.add_thread(&data_server_thread<SIGUSR2>, srv, std::ref(serverState));
     }
 
+    ETDCDEBUG(1, "main: opening command channel(s)" << endl);
     for(auto&& cmdsrv: cmd.get<std::list<std::string>>("command"))
         serverState.add_thread(&command_server_thread<SIGUSR1>, mk_cmd(cmdsrv), std::ref(serverState));
 
+    ETDCDEBUG(1, "main: enter operational phase" << endl);
     // Now just wait ..
     killSigFuture.wait();
     try {
@@ -463,7 +466,7 @@ void command_server_thread(etdc::etdc_fdptr pServer, etdc::etd_state& shared_sta
 
         // Now we fall through handling the client
         auto peernm = pClient->getpeername(pClient->__m_fd);
-        ETDCDEBUG(2, "Incoming COMMAND from " << peernm << " [local " << pClient->getsockname(pClient->__m_fd) << "]" << endl);
+        ETDCDEBUG(1, "Incoming COMMAND connection from " << peernm << " [local " << pClient->getsockname(pClient->__m_fd) << "]" << endl);
 
         // Command sockets typically do small messages so we set tcp_nodelay
         // (if the protocol is TCP-like that is!)
@@ -473,7 +476,7 @@ void command_server_thread(etdc::etdc_fdptr pServer, etdc::etd_state& shared_sta
         dbgMap[get_protocol(peernm)](pClient, "client"); 
 
         // Fall into ETDServerWrapper
-        etdc::ETDServerWrapper(pClient, std::ref(shared_state));
+        etdc::ETDServerWrapper(pClient, std::ref(shared_state), true);
     }
     catch( std::exception const& e ) {
         ETDCDEBUG(1, "command server thread got exception: " << e.what() << std::endl);
@@ -532,7 +535,7 @@ void data_server_thread(etdc::etdc_fdptr pServer, etdc::etd_state& shared_state)
             throw std::runtime_error("No incoming data client?!");
         // Now we fall through handling the client
         auto peernm = pClient->getpeername(pClient->__m_fd);
-        ETDCDEBUG(2, "Incoming DATA from " << peernm << " [local " << pClient->getsockname(pClient->__m_fd) << "]" << endl);
+        ETDCDEBUG(1, "Incoming DATA connection from " << peernm << " [local " << pClient->getsockname(pClient->__m_fd) << "]" << endl);
 
         // This is data connection so let's set a big sokkitbuffer
         // Do not *assert* it - e.g. on Mac OSX (and maybe other *BSDs)

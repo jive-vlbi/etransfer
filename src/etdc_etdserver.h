@@ -145,9 +145,16 @@ namespace etdc {
     //////////////////////////////////////////////////////////////////////
     class ETDServer: public ETDServerInterface {
         public:
-            explicit ETDServer(etdc::etd_state& shared_state):
-                __m_uuid( etdc::uuid_type::mk() ), __m_shared_state( shared_state )
+            explicit ETDServer(etdc::etd_state& shared_state, bool isDaemon):
+                __m_daemon( isDaemon ), __m_uuid( etdc::uuid_type::mk() ), __m_shared_state( shared_state )
             { ETDCDEBUG(2, "ETDServer starting, my uuid=" << __m_uuid << std::endl); }
+
+            explicit ETDServer(etdc::etd_state& shared_state):
+                ETDServer(shared_state, false)
+            {}
+//                __m_uuid( etdc::uuid_type::mk() ), __m_shared_state( shared_state )
+//            { ETDCDEBUG(2, "ETDServer starting, my uuid=" << __m_uuid << std::endl); }
+
 
             virtual filelist_type     listPath(std::string const& /*path*/, bool /*allow tilde expansion*/) const;
 
@@ -173,6 +180,7 @@ namespace etdc {
 
         private:
             // We operate on shared state
+            const bool                              __m_daemon;
             const etdc::uuid_type                   __m_uuid;
             std::reference_wrapper<etdc::etd_state> __m_shared_state;
     };
@@ -247,8 +255,8 @@ namespace etdc {
 
         private:
             // We operate on shared state
-            ETDServer           __m_etdserver;
-            etdc::etdc_fdptr    __m_connection;
+            ETDServer        __m_etdserver;
+            etdc::etdc_fdptr __m_connection;
 
             // Sucks the connection empty for commands
             void handle( void );

@@ -463,6 +463,10 @@ namespace etdc {
 
             ETDCASSERT(transfer.data_fd, "Failed to connect to any of the data servers: " << tried.str());
 
+            // EskilSpecial!
+            ETDCDEBUG( __m_daemon ? 1  : 1000, "sendFile[" << ptr->second->path << "] start sending to " << 
+                                               transfer.data_fd->getpeername( transfer.data_fd->__m_fd ) << std::endl);
+
             // Weehee! we're connected!
             // Need buffer and record the data channel
             std::unique_ptr<unsigned char[]> buffer(new unsigned char[bufSz]);
@@ -515,9 +519,16 @@ namespace etdc {
                 transfer.data_fd->read(transfer.data_fd->__m_fd, &ack, 1);
                 ETDCDEBUG(4, "sendFile: ... got it" << std::endl);
             }
-            auto const          end_tm = std::chrono::high_resolution_clock::now();
-            return cancelled ? xfer_result(false, 0, "Cancelled", xfer_result::duration_type()) :
-                               xfer_result((todo==0), nTodo - todo, reason, (end_tm-start_tm));
+            auto const end_tm = std::chrono::high_resolution_clock::now();
+            auto const res    = cancelled ? xfer_result(false, 0, "Cancelled", xfer_result::duration_type()) :
+                                            xfer_result((todo==0), nTodo - todo, reason, (end_tm-start_tm));
+            ETDCDEBUG( __m_daemon ? 1  : 1000, "sendFile[" << ptr->second->path << "]: " << std::boolalpha <<
+                                               res.__m_Finished << " " <<
+                                               res.__m_Reason << " " <<
+                                               res.__m_BytesTransferred << " bytes in " <<
+                                               res.__m_DeltaT.count() << " seconds" <<
+                                               std::endl);
+            return res;
         }
         return xfer_result(false, 0, (cancelled  ? "Cancelled" : "Failed to get both locks"), xfer_result::duration_type());
     }
@@ -655,6 +666,10 @@ namespace etdc {
                 break;
             ETDCASSERT(transfer.data_fd, "Failed to connect to any of the data servers: " << tried.str());
 
+            // EskilSpecial!
+            ETDCDEBUG( __m_daemon ? 1  : 1000, "getFile[" << ptr->second->path << "] start reading from " << 
+                                               transfer.data_fd->getpeername( transfer.data_fd->__m_fd ) << std::endl);
+
             // Weehee! we're connected!
             std::unique_ptr<unsigned char[]> buffer(new unsigned char[bufSz]);
 
@@ -704,8 +719,17 @@ namespace etdc {
                 ETDCDEBUG(4, "ETDServer::getFile/... done." << std::endl);
             }
             auto const end_tm = std::chrono::high_resolution_clock::now();
-            return cancelled ? xfer_result(false, 0, "Cancelled", xfer_result::duration_type()) :
-                               xfer_result((todo==0), nTodo - todo, reason, (end_tm-start_tm));
+            auto const res    = cancelled ? xfer_result(false, 0, "Cancelled", xfer_result::duration_type()) :
+                                            xfer_result((todo==0), nTodo - todo, reason, (end_tm-start_tm));
+            ETDCDEBUG( __m_daemon ? 1  : 1000, "getFile[" << ptr->second->path << "]: " << std::boolalpha <<
+                                               res.__m_Finished << " " <<
+                                               res.__m_Reason << " " <<
+                                               res.__m_BytesTransferred << " bytes in " <<
+                                               res.__m_DeltaT.count() << " seconds" <<
+                                               std::endl);
+            return res;
+            //return cancelled ? xfer_result(false, 0, "Cancelled", xfer_result::duration_type()) :
+            //                   xfer_result((todo==0), nTodo - todo, reason, (end_tm-start_tm));
         }
         return xfer_result(false, 0, cancelled ? "Cancelled" : "Failed to grab both locks", xfer_result::duration_type());
     }
@@ -1623,6 +1647,9 @@ namespace etdc {
                 transfer_lock = std::move( sh );
             }
             ETDCDEBUG(5, "ETDDataServer/owning transfer lock, now sucking data!" << std::endl);
+
+            ETDCDEBUG(1, "ETDDataServer: " << (push ? "PUSH" : "PULL") << " " << xfer_ptr->second->path << " " <<
+                         (push ? "to" : "from" ) << " " << __m_connection->getpeername( __m_connection->__m_fd ) << std::endl);
 
             // If we end up here we know that the transfer is locked and
             // that xfer_ptr is pointing at it and that all is good
