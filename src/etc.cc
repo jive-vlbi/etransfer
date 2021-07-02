@@ -328,7 +328,7 @@ int main(int argc, char const*const*const argv) {
     etdc::etd_state             localState{};
     // Let's set up the command line parsing
     int                          message_level = 0;
-    unsigned int                 maxFileRetry{ 2 }, nFileRetry{ 0 };
+    unsigned int                 maxFileRetry{ 2 };
     std::chrono::duration<float> retryDelay{ 10 };
     display_format               display( imperial );
     etdc::openmode_type          mode{ etdc::openmode_type::New };
@@ -593,46 +593,41 @@ int main(int argc, char const*const*const argv) {
 
         // Keep these out of the while loop
         bool               finished{ false };
-        const unsigned int retryCountAtStart = nFileRetry;
+        unsigned int       nFileRetry = 0;
         std::exception_ptr eptr;
 
+        // New file means fresh retry count
+
         // Did someone say Cancel? Or did we reach maximum number of retries?
-        while( !std::atomic_load(&localState.cancelled) && !finished && nFileRetry<maxFileRetry ) {
+        while( !std::atomic_load(&localState.cancelled) && !finished && nFileRetry<=maxFileRetry ) {
             // Just checked that we weren't cancelled and if we're actually
             // retrying a file we should sleep (new file => don't sleep)
             // also make sure we reset current exception already
-            if( retryCountAtStart < nFileRetry ) {
-                ETDCDEBUG(4, "Retry #" << nFileRetry+1 << " (#" << (nFileRetry-retryCountAtStart)+1 << " for this file), go to sleep for " <<
+            if( nFileRetry ) {
+                ETDCDEBUG(4, "Retry #" << nFileRetry << " for this file), go to sleep for " <<
                              retryDelay.count() << "s" << std::endl);
                 std::this_thread::sleep_for( retryDelay );
             }
 
-//std::cerr << "Entering into try/catch block" << std::endl;
             try {
                 auto const outputFN = mkOutputPath(file);
                 ETDCDEBUG(lvl, (push ? "PUSH" : "PULL" ) << " " << mode << " " << file << " -> " << outputFN << std::endl);
                 unique_result dstResult( new etdc::result_type(servers[1]->requestFileWrite(outputFN, mode)) );
                 {
-//std::cerr << "moving dstResult to results[1]" << std::endl;
                     etdc::scoped_lock lk( localState.lock );
                     results[1].reset( dstResult.release() );
                 }
                 auto nByte = etdc::get_filepos( *results[1] );
-//std::cerr << "done that, nByte=" << nByte << std::endl;
 
                 if( mode!=etdc::openmode_type::SkipExisting || nByte==0 ) {
-//std::cerr << "mode!=SkipExisting or there are bytes to transfer" << std::endl;
                     unique_result srcResult( new etdc::result_type(servers[0]->requestFileRead(file, nByte)) );
-//std::cerr << "moving srcResult to results[0]" << std::endl;
                     {
                         etdc::scoped_lock lk( localState.lock );
                         results[0].reset( srcResult.release() );
                     }
                     auto nByteToGo = etdc::get_filepos( *results[0] );
-//std::cerr << "done that, nByteToGo=" << nByteToGo << std::endl;
 
                     if( nByteToGo>0 ) {
-//std::cerr << "ACTUALLY CALLING TRANSFER FN" << std::endl;
                         etdc::xfer_result result( fn(etdc::get_uuid(*results[0]), etdc::get_uuid(*results[1]), nByteToGo, dataChannels) );
                         auto const        dt = result.__m_DeltaT.count();
                         std::cout << (result.__m_Finished && std::atomic_load(&localState.cancelled)==false ? "" : "Un") << "finished; succesfully transferred "
@@ -668,7 +663,7 @@ int main(int argc, char const*const*const argv) {
                 eptr = std::current_exception();
                 ETDCDEBUG(3, "Got unknown exception" << std::endl);
             } 
-//std::cerr << "And we're outside the try/catch block" << std::endl;
+
             // ..->removeUUID() may throw, but we really must try to do them
             // both, so even if the first one threw we must still try to remove
             // the 2nd one as well, and neither should have the program be
@@ -684,9 +679,13 @@ int main(int argc, char const*const*const argv) {
                     servers[0]->removeUUID( etdc::get_uuid(*results[0]) );
             }
             catch( ... ) {}
+
             // If we didn't finish, we must retry
             if( !finished )
                 nFileRetry++;
+            // Unless we've hit the maximum number of retries.
+            // By rethrowing the exception we'll let the user know what it
+            // was that went wrong
             if( nFileRetry>maxFileRetry && eptr )
                 std::rethrow_exception( eptr );
         }
