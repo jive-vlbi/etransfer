@@ -27,12 +27,17 @@
 #include <sstream>
 #include <iostream>
 #include <streambuf>
+#include <stdexcept>
 #include <functional>
 
 #include <ctime>
 #include <cstdio>
 #include <syslog.h>
+#include <libgen.h> // for basename(3)
 #include <sys/time.h>
+
+#include <fcntl.h>
+#include <unistd.h>
 
 #ifdef __GNUC__
 #define ETDCDBG_FUNC "[" << __PRETTY_FUNCTION__ << "] "
@@ -203,6 +208,108 @@ namespace etdc {
                 const std::string  __m_ident;
         };
 
+        // User request (https://github.com/jive-vlbi/etransfer/issues/17)
+        // "Could we log to file-in-directory?"
+        // Sure, why not ...
+        // Create file in directory by name of argv[0] and detail::timestamp()
+        // so the log messages end up in a file named as follows:
+        //    path/argv[0] yyyy-mm-dd hh:mm:ss.ss
+        template <typename... Props>
+        class filelog_streambuf:
+            public std::basic_streambuf<Props...>
+        {
+            public:
+                // Expect two arguments: the "ident" (program name) and a
+                // directory.
+                // We expect the caller to have verified that `path` refers to:
+                // - a directory
+                // - we have write access to it
+                //
+                // Upon successful construction of the object sterr is already
+                // replaced by a file descriptor referring to the newly
+                // created log file
+                explicit filelog_streambuf(std::string const& ident, std::string const& path):
+                    std::basic_streambuf<Props...>()
+                {
+                    if( ident.empty() ) {
+                        std::ostringstream e;
+                        e << "<ident> can not be empty when logging to file [" << __FILE__ << ":" << __LINE__ - 2 << "]";
+                        throw std::runtime_error(e.str());
+                    }
+                    // ident might by argv[0], which might include "path/to/executable"
+                    // but we really only want "executable".
+                    // Since basename(3) may /modify/ the contents of the
+                    // string (https://pubs.opengroup.org/onlinepubs/9699919799/functions/basename.html)
+                    // we have to create a copy first
+                    std::string       identCopy{ ident };
+
+                    // The following can only be done because of C++11 (hoorah!)
+                    // because the standard guarantees the string's memory allocated is
+                    // - contiguous
+                    // - null-terminated
+                    // See https://en.cppreference.com/w/cpp/string/basic_string/data
+                    std::string const bName{ ::basename(&identCopy[0]) };
+
+                    // if bName is "/", "//" or "." - ident was also not
+                    // acceptable
+                    if( bName=="/" || bName=="//" || bName=="." ) {
+                        std::ostringstream e;
+                        e << "<ident> '" << ident << "' does not represent a normal string/path to an excecutable ["
+                          << __FILE__ << ":" << __LINE__ - 2 << "]";
+                        throw std::runtime_error(e.str());
+                    }
+                    // NOW we can form the name of the logfile
+                    __m_fName = path + "/" + bName + " " + detail::timestamp();
+                    // but not quite yet - timestamp() adds ": " to its output
+                    // so if we find that bit, strip it off
+                    std::string::size_type  suffixPtr = __m_fName.rfind(": ");
+                    if( suffixPtr!=std::string::npos && suffixPtr == (__m_fName.size()-2) )
+                        __m_fName.erase( suffixPtr );
+
+                    int open_flags = O_CREAT|O_EXCL|O_WRONLY;
+#ifdef O_LARGEFILE
+                    // if the system supports large files, ask for that
+                    open_flags |= O_LARGEFILE;
+#endif
+                    int fd;
+                    if( (fd = ::open(__m_fName.c_str(), open_flags, S_IRUSR|S_IWUSR|S_IRGRP))<0 ) {
+                        std::ostringstream e;
+                        e << "Failed to open logfile: " << __m_fName << ", " << ::strerror(errno)
+                          << " [" << __FILE__ << ":" << __LINE__ - 2 << "]";
+                        throw std::runtime_error( e.str() );
+                    }
+                    // OK the file is open, now we replace stderr!
+                    if( ::dup2(fd, 2)!=2 ) {
+                        std::ostringstream e;
+                        e << "Failed to replace stderr: " << ::strerror(errno)
+                          << " [" << __FILE__ << ":" << __LINE__ - 2 << "]";
+                        throw std::runtime_error( e.str() );
+                    }
+                    ::close( fd );
+                }
+
+            protected:
+                using int_type    = typename std::basic_filebuf<Props...>::int_type;
+                using traits_type = typename std::basic_filebuf<Props...>::traits_type;
+                virtual int sync( void ) {
+                    if( !__m_buf.empty() ) {
+                        ::write( 2, __m_buf.c_str(), __m_buf.size() );
+                        __m_buf.erase();
+                    }
+                    return 0;
+                }
+                virtual int_type overflow( int_type ch = traits_type::eof() ) {
+                    if(traits_type::eq_int_type(ch, traits_type::eof()))
+                        this->sync();
+                    else
+                        __m_buf += traits_type::to_char_type(ch);
+                    return ch;
+                }
+
+            private:
+                std::string __m_fName;
+                std::string __m_buf;
+        };
 
         // Turns out that if we leave the rdbuf() of e.g. std::cerr pointing
         // to a refcounted instance of syslog_streambuf to ensure that the
@@ -254,6 +361,20 @@ namespace etdc {
               typename SSType  = detail::streamsaver_type<Props...>,
               typename PTRType = std::unique_ptr<SSType>>
     auto redirect_to_syslog(std::basic_ostream<Props...>& os, Args&&... args) -> PTRType {
+        return PTRType( new SSType(os, typename SSType::streambuf_ptr(new SBType(std::forward<Args>(args)...))) );
+    }
+
+    // User request (https://github.com/jive-vlbi/etransfer/issues/17)
+    // "Could we log to file-in-directory?" Sure, why not ...
+    // Expect two arguments: the "ident" (program name) and a directory.
+    // We expect the caller to have verified that `path` refers to:
+    // - a directory
+    // - we have write access to it
+    template <typename... Props, typename... Args,
+              typename SBType  = detail::filelog_streambuf<Props...>,
+              typename SSType  = detail::streamsaver_type<Props...>,
+              typename PTRType = std::unique_ptr<SSType>>
+    auto redirect_to_file(std::basic_ostream<Props...>& os, Args&&... args) -> PTRType {
         return PTRType( new SSType(os, typename SSType::streambuf_ptr(new SBType(std::forward<Args>(args)...))) );
     }
 } // namespace etdc

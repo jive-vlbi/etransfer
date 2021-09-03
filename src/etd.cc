@@ -22,6 +22,7 @@
 #include <reentrant.h>
 //#include <etdc_thread.h>
 #include <etdc_debug.h>
+#include <etdc_assert.h>
 #include <etdc_etd_state.h>
 #include <etdc_etdserver.h>
 #include <etdc_stringutil.h>
@@ -42,6 +43,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/types.h>
+#include <sys/stat.h>
 //#include <uuid/uuid.h>
 #include <sys/resource.h>
 
@@ -255,6 +257,7 @@ int main(int argc, char const*const*const argv) {
     etdc::BlockAll      ba;
     // Let's set up the command line parsing
     int                 message_level = 0;
+    std::string         logDirectory{}; // Used if daemonizing: empty = use syslog, otherwise create file in dir
     socketoptions_type  sockopts{};
     AP::ArgumentParser  cmd( AP::version( buildinfo() ),
                              AP::docstring("'ftp' like etransfer server daemon, to be used with etransfer client for "
@@ -335,6 +338,29 @@ int main(int argc, char const*const*const argv) {
              // And some useful info
              AP::docstring("Listen on this(these) address(es) for incoming client data connections") );
 
+    // Allow setting a log directory
+    cmd.add( AP::store_into(logDirectory), AP::long_name("log-directory"), AP::at_most(1),
+             AP::docstring("If specified, when daemonizing, create log file in this directory by the name of basename(3) of argv[0] + time-stamp in stead of logging to syslog(3)"),
+             AP::constrain( [](std::string const& p) {
+                                struct stat sb;
+                                ETDCSYSCALL( ::stat(p.c_str(), &sb)==0, "Failed to stat(3) path" );
+                                // Note: the explicitly written out test
+                                //       is due to the fact that access(3)
+                                //       uses the real uid/gid whilst
+                                //       open(2) uses the effective uid/gid
+                                //       of the process. Since we want to
+                                //       O_CREAT a file, we must be sure the
+                                //       directory allows us to do so.
+                                return S_ISDIR(sb.st_mode) && (
+                                        // owner
+                                        (sb.st_uid == geteuid() && (sb.st_mode & (S_IXUSR|S_IWUSR))==(S_IXUSR|S_IWUSR)) ||
+                                        // group
+                                        (sb.st_gid == getegid() && (sb.st_mode & (S_IXGRP|S_IWGRP))==(S_IXGRP|S_IWGRP)) ||
+                                        // other
+                                        (sb.st_mode & (S_IXOTH|S_IWOTH))==(S_IXOTH|S_IWOTH)
+                                    );
+                                }, "Must be directory writable by the effective user/group" ) );
+
     // OK Let's check that mother
     cmd.parse(argc, argv);
 
@@ -364,7 +390,8 @@ int main(int argc, char const*const*const argv) {
     if( daemonize ) {
         // We replace std::cerr's streambuf so from this moment on all
         // output goes to syslog - we are, after all, daemonizing
-        oldStreamBuf = etdc::redirect_to_syslog(std::cerr, argv[0]);
+        oldStreamBuf = logDirectory.empty() ? etdc::redirect_to_syslog(std::cerr, argv[0]) :
+                                              etdc::redirect_to_file(std::cerr, argv[0], logDirectory);
 
         do_daemonize();
     }
