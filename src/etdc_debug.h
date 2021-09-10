@@ -294,7 +294,12 @@ namespace etdc {
                 using traits_type = typename std::basic_filebuf<Props...>::traits_type;
                 virtual int sync( void ) {
                     if( !__m_buf.empty() ) {
-                        ::write( 2, __m_buf.c_str(), __m_buf.size() );
+                        if( ::write(2, __m_buf.c_str(), __m_buf.size()) != (ssize_t)__m_buf.size() ) {
+                            std::ostringstream e;
+                            e << "Failed to write '" << __m_buf << "' to the log " << ::strerror(errno)
+                              << " [" << __FILE__ << ":" << __LINE__ - 2 << "]";
+                            throw std::runtime_error( e.str() );
+                        }
                         __m_buf.erase();
                     }
                     return 0;
