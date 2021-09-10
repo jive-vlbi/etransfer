@@ -38,6 +38,7 @@
 
 #include <fcntl.h>
 #include <unistd.h>
+#include <string.h> // for ::strerror(3)
 
 #ifdef __GNUC__
 #define ETDCDBG_FUNC "[" << __PRETTY_FUNCTION__ << "] "
