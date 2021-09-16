@@ -24,16 +24,40 @@ namespace etdc { namespace detail {
     std::atomic<int> __m_dbglev{1};
     std::atomic<int> __m_fnthres{5};
 
-    std::string timestamp( void ) {
-        char           buff[64];
-        struct tm      raw_tm;
-        struct timeval raw_t1m3;
+    std::string timestamp( std::string const& fmt ) {
+        // First things first - sample the time as soon as we enter here
+        // and convert to gmtime
+        struct tm               raw_tm;
+        struct timeval          raw_t1m3;
 
         ::gettimeofday(&raw_t1m3, NULL);
         ::gmtime_r(&raw_t1m3.tv_sec, &raw_tm);
-        ::strftime( buff, sizeof(buff), "%Y-%m-%d %H:%M:%S", &raw_tm );
-        ::snprintf( buff + 19, sizeof(buff)-19, ".%02ld: ", (long int)(raw_t1m3.tv_usec / 10000) );
-        return buff;
+
+        // Now we can alloc / string format at leisure
+        std::string::size_type   nAlloc{ std::max( std::string::size_type{64}, fmt.size() * 2) };
+        std::unique_ptr<char[]>  buff{ new char[nAlloc] };
+        static std::string const default_fmt{ "%Y-%m-%d %H:%M:%S" };
+
+        // The allocated buffer /may/ not be large
+        // enough to hold the output string
+        // We know that the format passed to strftime(3) isn't empty so
+        // a ::strftime(3) return value of 0
+        // indicates not enough space (and also we know that nAlloc > 0)
+        // https://pubs.opengroup.org/onlinepubs/000095399/functions/strftime.html
+        while( ::strftime(buff.get(), nAlloc, (fmt.size() ? fmt : default_fmt).c_str() , &raw_tm)==0 ) {
+            nAlloc *= 2;
+            buff    = std::unique_ptr<char[]>{ new char[nAlloc] };
+        }
+
+        // Default format adds some extra bits
+        // nAlloc is guaranteed to support the default format (minimum size
+        // of buff = 64 characters)
+        if( fmt.empty() ) {
+            // Default log timestamp format adds subseconds + ": " suffix to
+            // make useful prefix for log entries
+            ::snprintf( buff.get() + 19, nAlloc-19, ".%02ld: ", (long int)(raw_t1m3.tv_usec / 10000) );
+        }
+        return std::string( buff.get() );
     }
 
     } // namespace detail 

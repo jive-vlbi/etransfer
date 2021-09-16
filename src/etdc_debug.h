@@ -26,6 +26,7 @@
 #include <memory>
 #include <sstream>
 #include <iostream>
+#include <algorithm>
 #include <streambuf>
 #include <stdexcept>
 #include <functional>
@@ -120,7 +121,7 @@ namespace etdc {
         // if dbglevel>=fnthres_val level => functionnames are printed in DEBUG()
         extern std::atomic<int> __m_fnthres;
 
-        std::string timestamp( void );
+        std::string timestamp( std::string const& fmt = "" );
     } // namespace detail 
 
     // get current debuglevel
@@ -260,12 +261,12 @@ namespace etdc {
                         throw std::runtime_error(e.str());
                     }
                     // NOW we can form the name of the logfile
-                    __m_fName = path + "/" + bName + " " + detail::timestamp();
-                    // but not quite yet - timestamp() adds ": " to its output
-                    // so if we find that bit, strip it off
-                    std::string::size_type  suffixPtr = __m_fName.rfind(": ");
-                    if( suffixPtr!=std::string::npos && suffixPtr == (__m_fName.size()-2) )
-                        __m_fName.erase( suffixPtr );
+                    // Use ISO8601-ish compatible format, "users" (that is: EskilV ...)
+                    // agree that times with XXhYYmSSs look better than the
+                    // official ISO8601 formats - the format with colons is
+                    // OK but also suffer from shell escapism needed, which
+                    // is something we'd like to avoid.
+                    __m_fName = path + "/" + bName + "-" + detail::timestamp( "%Y-%m-%dT%Hh%Mm%Ss" );
 
                     int open_flags = O_CREAT|O_EXCL|O_WRONLY;
 #ifdef O_LARGEFILE
