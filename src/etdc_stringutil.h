@@ -95,6 +95,36 @@ namespace etdc {
             return std::lexicographical_compare(std::begin(l), std::end(l), std::begin(r), std::end(r), ci_comparator);
         }
     };
-} // namespace etdc
+
+    // Simple character replacement
+    // In-place version
+    template <typename Char, typename Traits, typename... Rest>
+    void replace_char(std::basic_string<Char, Traits, Rest...>& in,
+                      typename std::basic_string<Char, Traits, Rest...>::value_type srch,
+                      typename std::basic_string<Char, Traits, Rest...>::value_type repl) {
+        std::replace_if( std::begin(in), std::end(in),
+                         [&srch](typename std::basic_string<Char, Traits, Rest...>::value_type v) {
+                             return Traits::eq(v, srch);
+                         }, repl);
+    }
+
+    // const input? then return a new string
+    template <typename Char, typename Traits, typename... Rest>
+    std::basic_string<Char, Traits, Rest...>
+    replace_char(std::basic_string<Char, Traits, Rest...> const& in,
+                 typename std::basic_string<Char, Traits, Rest...>::value_type srch,
+                 typename std::basic_string<Char, Traits, Rest...>::value_type repl) {
+        std::basic_string<Char, Traits, Rest...> result{ in };
+        std::replace_if( std::begin(result), std::end(result),
+                         [&srch](typename std::basic_string<Char, Traits, Rest...>::value_type v) {
+                             return Traits::eq(v, srch);
+                         }, repl);
+        return result;
+    }
+
+    std::string replace_char(char const* in, char srch, char repl) {
+        return replace_char( std::string(in), srch, repl );
+    }
+} // namespace etdc 
 
 #endif // include guard
