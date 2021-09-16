@@ -122,8 +122,9 @@ namespace etdc {
         return result;
     }
 
-    std::string replace_char(char const* in, char srch, char repl) {
-        return replace_char( std::string(in), srch, repl );
+    template <typename Char>
+    std::basic_string<Char> replace_char(Char const* in, Char srch, Char repl) {
+        return replace_char( std::basic_string<Char>{in}, srch, repl );
     }
 } // namespace etdc 
 
