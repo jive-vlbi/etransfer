@@ -1285,8 +1285,10 @@ namespace etdc { namespace detail {
                     // Create the path - searchable for everyone, r,w,x for usr
                     const std::string path_so_far{ dir.substr(0, slash) };
                     ETDCDEBUG(5, "open_file/path_so_far='" << path_so_far << "'" << std::endl);
+                    errno = 0;
                     ETDCASSERT(::mkdir(path_so_far.c_str(), 0755)==0 || errno==EEXIST,
-                               "Failed to create path '" << path_so_far << "' - " << etdc::strerror(errno) );
+                               "Failed to create path '" << path_so_far << "' - " << etdc::strerror(errno) <<
+                               " [errno=" << errno << "]" );
                     // And look for the next slash
                     slash = dir.find('/', slash+1);
                 }
