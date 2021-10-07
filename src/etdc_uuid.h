@@ -49,7 +49,7 @@ namespace etdc {
                 static std::random_device                                    __m_random_device{};
                 static std::default_random_engine                            __m_random_engine{ __m_random_device() };
                 static std::uniform_int_distribution<std::string::size_type> __m_uniform_sizes{15, 20};
-                static std::uniform_int_distribution<std::string::size_type> __m_uniform_chars{0, __m_chars.size()};
+                static std::uniform_int_distribution<std::string::size_type> __m_uniform_chars{0, __m_chars.size() - 1};
                 static auto                                                  __m_sizegen = std::bind(__m_uniform_sizes, __m_random_engine);
                 static auto                                                  __m_chargen = [&]() { return __m_chars[__m_uniform_chars(__m_random_engine)]; };
 
