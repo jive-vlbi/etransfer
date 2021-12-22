@@ -32,10 +32,33 @@
 #include <sys/time.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+
+// On Mac OSX expose the TCP_KEEP* (and others)
+// from netinet/tcp.h (on MacOSX):
+//  #if !defined(_POSIX_C_SOURCE) || defined(_DARWIN_C_SOURCE)  
+//  ...
+//  #define TCP_KEEPINTVL           0x101   /* interval between keepalives */
+//  #define TCP_KEEPCNT             0x102   /* number of keepalives before close */
+//  ...
+#if defined(__APPLE__) && !defined(_DARWIN_C_SOURCE)
+#define ETDC_DEFINED_DARWIN_C_SOURCE
+#define _DARWIN_C_SOURCE
+#endif
+
 #include <netinet/tcp.h>
 
 #include <map>
 #include <stdexcept>
+
+
+// Now decide if we have the TCP_KEEP* tunings.
+// It really only makes sense to have all three of the TCP keepalive
+// interval, count and idle time settings or none.
+// Take into account that on Mac OSX TCP_KEEPALIVE has the same use as
+// TCP_KEEPIDLE on e.g. Loonix
+#if defined(TCP_KEEPCNT) && defined(TCP_KEEPINTVL) && (defined(TCP_KEEPALIVE) || defined(TCP_KEEPIDLE))
+#define ETDC_HAVE_TCP_KEEPALIVE
+#endif
 
 namespace etdc {
 
@@ -148,7 +171,34 @@ namespace etdc {
     // The SO_REUSEPORT may or may not be available. 
 #ifdef SO_REUSEPORT
     using so_reuseport  = detail::BooleanSocketOption<SO_REUSEPORT>;
+#endif // !SO_REUSEPORT
+
+    // TCP Keepalive may suffer from similar probs
+    // SO_KEEPALIVE is in POSIX as socket option, but
+    // TCP_KEEP{CNT,IDLE,INTVL} may not be
+    using so_keepalive  = detail::BooleanSocketOption<SO_KEEPALIVE>;
+
+    // We have already tested for the existence of the TCP_KEEP* constants
+#ifdef ETDC_HAVE_TCP_KEEPALIVE
+    using tcp_keepcnt   = detail::SocketOption<int, detail::Name<TCP_KEEPCNT>, detail::Level<IPPROTO_TCP>,
+                                                    tags::gettable, tags::settable>;
+    using tcp_keepintvl = detail::SocketOption<int, detail::Name<TCP_KEEPINTVL>, detail::Level<IPPROTO_TCP>,
+                                                    tags::gettable, tags::settable>;
+// On MacOSX is called TCP_KEEPALIVE i.s.o. TCP_KEEPIDLE but according to 
+// man page serves same goal: 
+//     TCP_KEEPALIVE          The TCP_KEEPALIVE options enable to specify the amount of time, in seconds, that the connec
+//                            tion must be idle before keepalive probes (if enabled) are sent.  The default value is speci
+//                            fied by the MIB variable net.inet.tcp.keepidle.
+#ifdef TCP_KEEPALIVE
+    using tcp_keepidle  = detail::SocketOption<int, detail::Name<TCP_KEEPALIVE>, detail::Level<IPPROTO_TCP>,
+                                                    tags::gettable, tags::settable>;
 #endif
+// This is what it's called under Loonix
+#ifdef TCP_KEEPIDLE
+    using tcp_keepidle  = detail::SocketOption<int, detail::Name<TCP_KEEPIDLE>, detail::Level<IPPROTO_TCP>,
+                                                    tags::gettable, tags::settable>;
+#endif
+#endif // !ETDC_HAVE_TCP_KEEPALIVE
 
     using udt_fc        = detail::SimpleUDTOption<UDT_FC>;
     using udt_mss       = detail::SimpleUDTOption<UDT_MSS>;
@@ -404,4 +454,10 @@ namespace etdc {
     }
 }
 
-#endif
+// and remove the _DARWIN_C_SOURCE symbol if *we* did it
+// because we only needed to expose the symbolic constants of the O/S in this header
+#ifdef ETDC_DEFINED_DARWIN_C_SOURCE
+#undef _DARWIN_C_SOURCE
+#endif // !ETDC_HAVE_TCP_KEEPALIVE
+
+#endif // !ETDC_ETDC_SETSOCKOPT_H

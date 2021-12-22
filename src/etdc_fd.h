@@ -595,47 +595,76 @@ namespace etdc {
 
 
         struct server_settings {
-            blocking_type    blocking   {};
-            backlog_type     backLog    {};
-            host_type        srvHost    {}; // empty host for servers means 0.0.0.0 anyway
-            port_type        srvPort    {};
-            etdc::udt_mss    udtMSS     {};
-            etdc::so_rcvbuf  rcvBufSize {};
-            etdc::so_sndbuf  sndBufSize {};
-            etdc::udt_rcvbuf udtBufSize {};
-            etdc::udt_sndbuf udtSndBufSize {};
-            etdc::udp_rcvbuf udpBufSize {};
-            etdc::udp_sndbuf udpSndBufSize {};
-            etdc::ipv6_only  ipv6_only  {};
-            etdc::udt_linger udtLinger  {};
-            etdc::udt_max_bw udtMaxBW   {};
+            blocking_type       blocking   {};
+            backlog_type        backLog    {};
+            host_type           srvHost    {}; // empty host for servers means 0.0.0.0 anyway
+            port_type           srvPort    {};
+            etdc::udt_mss       udtMSS     {};
+            etdc::so_rcvbuf     rcvBufSize {};
+            etdc::so_sndbuf     sndBufSize {};
+            etdc::udt_rcvbuf    udtBufSize {};
+            etdc::udt_sndbuf    udtSndBufSize {};
+            etdc::udp_rcvbuf    udpBufSize {};
+            etdc::udp_sndbuf    udpSndBufSize {};
+            etdc::ipv6_only     ipv6_only  {};
+            etdc::udt_linger    udtLinger  {};
+            etdc::udt_max_bw    udtMaxBW   {};
+            etdc::so_keepalive  soKeepAlive {};
+            // Defaults will set those to 0, 
+            // socket options will be set if > 0
+#ifdef ETDC_HAVE_TCP_KEEPALIVE
+            etdc::tcp_keepcnt   tcpKeepCnt {};
+            etdc::tcp_keepidle  tcpKeepIdle {};
+            etdc::tcp_keepintvl tcpKeepIntvl {};
+#endif // !ETDC_HAVE_TCP_KEEPALIVE
         };
-        const etdc::construct<server_settings>  update_srv( &server_settings::blocking,
-                                                            &server_settings::backLog,
-                                                            &server_settings::srvHost,
-                                                            &server_settings::srvPort,
-                                                            &server_settings::rcvBufSize,
-                                                            &server_settings::sndBufSize,
-                                                            &server_settings::udtBufSize,
-                                                            &server_settings::udtSndBufSize,
-                                                            &server_settings::udpBufSize,
-                                                            &server_settings::udpSndBufSize,
-                                                            &server_settings::udtMSS,
-                                                            &server_settings::ipv6_only,
-                                                            &server_settings::udtLinger,
-                                                            &server_settings::udtMaxBW );
+        const etdc::construct<server_settings>  update_srv(  &server_settings::blocking
+                                                            ,&server_settings::backLog
+                                                            ,&server_settings::srvHost
+                                                            ,&server_settings::srvPort
+                                                            ,&server_settings::rcvBufSize
+                                                            ,&server_settings::sndBufSize
+                                                            ,&server_settings::udtBufSize
+                                                            ,&server_settings::udtSndBufSize
+                                                            ,&server_settings::udpBufSize
+                                                            ,&server_settings::udpSndBufSize
+                                                            ,&server_settings::udtMSS
+                                                            ,&server_settings::ipv6_only
+                                                            ,&server_settings::udtLinger
+                                                            ,&server_settings::udtMaxBW
+                                                            ,&server_settings::soKeepAlive
+#ifdef ETDC_HAVE_TCP_KEEPALIVE
+                                                            ,&server_settings::tcpKeepCnt
+                                                            ,&server_settings::tcpKeepIdle
+                                                            ,&server_settings::tcpKeepIntvl
+#endif // !ETDC_HAVE_TCP_KEEPALIVE
+                                                            );
 
         using server_defaults_map = std::map<std::string, std::function<server_settings(void)>>;
 
         // server defaults per protocol type
         static const server_defaults_map server_defaults = {
-            {"tcp", []() { return update_srv.mk(backlog_type{4},
-                                                any_port,
-                                                blocking_type{true} );
+            {"tcp", []() { return update_srv.mk( backlog_type{4}
+                                                ,any_port
+                                                ,blocking_type{true}
+                                                ,so_keepalive{false}
+#ifdef ETDC_HAVE_TCP_KEEPALIVE
+                                                ,tcp_keepcnt{0}
+                                                ,tcp_keepidle{0}
+                                                ,tcp_keepintvl{0}
+#endif // !ETDC_HAVE_TCP_KEEPALIVE
+                    );
                          }},
-            {"tcp6", []() { return update_srv.mk(backlog_type{4},
-                                                any_port, etdc::ipv6_only{true},
-                                                blocking_type{true} );
+            {"tcp6", []() { return update_srv.mk( backlog_type{4}
+                                                 ,any_port, etdc::ipv6_only{true}
+                                                 ,blocking_type{true}
+                                                 ,so_keepalive{false}
+#ifdef ETDC_HAVE_TCP_KEEPALIVE
+                                                 ,tcp_keepcnt{0}
+                                                 ,tcp_keepidle{0}
+                                                 ,tcp_keepintvl{0}
+#endif // !ETDC_HAVE_TCP_KEEPALIVE
+                    );
                          }},
             {"udt", []() { return update_srv.mk(backlog_type{4},
                                                 blocking_type{true},
@@ -682,6 +711,32 @@ namespace etdc {
                             etdc::setsockopt(pSok->__m_fd, srv.rcvBufSize);
                         if( srv.sndBufSize )
                             etdc::setsockopt(pSok->__m_fd, srv.sndBufSize);
+
+                        // Read the socket's keep-alive option. If the
+                        // application demands it differently then set the
+                        // option
+                        etdc::so_keepalive  sys_keepalive;
+
+                        etdc::getsockopt(pSok->__m_fd, sys_keepalive);
+                        if( untag(sys_keepalive)!=untag(srv.soKeepAlive) )
+                            etdc::setsockopt(pSok->__m_fd, srv.soKeepAlive);
+#ifdef ETDC_HAVE_TCP_KEEPALIVE
+                        // Only set keep-alive details if (1) we need to and (2) we have'm
+                        if( srv.soKeepAlive ) {
+                            if( srv.tcpKeepCnt ) {
+                                ETDCDEBUG(4, "Setting TCP Server TCP_KEEPCNT to " << srv.tcpKeepCnt << std::endl);
+                                etdc::setsockopt(pSok->__m_fd, srv.tcpKeepCnt);
+                            }
+                            if( srv.tcpKeepIdle ) {
+                                ETDCDEBUG(4, "Setting TCP Server TCP_KEEPIDLE to " << srv.tcpKeepIdle << std::endl);
+                                etdc::setsockopt(pSok->__m_fd, srv.tcpKeepIdle);
+                            }
+                            if( srv.tcpKeepIntvl ) {
+                                ETDCDEBUG(4, "Setting TCP Server TCP_KEEPINTVL to " << srv.tcpKeepIntvl << std::endl);
+                                etdc::setsockopt(pSok->__m_fd, srv.tcpKeepIntvl);
+                            }
+                        }
+#endif // !ETDC_HAVE_TCP_KEEPALIVE
 
                         // Get the port info
                         // See "etdc_resolve.h" for FFS glibc shit why we
@@ -735,6 +790,32 @@ namespace etdc {
                             etdc::setsockopt(pSok->__m_fd, srv.rcvBufSize);
                         if( srv.sndBufSize )
                             etdc::setsockopt(pSok->__m_fd, srv.sndBufSize);
+
+                        // Read the socket's keep-alive option. If the
+                        // application demands it differently then set the
+                        // option
+                        etdc::so_keepalive  sys_keepalive;
+
+                        etdc::getsockopt(pSok->__m_fd, sys_keepalive);
+                        if( untag(sys_keepalive)!=untag(srv.soKeepAlive) )
+                            etdc::setsockopt(pSok->__m_fd, srv.soKeepAlive);
+#ifdef ETDC_HAVE_TCP_KEEPALIVE
+                        // Only set keep-alive details if (1) we need to and (2) we have'm
+                        if( srv.soKeepAlive ) {
+                            if( srv.tcpKeepCnt ) {
+                                ETDCDEBUG(4, "Setting TCP Server TCP_KEEPCNT to " << srv.tcpKeepCnt << std::endl);
+                                etdc::setsockopt(pSok->__m_fd, srv.tcpKeepCnt);
+                            }
+                            if( srv.tcpKeepIdle ) {
+                                ETDCDEBUG(4, "Setting TCP Server TCP_KEEPIDLE to " << srv.tcpKeepIdle << std::endl);
+                                etdc::setsockopt(pSok->__m_fd, srv.tcpKeepIdle);
+                            }
+                            if( srv.tcpKeepIntvl ) {
+                                ETDCDEBUG(4, "Setting TCP Server TCP_KEEPINTVL to " << srv.tcpKeepIntvl << std::endl);
+                                etdc::setsockopt(pSok->__m_fd, srv.tcpKeepIntvl);
+                            }
+                        }
+#endif // !ETDC_HAVE_TCP_KEEPALIVE
 
                         // Get the port info
                         // See "etdc_resolve.h" for FFS glibc shit why we

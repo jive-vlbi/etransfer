@@ -26,6 +26,7 @@
 #include <etdc_thread.h>
 #include <utilities.h>
 #include <etdc_stringutil.h>
+#include <etdc_setsockopt.h>
 
 // Standard C++ headers
 #include <map>
@@ -120,7 +121,21 @@ namespace etdc {
         dataaddrlist_type       dataaddrs;
         std::condition_variable condition;
 
+        etdc::so_keepalive      tcpKeepAlive;
+        bool                    tcpKeepAliveSet;
+#ifdef ETDC_HAVE_TCP_KEEPALIVE
+        etdc::tcp_keepcnt       tcpKeepCnt;
+        etdc::tcp_keepintvl     tcpKeepIntvl;
+        etdc::tcp_keepidle      tcpKeepIdle;
+#endif
+
         etd_state() : n_threads{ 0 }, cancelled{ false }
+                     , tcpKeepAlive{ false }, tcpKeepAliveSet{ false }
+#ifdef ETDC_HAVE_TCP_KEEPALIVE
+                     , tcpKeepCnt{0}
+                     , tcpKeepIntvl{0}
+                     , tcpKeepIdle{0}
+#endif
         {}
 
 

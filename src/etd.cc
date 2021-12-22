@@ -104,17 +104,19 @@ dbgMap = {
                                                                                 << endl);
                                                              }},
     {"tcp", [](etdc::etdc_fdptr pSok, std::string const& s) {
-                                                                etdc::so_rcvbuf  rcv;
-                                                                etdc::so_sndbuf  snd;
-                                                                etdc::getsockopt(pSok->__m_fd, rcv, snd);
-                                                                ETDCDEBUG(1, s << "/TCP rcvbuf = " << rcv << " sndbuf = " << snd << endl);
+                                                                etdc::so_rcvbuf    rcv;
+                                                                etdc::so_sndbuf    snd;
+                                                                etdc::so_keepalive ka;
+                                                                etdc::getsockopt(pSok->__m_fd, rcv, snd, ka);
+                                                                ETDCDEBUG(1, s << "/TCP rcvbuf = " << rcv << " sndbuf = " << snd << " keepalive = " << ka << endl);
                                                             }},
     {"tcp6", [](etdc::etdc_fdptr pSok, std::string const& s) {
-                                                                 etdc::so_rcvbuf  rcv;
-                                                                 etdc::so_sndbuf  snd;
-                                                                 etdc::ipv6_only  ipv6;
-                                                                 etdc::getsockopt(pSok->__m_fd, rcv, ipv6, snd);
-                                                                 ETDCDEBUG(1, s << "/TCP6 rcvbuf = " << rcv << " sndbuf = " << snd << ", ipv6 only = " << ipv6 << endl);
+                                                                 etdc::so_rcvbuf    rcv;
+                                                                 etdc::so_sndbuf    snd;
+                                                                 etdc::ipv6_only    ipv6;
+                                                                 etdc::so_keepalive ka;
+                                                                 etdc::getsockopt(pSok->__m_fd, rcv, ipv6, snd, ka);
+                                                                 ETDCDEBUG(1, s << "/TCP6 rcvbuf = " << rcv << " sndbuf = " << snd << ", ipv6 only = " << ipv6 << " keepalive = " << ka << endl);
                                                              }}
 };
 
@@ -129,6 +131,13 @@ dbgMap = {
 HUMANREADABLE(etdc::etdc_fdptr,  "address")
 HUMANREADABLE(etdc::mss_type,    "int (bytes)")
 HUMANREADABLE(etdc::max_bw_type, "int (bytes per second)")
+HUMANREADABLE(etdc::so_keepalive, "true|false")
+
+#ifdef ETDC_HAVE_TCP_KEEPALIVE
+HUMANREADABLE(etdc::tcp_keepcnt, "int")
+HUMANREADABLE(etdc::tcp_keepintvl, "int")
+HUMANREADABLE(etdc::tcp_keepidle, "int")
+#endif
 
 // Let's make the URL syntax at least somewhat similar to that of the client:
 //     protocol://[local address][:port]
@@ -162,9 +171,9 @@ struct socketoptions_type {
         bufSize{ 32*1024*1024 }, udtMSS{ 0 }, udtBW{ 0 }
     {}
 
-    size_t            bufSize;
-    etdc::mss_type    udtMSS;
-    etdc::max_bw_type udtBW;
+    size_t              bufSize;
+    etdc::mss_type      udtMSS;
+    etdc::max_bw_type   udtBW;
 };
 
 
@@ -258,6 +267,7 @@ int main(int argc, char const*const*const argv) {
     // Let's set up the command line parsing
     int                 message_level = 0;
     std::string         logDirectory{}; // Used if daemonizing: empty = use syslog, otherwise create file in dir
+    etdc::etd_state     serverState;
     socketoptions_type  sockopts{};
     AP::ArgumentParser  cmd( AP::version( buildinfo() ),
                              AP::docstring("'ftp' like etransfer server daemon, to be used with etransfer client for "
@@ -265,7 +275,10 @@ int main(int argc, char const*const*const argv) {
                              AP::docstring("addresses are given like (tcp|udt)[6]://[local address][:port]\n"
                                            "where:\n"
                                            "    [local address] defaults to all interfaces\n"
-                                           "    [port]          defaults to 4004 (command) or 8008 (data)\n"),
+                                           "    [port]          defaults to 4004 (command) or 8008 (data)\n\n"),
+                             AP::docstring("Special fake data source and/or sinks are available:\n"
+                                           "\t/dev/zero:<size>\tmemory data source of <size> bytes, supports [kMG][i]B suffix\n"
+                                           "\t/dev/null\tmemory data sink\n\n"),
                              AP::docstring("IPv6 coloned-hex format is supported for [local address] by "
                                            "enclosing the IPv6 address in square brackets: [fe80::1/64%enp4]") );
 
@@ -314,6 +327,50 @@ int main(int argc, char const*const*const argv) {
              AP::minimum_value( etdc::mss_type{64} ), AP::maximum_value( etdc::mss_type{65536} ), // UDP datagram limits
              AP::convert([](std::string const& s) { return mss(s); }),
              AP::docstring(std::string("Set UDT maximum segment size in bytes. Not honoured if data channel is TCP. Default: 1500")) );
+
+    // TCP KeepAlive and friends, if we have'm
+    cmd.add( AP::store_into(serverState.tcpKeepAlive), AP::long_name("tcp-keepalive"), AP::at_most(1),
+             AP::docstring("=true Enable, =false disable SO_KEEPALIVE"), AP::match("(true|false)"),
+             AP::convert([&serverState](std::string const& keepalive) {
+                     serverState.tcpKeepAliveSet = true;
+                     return etdc::so_keepalive{ keepalive=="true" };
+                    })
+            );
+
+#ifdef ETDC_HAVE_TCP_KEEPALIVE
+    // Allow specification of the TCP keepalive tunings
+    cmd.add( AP::store_into(serverState.tcpKeepCnt), AP::long_name("tcp-keepcount"), AP::at_most(1),
+             AP::minimum_value( etdc::tcp_keepcnt{1} ), // can't set to zero or negative value would be weird!
+             AP::docstring("Number of times keepalive probes should be sent, if keep alive is enabled"), 
+             AP::convert([](std::string const& keepcnt) { 
+                     int v;
+                     AP::detail::std_conversion_t()(v, keepcnt);
+                     return etdc::tcp_keepcnt{ v };
+                    } )
+            );
+
+    cmd.add( AP::store_into(serverState.tcpKeepIntvl), AP::long_name("tcp-keepinterval"), AP::at_most(1),
+             AP::minimum_value( etdc::tcp_keepintvl{1} ), // can't set to zero or negative value would be weird!
+             AP::docstring("Number of seconds between keepalive probes, if enabled"), 
+             AP::convert([](std::string const& keepintvl) { 
+                     int v;
+                     AP::detail::std_conversion_t()(v, keepintvl);
+                     return etdc::tcp_keepintvl{ v };
+                    } )
+            );
+
+    cmd.add( AP::store_into(serverState.tcpKeepIdle), AP::long_name("tcp-keepidle"), AP::at_most(1),
+             AP::minimum_value( etdc::tcp_keepidle{1} ), // can't set to zero or negative value would be weird!
+             AP::docstring("Number of seconds connection must be idle before keepalive probes are sent"), 
+             AP::convert([](std::string const& keepidle) { 
+                     int v;
+                     AP::detail::std_conversion_t()(v, keepidle);
+                     return etdc::tcp_keepidle{ v };
+                    } )
+            );
+#endif
+             
+
 
     // Allow server admin to limit bandwidth on data channels
     cmd.add( AP::store_into(sockopts.udtBW), AP::long_name("udt-bw"), AP::at_most(1),
@@ -403,7 +460,6 @@ int main(int argc, char const*const*const argv) {
     etdc::thread(signal_thread, signallist_type{{SIGHUP, SIGINT, SIGTERM, SIGSEGV}}, std::ref(killSigPromise)).detach();
 
     // Start threads for the command+data servers
-    etdc::etd_state            serverState;
     const string2socket_type_m mk_cmd ( port(4004), sockopts );
     const string2socket_type_m mk_data( port(8008), sockopts );
 
@@ -494,8 +550,35 @@ void command_server_thread(etdc::etdc_fdptr pServer, etdc::etd_state& shared_sta
 
         // Command sockets typically do small messages so we set tcp_nodelay
         // (if the protocol is TCP-like that is!)
-        if( get_protocol(peernm).find("tcp")!=std::string::npos )
+        if( get_protocol(peernm).find("tcp")!=std::string::npos ) {
             etdc::setsockopt(pClient->__m_fd, etdc::tcp_nodelay{true});
+
+            // The TCP Keepalive options
+            // tcpKeepAliveSet will be set to true if a tcpKeepAlive
+            // setting is requested from the command line
+            if( shared_state.tcpKeepAliveSet )
+                etdc::setsockopt( pClient->__m_fd, shared_state.tcpKeepAlive );
+        
+#ifdef ETDC_HAVE_TCP_KEEPALIVE
+            // Only set TCP keepalive tunings if enabled on the socket
+            if( shared_state.tcpKeepAlive ) {
+                // Only override the values that have been changed from their
+                // default of 0 (the command line only allows values >=1 for these parameters)
+                if( untag(shared_state.tcpKeepCnt) ) {
+                    ETDCDEBUG(4, "Setting client connection TCP_KEEPCNT to " << shared_state.tcpKeepCnt << std::endl);
+                    etdc::setsockopt( pClient->__m_fd, shared_state.tcpKeepCnt );
+                }
+                if( untag(shared_state.tcpKeepIntvl) ) {
+                    ETDCDEBUG(4, "Setting client connection TCP_KEEPINTVL to " << shared_state.tcpKeepIntvl << std::endl);
+                    etdc::setsockopt( pClient->__m_fd, shared_state.tcpKeepIntvl );
+                }
+                if( untag(shared_state.tcpKeepIdle) ) {
+                    ETDCDEBUG(4, "Setting client connection TCP_KEEPIDLE to " << shared_state.tcpKeepIdle << std::endl);
+                    etdc::setsockopt( pClient->__m_fd, shared_state.tcpKeepIdle );
+                }
+            }
+#endif
+        }
 
         dbgMap[get_protocol(peernm)](pClient, "client"); 
 
