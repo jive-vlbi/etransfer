@@ -1112,7 +1112,7 @@ namespace etdc {
             // Otherwise we're done
             break;
         }
-        ETDCDEBUG(4, "ETDProxy::removeUUID/uuid removed succesfully" << std::endl);
+        ETDCDEBUG(4, "ETDProxy::removeUUID/uuid removed successfully" << std::endl);
         return true;
     }
 

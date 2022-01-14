@@ -1175,7 +1175,7 @@ etdc::etdc_fdptr mk_server(T const& proto, Ts... ts) {
 //    Canned sequence to create a client connection to a server with
 //    overrideable compiled in default settings
 //    If it finishes without crashing or throwing exceptions, the 
-//    connection should have been succesfully made.
+//    connection should have been successfully made.
 //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -1260,6 +1260,21 @@ namespace etdc { namespace detail {
             ETDCDEBUG(5, "open_file/npath='" << npath << "'" << std::endl);
             // Now we can iterate over all the entries and create them if necessary
             if( (mode&O_CREAT)==O_CREAT ) {
+                // Issues with transferring from Onsala -> Ishioka NFS mount
+                // reveals that mkdir() below may return an erroneous EACCESS (errno=13)
+                // under certain conditions - even if the directory already
+                // exists!
+                // The good staff at Ishioka found that this was caused by
+                // first access on the NFS mount and the directory already
+                // existing.
+                // Problem seems identical to this one:
+                //      https://bugs.python.org/issue14702
+                // and here we implement a workaround: stat() the path before
+                // trying to mkdir(), ignoring the return value.
+                struct stat     st;
+
+                (void)::stat(npath.c_str(), &st);
+
                 // we're expected to (attempt to) create the thing
                 const std::string      dir( detail::dirname(npath) );
                 // XXX NOTE:

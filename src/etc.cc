@@ -358,11 +358,11 @@ int main(int argc, char const*const*const argv) {
     //        [--imperial|--continental]
     //
     cmd.add( AP::long_name("help"), AP::print_help(),
-             AP::docstring("Print full help and exit succesfully") );
+             AP::docstring("Print full help and exit successfully") );
     cmd.add( AP::short_name('h'), AP::print_usage(),
-             AP::docstring("Print short usage and exit succesfully") );
+             AP::docstring("Print short usage and exit successfully") );
     cmd.add( AP::long_name("version"), AP::print_version(),
-             AP::docstring("Print version and exit succesfully") );
+             AP::docstring("Print version and exit successfully") );
 
     // message level: higher = more verbose
     cmd.add( AP::store_into(message_level), AP::short_name('m'),
@@ -628,7 +628,7 @@ int main(int argc, char const*const*const argv) {
                     if( nByteToGo>0 ) {
                         etdc::xfer_result result( fn(etdc::get_uuid(*results[0]), etdc::get_uuid(*results[1]), nByteToGo, dataChannels) );
                         auto const        dt = result.__m_DeltaT.count();
-                        std::cout << (result.__m_Finished && std::atomic_load(&localState.cancelled)==false ? "" : "Un") << "finished; succesfully transferred "
+                        std::cout << (result.__m_Finished && std::atomic_load(&localState.cancelled)==false ? "" : "Un") << "finished; successfully transferred "
                                   << fmt1000(result.__m_BytesTransferred)
                                   << " (" << fmtByte(result.__m_BytesTransferred) << " bytes) in "
                                   << fmtTime(dt) << " "

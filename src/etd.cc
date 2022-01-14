@@ -281,11 +281,11 @@ int main(int argc, char const*const*const argv) {
     //             (if <local IP> not given, listen on all interfaces)
 
     cmd.add( AP::long_name("help"), AP::print_help(),
-             AP::docstring("Print full help and exit succesfully") );
+             AP::docstring("Print full help and exit successfully") );
     cmd.add( AP::short_name('h'), AP::print_usage(),
-             AP::docstring("Print short usage and exit succesfully") );
+             AP::docstring("Print short usage and exit successfully") );
     cmd.add( AP::long_name("version"), AP::print_version(),
-             AP::docstring("Print version and exit succesfully") );
+             AP::docstring("Print version and exit successfully") );
 
     // These are mutex: if foregrounding you can't set a run-as user, and if
     //                  you've set a run-as user then you cannot not daemonize
@@ -616,7 +616,7 @@ void do_daemonize( void ) {
     ETDCASSERT(::getrlimit(RLIMIT_NOFILE, &rl)==0, "Failed to get max number of file descriptors - " << etdc::strerror(errno));
     // first fork
     ETDCASSERT((pid=::fork())>=0, "Failed to fork(1) - " << etdc::strerror(errno));
-    // parent exits succesfully
+    // parent exits successfully
     if( pid>0 )
         ::exit(0);
     // child becomes session leader
@@ -625,7 +625,7 @@ void do_daemonize( void ) {
     // ...
     // 2nd fork
     ETDCASSERT((pid=::fork())>=0, "Failed to fork(2) - " << etdc::strerror(errno));
-    // parent exits succesfully
+    // parent exits successfully
     if( pid>0 )
         ::exit(0);
     // child continues
