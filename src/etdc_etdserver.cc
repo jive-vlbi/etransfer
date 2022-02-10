@@ -83,7 +83,7 @@ namespace etdc {
             std::vector<std::string>    keyvalues;
 
             etdc::string_split(opts, ',', std::back_inserter(keyvalues));
-            for( const auto kv: keyvalues ) {
+            for( const auto& kv: keyvalues ) {
                 // We already know the option matches keyVal (see above)
                 // so this can be done basically blindly
                 std::string::size_type  equal = kv.find('=');

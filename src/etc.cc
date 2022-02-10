@@ -500,7 +500,7 @@ int main(int argc, char const*const*const argv) {
 
 
     ETDCDEBUG(4, "This client supports protocol version " << etdc::ETDServerInterface::currentProtocolVersion << std::endl);
-    for(const auto srv: servers) {
+    for(const auto &srv: servers) {
         ETDCDEBUG(4, "Server protocol version: " << srv->protocolVersion() << std::endl);
     }
 
