@@ -19,8 +19,11 @@ multiple files irrespective of wether they are remote or local.
     with `<size>` being `<number>[kMGT]B` to indicate how many bytes to
     transfer.
 
-[`Version 1.0.1`](https://github.com/jive-vlbi/etransfer/releases/tag/v1.0.1) was tagged on Jun 02 2021; bug in v1.0 found after release: superfluous comma in regex for multiple data channel "parsing"
-[`Version 1.0`](https://github.com/jive-vlbi/etransfer/releases/tag/v1.0) was tagged on May 25 2021.
+<!--- line breaking in Markdown according to
+      https://stackoverflow.com/a/36600196  -->
+[`Version 1.1`](https://github.com/jive-vlbi/etransfer/releases/tag/v1.1) was tagged on Feb 10 2022; log into file-in-directory, compile issues, NFS workaround, fix bug in UUID generator and SIGSEGV in fmtTime<br/>
+[`Version 1.0.1`](https://github.com/jive-vlbi/etransfer/releases/tag/v1.0.1) was tagged on Jun 02 2021; bug in v1.0 found after release: superfluous comma in regex for multiple data channel "parsing"<br/>
+[`Version 1.0`](https://github.com/jive-vlbi/etransfer/releases/tag/v1.0) was tagged on May 25 2021<br/><br/>
 
 Building a tagged version consists of downloading the `.tar.gz` or `.zip` archive, extracting it, and then executing `make` in the `etransfer` directory.
 
@@ -42,6 +45,41 @@ After this, the executable files `etd` (the e-transfer daemon) and `etc`
 operating system, e.g. `Linux-x86-64` or `Darwin-x86\_64`. It is possible to
 compile the same source tree on different systems with or without debug
 information.
+
+## GCC9 / CentOS7 build problems
+
+Several users wrote in to complain about this:
+
+    In file included from /usr/local/include/c++/9.2.0/random:38,
+    from /.../etransfer/src/etdc_uuid.h:28,
+    from /.../etransfer/src/etdc_etd_state.h:25,
+                from src/etc.cc:23:
+    /usr/local/include/c++/9.2.0/cmath:589:11: error: ‘::isinf’ has not been declared
+    using ::isinf;
+          ^~~~~
+    Make: *** [Linux-x86_64-native-debug/src/etc.cco] Error 1
+
+This seems a hiccup in the header files of the compiler and can be remedied
+by the following steps:
+
+- load a more up-to-date compiler on CentOS 7 in a new bash environment:
+  ```bash
+  # may need to do this first
+  $> yum install centos-release-scl -y
+  $> yum install devtoolset-11-* -y
+
+  # this installs the new(er) compiler
+  $> scl enable devtoolset-11 bash
+  ```
+  or follow [this github gist recipe for GCC9 on CentOS7](https://gist.github.com/nchaigne/ad06bc867f911a3c0d32939f1e930a11)
+
+- Remove the directives below from the `Makefile`:
+
+    **-D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -D_GNU_SOURCE -U_GNU_SOURCE**
+
+- run `make` as per normal instructions
+
+Thanks to @ChristianP and @AbelC for testing and suggesting.
 
 ## Running
 The tools operate as a standard daemon/client pair.
