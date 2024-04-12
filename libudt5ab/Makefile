@@ -48,6 +48,9 @@ ifeq ($(B2B),native)
 	ifeq ($(MACHINE),i386)
 		arch=IA32
 	endif
+	ifeq ($(MACHINE),arm64)
+		arch=ARM64
+	endif
 endif
 
 ifeq ($(B2B),32)
@@ -82,6 +85,10 @@ endif
 
 ifeq ($(arch), AMD64)
    CCFLAGS += -DAMD64
+endif
+
+ifeq ($(arch), ARM64)
+   CCFLAGS += -DARM64
 endif
 
 OBJS = $(addprefix $(UDTREPOS)/, md5.o common.o window.o list.o buffer.o packet.o channel.o queue.o ccc.o cache.o core.o epoll.o api.o)
