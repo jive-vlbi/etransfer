@@ -46,6 +46,38 @@ operating system, e.g. `Linux-x86-64` or `Darwin-x86\_64`. It is possible to
 compile the same source tree on different systems with or without debug
 information.
 
+## GCC12 / Debian12 "Bookworm" build problems
+
+On Debian12 w/ gcc12 the build will likely fail with this curious error:
+
+	In file included from /usr/include/c++/12/mutex:43
+	                 from /home/verkout/src/etransfer/src/etdc_debug.h:23,
+	                 from /home/verkout/src/etransfer/src/etdc_fd.h:29,
+	                 from src/etc.cc:21:
+	/usr/include/c++/12/bits/std\_mutex.h: In member function 'void std::__condvar::wait_until(std::mutex&, clockid_t, timespec&)':
+	/usr/include/c++/12/bits/std\_mutex.h:169:7: error: 'pthread_cond_clockwait' was not declared in this scope; did you mean 'pthread_cond_wait'?
+	  169 |       pthread_cond_clockwait(&_M_cond, __m.native_handle(), __clock,
+	      |       ^~~~~~~~~~~~~~~~~~~~~~
+	      |       pthread_cond_wait
+	/usr/include/c++/12/mutex: In member function 'bool std::timed_mutex::_M_clocklock(clockid_t, const __gthread_time_t&)':
+	/usr/include/c++/12/mutex:272:17: error: 'pthread_mutex_clocklock' was not declared in this scope; did you mean 'pthread_mutex_unlock'?
+	  272 |       { return !pthread_mutex_clocklock(&_M_mutex, clockid, &__ts); }
+	      |                 ^~~~~~~~~~~~~~~~~~~~~~~
+	      |                 pthread_mutex_unlock
+	/usr/include/c++/12/mutex: In member function 'bool std::recursive_timed_mutex::_M_clocklock(clockid_t, const __gthread_time_t&)':
+	/usr/include/c++/12/mutex:338:17: error: 'pthread_mutex_clocklock' was not declared in this scope; did you mean 'pthread_mutex_unlock'?
+	  338 |       { return !pthread_mutex_clocklock(&_M_mutex, clockid, &__ts); }
+	      |                 ^~~~~~~~~~~~~~~~~~~~~~~
+	      |                 pthread_mutex_unlock
+
+This seems to be caused by part of the (system)headers still thinking we're compiling `_GNU_SOURCE` and another part not, because that's explicitly disabled on the command line.  The `-DPOSIX_C_SOURCE=200809L -D_GNU_SOURCE -U_GNU_SOURCE` sequence in the [Makefile](./Makefile) is (one of) the ways to force the compiler into using POSIX interfaces and disallow any of the GNU extension nonsense ;-)
+
+See for example [this Stackoverflow Q+A](https://stackoverflow.com/questions/11670581/why-is-gnu-source-defined-by-default-and-how-to-turn-it-off) for some background.
+
+To quickly fix your build simply remove the `-D_GNU_SOURCE -U_GNU_SOURCE` from the `BASEOPT=` list of compilation options in the `Makefile`.
+
+Thanks to @Aar√nG for reporting this.
+
 ## GCC9 / CentOS7 build problems
 
 Several users wrote in to complain about this:
