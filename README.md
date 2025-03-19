@@ -46,9 +46,9 @@ operating system, e.g. `Linux-x86-64` or `Darwin-x86\_64`. It is possible to
 compile the same source tree on different systems with or without debug
 information.
 
-## GCC12 / Debian12 "Bookworm" build problems
+## GCC[10|12] / Debian[11|12] "Bullseye"/"Bookworm" build problems
 
-On Debian12 w/ gcc12 the build will likely fail with this curious error:
+On Debian[11|12] w/ gcc[10|12] (and maybe others) the build will likely fail with this curious error:
 
 	In file included from /usr/include/c++/12/mutex:43
 	                 from /home/verkout/src/etransfer/src/etdc_debug.h:23,
@@ -76,7 +76,7 @@ See for example [this Stackoverflow Q+A](https://stackoverflow.com/questions/116
 
 To quickly fix your build simply remove the `-D_GNU_SOURCE -U_GNU_SOURCE` from the `BASEOPT=` list of compilation options in the `Makefile`.
 
-Thanks to @AarÃnG for reporting this.
+Thanks to @Aarï¿½nG for reporting this.
 
 ## GCC9 / CentOS7 build problems
 
