@@ -251,6 +251,44 @@ void signal_thread(signallist_type const& sigs, std::promise<int>& promise) {
     promise.set_value( received );
 }
 
+// Monitor the transfer list, and force-terminate/delete transfers that have
+// been inactive for a specified time. This prevents locking up the
+// resource(s) - e.g. addressing "path already in use" after the client has
+// been interrupted or the network connection has gone away without us
+// knowing about it.
+void transfer_monitor_thread(etdc::etd_state& serverState, etdc::transfer_clock::duration to) {
+    while( true ) {
+        std::this_thread::sleep_for(to);
+        if( atomic_load(&serverState.cancelled) )
+            break;
+        // Grab lock on shared state and check transfers
+        std::unique_lock                       lk( serverState.lock );
+        std::list<transfermap_type::iterator>  toRemove;
+        etdc::transfer_clock::time_point const now( etdc::transfer_clock::now() );
+
+        for(auto& xfer: serverState.transfers) {
+            if( (xfer->second.lastUpdate - now)>to ) {
+                // OK force-close everything.
+                xfer->second.cancelled.store( true );
+                xfer->second.fd.close( xfer->second.fd );
+                xfer->second.data_fd.close( xfer->second.data_fd );
+                // The only thing we *don't* know at this point is which
+                // thread(s) are acting on this transfer
+
+                // And add this transfer to the time-out list
+                toRemove.push_back( xfer );
+                ETDCDEBUG(0, "transfer_monitor_thread: transfer " << xfer->second.path << " {om: " <<
+                             xfer->second.openMode << ", uuid: " << xfer->first << "} timed out" << std::endl);
+
+            }
+        }
+        // OK remove all the transfers from the list ...
+        for(auto p: toRemove)
+            serverState.transfers.erase( p );
+    }
+    return;
+}
+
 
 int main(int argc, char const*const*const argv) {
     // First things first: block ALL signals
@@ -424,6 +462,10 @@ int main(int argc, char const*const*const argv) {
 
     for(auto&& cmdsrv: cmd.get<std::list<std::string>>("command"))
         serverState.add_thread(&command_server_thread<SIGUSR1>, mk_cmd(cmdsrv), std::ref(serverState));
+
+    // And add a transfer-monitoring-thread
+    // We should be able to delete inactive transfers from our transfer list
+    serverState.add_thread(&transfer_monitor_thread, std::ref(serverState), to);
 
     // Now just wait ..
     killSigFuture.wait();

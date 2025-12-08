@@ -84,20 +84,26 @@ namespace etdc {
     }
 
 
+    using tranfer_clock = std::chrono::steady_clock;
+
     // We keep per-transfer properties in here
     struct transferprops_type {
-        std::string                 path;
-        etdc::etdc_fdptr            fd, data_fd;
-        const openmode_type         openMode;
-        std::mutex                  xfer_lock;
-        std::atomic<bool>           cancelled;
+        std::string                             path;
+        etdc::etdc_fdptr                        fd, data_fd;
+        const openmode_type                     openMode;
+        std::mutex                              xfer_lock;
+        std::atomic<bool>                       cancelled;
+        std::atomic<transfer_clock::time_point> lastUpdate;
 
         // we cannot be copied or default constructed! (because of our unique_ptr)
         transferprops_type()                          = delete;
 
         transferprops_type(etdc::etdc_fdptr efd, std::string const& p, openmode_type om):
             path(p), fd(efd), openMode(om)
-        { cancelled.store( false ); }
+        { 
+            cancelled.store( false );
+            lastUpdate.store( transfer_clock::now() );
+        }
     }; 
 
     using cancel_fn         = std::function<void(void)>;
@@ -142,7 +148,7 @@ namespace etdc {
             ETDCDEBUG(4, "~etd_state/need to wait for " << n_threads << " threads" << std::endl);
             std::unique_lock<std::mutex>  lk( lock );
             // Wait for n_threads to reach 0
-            condition.wait(lk, [this](){ return n_threads==0; } );
+            condition.wait(lk, [this](){ return this->n_threads==0; } );
         }
 
         private:

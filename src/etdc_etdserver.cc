@@ -1631,6 +1631,9 @@ namespace etdc {
             // We found a valid command in the buffer, there may be raw bytes left following that command.
             // Therefore we initialize our read position to the end of the command we found.
             const size_t  rdPos( command.position() + command.length() ); 
+
+            // Pass callbackfn to update to push_n/pull_n so they can update
+            // the xfer_ptr->lastUpdate var
             if( push )
                 ETDDataServer::push_n(sz, xfer_ptr->second->fd, __m_connection, rdPos, curPos, bufSz, buffer);
             else
