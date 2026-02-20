@@ -256,29 +256,31 @@ void signal_thread(signallist_type const& sigs, std::promise<int>& promise) {
 // resource(s) - e.g. addressing "path already in use" after the client has
 // been interrupted or the network connection has gone away without us
 // knowing about it.
-void transfer_monitor_thread(etdc::etd_state& serverState, etdc::transfer_clock::duration to) {
+void transfer_monitor_thread(etdc::etd_state& serverState, float /*etdc::transfer_clock::duration*/ to) {
+    const std::chrono::duration<float> _to( to );
     while( true ) {
-        std::this_thread::sleep_for(to);
+        std::this_thread::sleep_for( _to );
         if( atomic_load(&serverState.cancelled) )
             break;
+        ETDCDEBUG(0, "transfer_monitor_thread: waking up!" << std::endl);
         // Grab lock on shared state and check transfers
-        std::unique_lock                       lk( serverState.lock );
-        std::list<transfermap_type::iterator>  toRemove;
-        etdc::transfer_clock::time_point const now( etdc::transfer_clock::now() );
+        std::unique_lock<std::mutex>                 lk( serverState.lock );
+        std::list<etdc::transfermap_type::iterator>  toRemove;
+        etdc::transfer_clock::time_point const       now( etdc::transfer_clock::now() );
 
-        for(auto& xfer: serverState.transfers) {
-            if( (xfer->second.lastUpdate - now)>to ) {
+        for(etdc::transfermap_type::iterator xfer = serverState.transfers.begin(); xfer!=serverState.transfers.end(); xfer++) {
+            if( (xfer->second->lastUpdate.load() - now)>_to ) {
                 // OK force-close everything.
-                xfer->second.cancelled.store( true );
-                xfer->second.fd.close( xfer->second.fd );
-                xfer->second.data_fd.close( xfer->second.data_fd );
-                // The only thing we *don't* know at this point is which
-                // thread(s) are acting on this transfer
+                xfer->second->cancelled.store( true );
+                // The timeout_function should have been filled in by the
+                // thread doing the actual transfer, so it knows the fd's
+                // as well as its own thread-id
+                xfer->second->timeout_function();
 
                 // And add this transfer to the time-out list
                 toRemove.push_back( xfer );
-                ETDCDEBUG(0, "transfer_monitor_thread: transfer " << xfer->second.path << " {om: " <<
-                             xfer->second.openMode << ", uuid: " << xfer->first << "} timed out" << std::endl);
+                ETDCDEBUG(0, "transfer_monitor_thread: transfer " << xfer->second->path << " {om: " <<
+                             xfer->second->openMode << ", uuid: " << xfer->first << "} timed out" << std::endl);
 
             }
         }
@@ -292,11 +294,12 @@ void transfer_monitor_thread(etdc::etd_state& serverState, etdc::transfer_clock:
 
 int main(int argc, char const*const*const argv) {
     // First things first: block ALL signals
-    etdc::BlockAll      ba;
+    etdc::BlockAll                 ba;
     // Let's set up the command line parsing
-    int                 message_level = 0;
-    std::string         logDirectory{}; // Used if daemonizing: empty = use syslog, otherwise create file in dir
-    socketoptions_type  sockopts{};
+    int                            message_level = 0;
+    std::string                    logDirectory{}; // Used if daemonizing: empty = use syslog, otherwise create file in dir
+    socketoptions_type             sockopts{};
+    float/*etdc::transfer_clock::duration*/ timeOut{ -1.0 };
     AP::ArgumentParser  cmd( AP::version( buildinfo() ),
                              AP::docstring("'ftp' like etransfer server daemon, to be used with etransfer client for "
                                            "high speed file/directory transfers."),
@@ -399,6 +402,10 @@ int main(int argc, char const*const*const argv) {
                                     );
                                 }, "Must be directory writable by the effective user/group" ) );
 
+    // Support a timeout period: any transfers inactive for this period will be deleted
+    cmd.add( AP::store_into(timeOut), AP::long_name("inactive-timeout"),
+             AP::docstring("Automatically remove transfers that are inactive for this amount of seconds (Default: never)") );
+
     // OK Let's check that mother
     cmd.parse(argc, argv);
 
@@ -465,7 +472,7 @@ int main(int argc, char const*const*const argv) {
 
     // And add a transfer-monitoring-thread
     // We should be able to delete inactive transfers from our transfer list
-    serverState.add_thread(&transfer_monitor_thread, std::ref(serverState), to);
+    serverState.add_thread(&transfer_monitor_thread, std::ref(serverState), timeOut);
 
     // Now just wait ..
     killSigFuture.wait();
