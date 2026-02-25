@@ -497,10 +497,15 @@ namespace etdc {
                     ssize_t const thisWrite = transfer.data_fd->write(transfer.data_fd->__m_fd, &buffer[nWritten], nRead-nWritten);
 
                     if( thisWrite<=0 ) {
-                        reason   = ((thisWrite==-1) ? std::string(etdc::strerror(errno)) : std::string("write should never have returned 0"));
+                        reason   = ((thisWrite==-1) ? std::string(etdc::strerror(errno)) : std::string("remote server hung up connection"));
                         remoteOK = false;
                         break;
                     }
+//                    if( thisWrite<=0 ) {
+//                        reason   = ((thisWrite==-1) ? std::string(etdc::strerror(errno)) : std::string("write should never have returned 0"));
+//                        remoteOK = false;
+//                        break;
+//                    }
                     nWritten += thisWrite;
                 }
                 if( nWritten<nRead )
@@ -688,7 +693,7 @@ namespace etdc {
                     ssize_t const thisWrite = transfer.fd->write(transfer.fd->__m_fd, &buffer[nWritten], nRead-nWritten);
 
                     if( thisWrite<=0 ) {
-                        reason   = ((thisWrite==-1) ? std::string(etdc::strerror(errno)) : std::string("write should never have returned 0"));
+                        reason   = ((thisWrite==-1) ? std::string(etdc::strerror(errno)) : std::string("write should never have returned 0 writing to local file"));
                         remoteOK = false;
                         break;
                     }
