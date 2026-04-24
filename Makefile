@@ -86,7 +86,7 @@ etd_OBJS=$(call mkobjs,etd)
 etd_DEPS=libudt5ab pthread fkyaml
 
 # etransfer client
-etc_SRC=src/etc.cc src/reentrant.cc src/etdc_fd.cc src/etdc_etdserver.cc src/etdc_debug.cc
+etc_SRC=src/etc.cc src/reentrant.cc src/etdc_fd.cc src/etdc_etdserver.cc src/etdc_debug.cc src/etd_acl.cc
 etc_VERSION=1.2
 etc_RELEASE=dev
 etc_OBJS=$(call mkobjs,etc)

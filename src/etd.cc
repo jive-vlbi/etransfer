@@ -258,6 +258,7 @@ int main(int argc, char const*const*const argv) {
     // Let's set up the command line parsing
     int                 message_level = 0;
     std::string         logDirectory{}; // Used if daemonizing: empty = use syslog, otherwise create file in dir
+    etdc::etd_state     serverState;
     socketoptions_type  sockopts{};
     AP::ArgumentParser  cmd( AP::version( buildinfo() ),
                              AP::docstring("'ftp' like etransfer server daemon, to be used with etransfer client for "
@@ -325,6 +326,13 @@ int main(int argc, char const*const*const argv) {
              AP::docstring(std::string("Set send/receive buffer size. Default ")+etdc::repr(sockopts.bufSize)) );
 
     // command servers; we require at least one of 'm
+    cmd.add( AP::store_into(serverState.acl), AP::long_name("acl"), AP::at_most(1),
+             AP::docstring("Read YAML access control configuration from this file"),
+             AP::convert([](std::string const& p) {
+                 ETDCSYSCALL(::access(p.c_str(), R_OK)==0, "ACL file '" << p << "' must exist and be readable");
+                 return std::make_shared<etdc::ACL>( etdc::ACL::readFromFile(p) );
+             }) );
+
     cmd.add( AP::collect<std::string>(), AP::long_name("command"),
              // Constraints on the number + form of the argument
              AP::at_least(1), AP::match(rxURL),
@@ -403,7 +411,6 @@ int main(int argc, char const*const*const argv) {
     etdc::thread(signal_thread, signallist_type{{SIGHUP, SIGINT, SIGTERM, SIGSEGV}}, std::ref(killSigPromise)).detach();
 
     // Start threads for the command+data servers
-    etdc::etd_state            serverState;
     const string2socket_type_m mk_cmd ( port(4004), sockopts );
     const string2socket_type_m mk_data( port(8008), sockopts );
 

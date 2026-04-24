@@ -23,6 +23,7 @@
 #include <fkyaml.hpp>   // for fkYAML - https://fktn-k.github.io/fkYAML/
 #include <string>
 #include <memory>
+#include <vector>
 
 
 namespace etdc {
@@ -49,11 +50,29 @@ namespace etdc {
             // Static function to read from a file
             static ACL  readFromFile( std::string const& fn );
 
+            bool allowRead( std::string const& path ) const;
+            bool allowWrite( std::string const& path ) const;
+
         private:
+            enum class section_type { Read = 0, Write = 1 };
+
+            struct rule {
+                bool        allow;
+                std::string pattern;
+            };
+
+            struct section {
+                rule                     default_rule;
+                std::vector<rule>        allow_rules;
+                std::vector<rule>        deny_rules;
+            };
+
             fkyaml::node    _m_root;
+            section         _m_sections[2];
 
             // Will throw on wonky yaml
             void            initFromYAML( void );
+            bool            check( section_type which, std::string const& path ) const;
     };
 
     using ACLptr = std::shared_ptr<etdc::ACL>;

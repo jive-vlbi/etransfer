@@ -181,6 +181,9 @@ namespace etdc {
 
         const std::string nPath( detail::normalize_path(path) );
 
+        if( shared_state.acl )
+            ETDCASSERT(shared_state.acl->allowWrite(nPath), "requestFileWrite(" << path << ") denied by ACL");
+
         // Attempt to open path new, write or append [reject read!]
         ETDCASSERT(allowedModes.find(mode)!=std::end(allowedModes),
                    "invalid open mode for requestFileWrite(" << path << ")");
@@ -237,6 +240,9 @@ namespace etdc {
         // Before doing anything - see if this server already has an entry for this (normalized) path -
         // we can only honour this request if it's opened for reading [multiple readers = ok]
         const std::string nPath( detail::normalize_path(path) );
+
+        if( shared_state.acl )
+            ETDCASSERT(shared_state.acl->allowRead(nPath), "requestFileRead(" << path << ") denied by ACL");
         const auto  pathPtr = std::find_if(std::begin(transfers), std::end(transfers),
                                            std::bind([&](std::string const& p) { return p==nPath; },
                                                      std::bind(std::mem_fn(&transferprops_type::path), std::bind(etdc::snd_type(), std::placeholders::_1))));
