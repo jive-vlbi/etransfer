@@ -150,6 +150,31 @@ over UDT/IPv6:46227.
 
 Both the e-transfer daemon and client support the "--help" command line option explain all options.
 
+### Access control lists
+
+The daemon can optionally read an access control list via the `--acl <file>` option. The file must be readable by the daemon and contains a YAML document describing per-section allow/deny glob patterns:
+
+```yaml
+read:
+  default:
+    allow: "*"
+  deny:
+    - "/restricted/**"
+
+write:
+  default:
+    deny: "*"
+  allow:
+    - "/data/projects/**"
+    - "/scratch/*/uploads"
+```
+
+Each top-level section (`read` or `write`) is optional. Inside a section:
+
+- `default` is a single rule that specifies whether matching paths should be allowed or denied when no other rule matches. The `allow`/`deny` key inside the default rule holds a glob pattern; if the path matches the pattern the decision is applied, otherwise the request is rejected.
+- `allow` and `deny` are optional lists of glob patterns evaluated in the order shown above. The first matching rule decides the outcome.
+
+All glob patterns are interpreted using `fnmatch(3)` with `FNM_PATHNAME`, so `/foo/*` matches immediate children and `/foo/**` can be used to match recursively.
 
 ## File copy modes
 
