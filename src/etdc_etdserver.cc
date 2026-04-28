@@ -1577,6 +1577,12 @@ namespace etdc {
             // The size must be an off_t value
             string2off_t(szptr->second, sz);
 
+            const etdc::uuid_type uuid(uuidptr->second);
+
+            ETDCDEBUG(4, "ETDDataServer: found " << kvpairs.size() << " key-value pairs inside [uuid=" << uuid << "]" << std::endl);
+            for(const auto& kv: kvpairs)
+                ETDCDEBUG(4, "   " << kv.first << ":" << kv.second << " [uuid=" << uuid << "]" << std::endl);
+
             // Verification = complete.
             // Now we must grab a lock on the transfer (if there is one)
             // and do our thang
@@ -1590,9 +1596,9 @@ namespace etdc {
                 // 2a. lock shared state
                 std::unique_lock<std::mutex>     lk( shared_state.lock );
                 // 2b. assert that there is an entry for the indicated uuid
-                xfer_ptr = shared_state.transfers.find(uuid_type(uuidptr->second));
+                xfer_ptr = shared_state.transfers.find(uuid);
 
-                ETDCASSERT(xfer_ptr!=shared_state.transfers.end(), "No transfer associated with the UUID");
+                ETDCASSERT(xfer_ptr!=shared_state.transfers.end(), "No transfer associated with the UUID [uuid=" << uuid << "]");
 
                 // Now we must do try_lock on the transfer - if that fails we sleep and start from the beginning
                 std::unique_lock<std::mutex>     sh( xfer_ptr->second->xfer_lock, std::try_to_lock );
@@ -1617,12 +1623,13 @@ namespace etdc {
                 // So now we test it once, after we've acquired the lock
                 ETDCASSERT( (push ? allowedReadModes.find(xfer_ptr->second->openMode)!=allowedReadModes.end() :
                                     allowedWriteModes.find(xfer_ptr->second->openMode)!=allowedWriteModes.end()),
-                            "The referred-to transfer's open mode (" << xfer_ptr->second->openMode << ") is not compatible with the current data request");
+                            "The referred-to transfer's open mode (" << xfer_ptr->second->openMode
+                            << ") is not compatible with the current data request [uuid=" << uuid << "]");
                 // move the transfer lock out of this loop;
                 // breaking out of the loop will unlock the shared state
                 transfer_lock = std::move( sh );
             }
-            ETDCDEBUG(5, "ETDDataServer/owning transfer lock, now sucking data!" << std::endl);
+            ETDCDEBUG(5, "ETDDataServer/owning transfer lock, now sucking data! [uuid=" << uuid << "]" << std::endl);
 
             // If we end up here we know that the transfer is locked and
             // that xfer_ptr is pointing at it and that all is good
@@ -1631,10 +1638,13 @@ namespace etdc {
             // We found a valid command in the buffer, there may be raw bytes left following that command.
             // Therefore we initialize our read position to the end of the command we found.
             const size_t  rdPos( command.position() + command.length() ); 
-            if( push )
-                ETDDataServer::push_n(sz, xfer_ptr->second->fd, __m_connection, rdPos, curPos, bufSz, buffer);
-            else
-                ETDDataServer::pull_n(sz, __m_connection, xfer_ptr->second->fd, rdPos, curPos, bufSz, buffer);
+            if( push ) {
+                ETDCDEBUG(4, "ETDDataServer: executing push of " << sz << " bytes [uuid=" << uuid << "]" << std::endl);
+                ETDDataServer::push_n(sz, xfer_ptr->second->fd, __m_connection, rdPos, curPos, bufSz, buffer, uuid);
+            } else {
+                ETDCDEBUG(4, "ETDDataServer: executing pull of " << sz << " bytes [uuid=" << uuid << "]" << std::endl);
+                ETDDataServer::pull_n(sz, __m_connection, xfer_ptr->second->fd, rdPos, curPos, bufSz, buffer, uuid);
+            }
             // This command has been served, ready to accept next
             curPos = 0;
         }
@@ -1647,13 +1657,14 @@ namespace etdc {
     // ignore any extra bytes sent by the client and overwrite everything in
     // the buffer
     void ETDDataServer::push_n(size_t n, etdc::etdc_fdptr src, etdc::etdc_fdptr dst,
-                               size_t /*rdPos*/, const size_t /*endPos*/, const size_t bufSz, std::unique_ptr<char[]>& buf) {
+                               size_t /*rdPos*/, const size_t /*endPos*/, const size_t bufSz, std::unique_ptr<char[]>& buf,
+                               etdc::uuid_type const& uuid) {
         while( n>0 ) {
             // Amount of bytes to process in this iteration
             const ssize_t nRead = std::min(n, bufSz);
             ssize_t       aRead, nWritten{ 0 };
 
-            ETDCDEBUG(5, "ETDDataServer::push_n/pushing " << n << " bytes" << std::endl);
+            ETDCDEBUG(5, "ETDDataServer::push_n/pushing " << n << " bytes [uuid=" << uuid << "]" << std::endl);
 
             ETDCASSERT((aRead=src->read(src->__m_fd, &buf[0], nRead))>0,
                        ((aRead==-1) ? std::string(etdc::strerror(errno)) : std::string("read() returned 0 - hung up?!")));
@@ -1670,16 +1681,17 @@ namespace etdc {
         }
         // Do a read from the destination such that we know it is finished
         char ack;
-        ETDCDEBUG(5, "ETDDataServer::push_n/waiting for ACK " << std::endl);
+        ETDCDEBUG(5, "ETDDataServer::push_n/waiting for ACK [uuid=" << uuid << "]" << std::endl);
         dst->read(dst->__m_fd, &ack, 1);
-        ETDCDEBUG(5, "ETDDataServer::push_n/done." << std::endl);
+        ETDCDEBUG(5, "ETDDataServer::push_n/done. [uuid=" << uuid << "]" << std::endl);
     }
     // PULL n bytes from rc to dst, using buffer of size bufSz
     // the bytes between endPos and rdPos are what was read from the client,
     // raw bytes immediately following the command. We flush those to the
     // file first and then we can use the whole buffer for reading bytes.
     void ETDDataServer::pull_n(size_t n, etdc::etdc_fdptr src, etdc::etdc_fdptr dst,
-                               size_t rdPos, const size_t endPos, const size_t bufSz, std::unique_ptr<char[]>& buf) {
+                               size_t rdPos, const size_t endPos, const size_t bufSz, std::unique_ptr<char[]>& buf,
+                               etdc::uuid_type const& uuid) {
         // rdPos:  current start of read area in buf
         // endPos: passed in from above; this is where the initial command
         //         reader left off
@@ -1694,7 +1706,7 @@ namespace etdc {
             ssize_t       aRead;
             const ssize_t nRead = std::min(n + rdPos - wrEnd, bufSz - wrEnd);
 
-            ETDCDEBUG(5, "ETDDataServer::pull_n/pulling " << n << " bytes" << std::endl);
+            ETDCDEBUG(5, "ETDDataServer::pull_n/pulling " << n << " bytes [uuid=" << uuid << "]" << std::endl);
         
             // Attempt to read bytes. <0 is an error
             ETDCASSERT((aRead = src->read(src->__m_fd, &buf[wrEnd], nRead))>=0, "Failed to read bytes from client - " << etdc::strerror(errno));
@@ -1714,9 +1726,9 @@ namespace etdc {
             wrEnd = rdPos = 0;
         }
         const char ack{ 'y' };
-        ETDCDEBUG(5, "ETDDataServer::pull_n/got all bytes, sending ACK " << std::endl);
+        ETDCDEBUG(5, "ETDDataServer::pull_n/got all bytes, sending ACK [uuid=" << uuid << "]" << std::endl);
         src->write(src->__m_fd, &ack, 1);
-        ETDCDEBUG(5, "ETDDataServer::pull_n/done." << std::endl);
+        ETDCDEBUG(5, "ETDDataServer::pull_n/done. [uuid=" << uuid << "]" << std::endl);
     }
 
 } // namespace etdc
