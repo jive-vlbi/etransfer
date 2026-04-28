@@ -1147,9 +1147,9 @@ struct tidy_guard {
     tidy_guard() = delete;
 
     /// @brief Construct a tidy_guard with a pointer to the object.
-    /// @param p_obj
-    tidy_guard(ObjT* p_obj) noexcept
-        : p_obj(p_obj) {
+    /// @param obj_ptr Pointer to the managed object.
+    tidy_guard(ObjT* obj_ptr) noexcept
+        : p_obj(obj_ptr) {
     }
 
     // move-only
