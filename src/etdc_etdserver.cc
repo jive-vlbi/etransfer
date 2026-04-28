@@ -122,8 +122,22 @@ namespace etdc {
         // and (2) does not get globbed for it is just one file
         const bool              isDevZero( std::regex_match(path, etdc::rxDevZero) );
 
-        if( isDevZero ) 
+        etdc::ACLptr const      acl = __m_shared_state.get().acl;
+        std::function<bool(std::string const&)> aclAllows = [](std::string const&) { return true; };
+
+        if( acl ) {
+            aclAllows = [acl](std::string const& candidate) {
+                std::string normalized( detail::normalize_path(candidate) );
+                if( normalized.size()>1 && normalized.back()=='/' )
+                    normalized.erase( normalized.size()-1 );
+                return acl->allowRead( normalized );
+            };
+        }
+
+        if( isDevZero ) {
+            ETDCASSERT(aclAllows(path), "listPath(" << path << ") denied by ACL");
             return filelist_type{ path };
+        }
 
         // glob() is MT unsafe so we had better make sure only one thread executes this
         //static std::mutex       globMutex;
@@ -155,8 +169,18 @@ namespace etdc {
         //    std::lock_guard<std::mutex> scopedlock(globMutex);
         //}
         
-        // Now that we have the results, we can 
-        return filelist_type(&files->gl_pathv[0], &files->gl_pathv[files->gl_pathc]);
+        filelist_type results;
+
+        for(size_t idx = 0; idx<files->gl_pathc; ++idx) {
+            std::string entry( files->gl_pathv[idx] );
+
+            if( !aclAllows(entry) )
+                continue;
+
+            results.emplace_back( std::move(entry) );
+        }
+
+        return results;
     }
 
     //////////////////////////////////////////////////////////////////////////////////////

@@ -5,7 +5,7 @@
 data does not flow through the client's machine and/or network.
 
 - The system natively supports remote wildcards; it is possible to transfer
-multiple files irrespective of wether they are remote or local.
+multiple files irrespective of wether they are remote or local. Since Apr 2026 (v1.2), the daemon also [supports access control lists (ACLs)](#access-control-lists) to restrict read and/or write access to specific files or directories.
 
 - The etransfer tools support TCP and [UDT](https://github.com/netvirt/udt4) over both IPv4 and IPv6. The UDT protocol is orders of magnitude faster on long, fat, network connections.
 
