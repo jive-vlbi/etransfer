@@ -257,36 +257,57 @@ void signal_thread(signallist_type const& sigs, std::promise<int>& promise) {
 // been interrupted or the network connection has gone away without us
 // knowing about it.
 void transfer_monitor_thread(etdc::etd_state& serverState, float /*etdc::transfer_clock::duration*/ to) {
-    const std::chrono::duration<float> _to( to );
+    const auto timeout = std::chrono::duration_cast<etdc::transfer_clock::duration>(std::chrono::duration<float>(to));
     while( true ) {
-        std::this_thread::sleep_for( _to );
-        if( atomic_load(&serverState.cancelled) )
+        std::unique_lock<std::mutex>                 lk( serverState.lock );
+        if( serverState.condition.wait_for(lk, timeout, [&serverState]() { return atomic_load(&serverState.cancelled); }) )
             break;
         ETDCDEBUG(0, "transfer_monitor_thread: waking up!" << std::endl);
-        // Grab lock on shared state and check transfers
-        std::unique_lock<std::mutex>                 lk( serverState.lock );
-        std::list<etdc::transfermap_type::iterator>  toRemove;
+        std::vector<etdc::uuid_type>                 timed_out_ids;
         etdc::transfer_clock::time_point const       now( etdc::transfer_clock::now() );
 
         for(etdc::transfermap_type::iterator xfer = serverState.transfers.begin(); xfer!=serverState.transfers.end(); xfer++) {
-            if( (xfer->second->lastUpdate.load() - now)>_to ) {
-                // OK force-close everything.
-                xfer->second->cancelled.store( true );
-                // The timeout_function should have been filled in by the
-                // thread doing the actual transfer, so it knows the fd's
-                // as well as its own thread-id
-                xfer->second->timeout_function();
+            auto const last_update = xfer->second->lastUpdate.load();
+            if( (now - last_update) >= timeout ) {
+                // First attempt to transition cancelled -> true so we only
+                // kick the worker thread once.
+                bool expected = false;
+                if( xfer->second->cancelled.compare_exchange_strong(expected, true) ) {
+                    // The timeout_function should have been filled in by the
+                    // thread doing the actual transfer, so it knows the fd's
+                    // as well as its own thread-id
+                    xfer->second->timeout_function();
+                }
 
-                // And add this transfer to the time-out list
-                toRemove.push_back( xfer );
+                timed_out_ids.push_back( xfer->first );
                 ETDCDEBUG(0, "transfer_monitor_thread: transfer " << xfer->second->path << " {om: " <<
                              xfer->second->openMode << ", uuid: " << xfer->first << "} timed out" << std::endl);
-
             }
         }
-        // OK remove all the transfers from the list ...
-        for(auto p: toRemove)
-            serverState.transfers.erase( p );
+        lk.unlock();
+
+        for(auto const& uuid : timed_out_ids) {
+            bool removed = false;
+            while( !removed && !atomic_load(&serverState.cancelled) ) {
+                std::unique_lock<std::mutex> state_lock( serverState.lock );
+                auto it = serverState.transfers.find( uuid );
+                if( it==serverState.transfers.end() ) {
+                    removed = true;
+                    break;
+                }
+
+                std::unique_lock<std::mutex> transfer_guard( it->second->xfer_lock, std::try_to_lock );
+                if( !transfer_guard.owns_lock() ) {
+                    state_lock.unlock();
+                    std::this_thread::sleep_for( std::chrono::milliseconds(10) );
+                    continue;
+                }
+
+                serverState.transfers.erase( it );
+                serverState.condition.notify_all();
+                removed = true;
+            }
+        }
     }
     return;
 }
@@ -470,9 +491,10 @@ int main(int argc, char const*const*const argv) {
     for(auto&& cmdsrv: cmd.get<std::list<std::string>>("command"))
         serverState.add_thread(&command_server_thread<SIGUSR1>, mk_cmd(cmdsrv), std::ref(serverState));
 
-    // And add a transfer-monitoring-thread
-    // We should be able to delete inactive transfers from our transfer list
-    serverState.add_thread(&transfer_monitor_thread, std::ref(serverState), timeOut);
+    // And add a transfer-monitoring-thread when timeouts are requested
+    // timeOut <= 0 means "disabled"
+    if( timeOut>0.0f )
+        serverState.add_thread(&transfer_monitor_thread, std::ref(serverState), timeOut);
 
     // Now just wait ..
     killSigFuture.wait();
@@ -484,11 +506,24 @@ int main(int argc, char const*const*const argv) {
     }
     // Before starting to process cancellations, set the cancel flag
     std::atomic_store(&serverState.cancelled, true);
+    serverState.condition.notify_all();
 
     for(auto& cancel: serverState.cancellations)
         cancel();
 
-    // Now wait for all of them to finish?
+    // Proactively mark transfers cancelled so monitor can unwind immediately
+    {
+        etdc::scoped_lock lk(serverState.lock);
+        for(auto& entry : serverState.transfers)
+            entry.second->cancelled.store(true);
+        serverState.condition.notify_all();
+    }
+
+    // Now wait for all worker threads to finish before exiting main
+    {
+        std::unique_lock<std::mutex> lk(serverState.lock);
+        serverState.condition.wait(lk, [&serverState]() { return serverState.n_threads==0; });
+    }
     ETDCDEBUG(1, "main: terminating." << endl);
     return 0;
 }
