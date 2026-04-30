@@ -450,14 +450,26 @@ int main(int argc, char const*const*const argv) {
 //   1. do blocking accept
 //   2. if fd accepted - spawn new thread with self state
 //   3. thread falls through to handle accepted client
+namespace {
+    struct cancellation_context {
+        pthread_t        thread{ ::pthread_self() };
+        etdc::etdc_fdptr client;
+    };
+
+    inline std::shared_ptr<cancellation_context> make_cancel_context(etdc::etdc_fdptr seed) {
+        auto ctx = std::make_shared<cancellation_context>();
+        std::atomic_store(&ctx->client, std::move(seed));
+        return ctx;
+    }
+}
+
 template <int KillSignal>
 void command_server_thread(etdc::etdc_fdptr pServer, etdc::etd_state& shared_state) {
     // First things first: push ourselves on the list of cancellations
     // But we'll unblock a signal for that such that we can let the
     // cancellation function send a signal to us :D
-    pthread_t                       thisThread = ::pthread_self();
     etdc::UnBlock                   s({KillSignal});
-    etdc::etdc_fdptr                pClient{ pServer };
+    auto                            cancelCtx = make_cancel_context(pServer);
     etdc::cancellist_type::iterator ourCancellation;
 
     etdc::install_handler(dummy_signal_handler, {KillSignal});
@@ -466,25 +478,32 @@ void command_server_thread(etdc::etdc_fdptr pServer, etdc::etd_state& shared_sta
         // used scoped lock to add ourselves to the list of cancellations
         etdc::scoped_lock lk(shared_state.lock);
         ourCancellation = shared_state.cancellations.insert( shared_state.cancellations.end(),
-                 [&](void) {
+                [cancelCtx](void) {
                     // Atomically load the file descriptor we need to cancel
-                    etdc::etdc_fdptr  myFD = std::atomic_load(&pClient);
+                    etdc::etdc_fdptr  myFD = std::atomic_load(&cancelCtx->client);
 
-                    ETDCDEBUG(2, "Cancellation fn/signalling thread for command fd=" << myFD->__m_fd << std::endl);
-                    myFD->close(myFD->__m_fd);
-                    ::pthread_kill(thisThread, KillSignal); }
+                    if( myFD ) {
+                        ETDCDEBUG(2, "Cancellation fn/signalling thread for command fd=" << myFD->__m_fd << std::endl);
+                        myFD->close(myFD->__m_fd);
+                    } else {
+                        ETDCDEBUG(3, "Cancellation fn/signalling thread for command - no active client" << std::endl);
+                    }
+                    if( int rc = ::pthread_kill(cancelCtx->thread, KillSignal) )
+                        ETDCDEBUG(1, "Cancellation fn/pthread_kill(command) failed - " << rc << std::endl);
+                }
                );
     }
 
     try {
         // Now we can get on with our lives
         if( !std::atomic_load(&shared_state.cancelled) )
-            std::atomic_store(&pClient, pServer->accept(pServer->__m_fd));
+            std::atomic_store(&cancelCtx->client, pServer->accept(pServer->__m_fd));
 
         // OK we accepted a client. Now spawn a new acceptor - unless we're calling it a day
         if( !std::atomic_load(&shared_state.cancelled) )
             shared_state.add_thread(&command_server_thread<KillSignal>, pServer, std::ref(shared_state));
 
+        etdc::etdc_fdptr pClient = std::atomic_load(&cancelCtx->client);
         if( !pClient )
             throw std::runtime_error("No incoming command client?!");
 
@@ -508,6 +527,7 @@ void command_server_thread(etdc::etdc_fdptr pServer, etdc::etd_state& shared_sta
     catch( ... ) {
         ETDCDEBUG(1, "command server thread got unknown exception" << std::endl);
     }
+    std::atomic_store(&cancelCtx->client, etdc::etdc_fdptr{});
     if( !std::atomic_load(&shared_state.cancelled) ) {
         etdc::scoped_lock  lk(shared_state.lock);
         shared_state.cancellations.erase( ourCancellation );
@@ -522,9 +542,8 @@ void data_server_thread(etdc::etdc_fdptr pServer, etdc::etd_state& shared_state)
     // First things first: push ourselves on the list of cancellations
     // But we'll unblock a signal for that such that we can let the
     // cancellation function send a signal to us :D
-    pthread_t                       thisThread = ::pthread_self();
     etdc::UnBlock                   s({KillSignal});
-    etdc::etdc_fdptr                pClient{ pServer };
+    auto                            cancelCtx = make_cancel_context(pServer);
     etdc::cancellist_type::iterator ourCancellation;
 
     etdc::install_handler(dummy_signal_handler, {KillSignal});
@@ -534,14 +553,20 @@ void data_server_thread(etdc::etdc_fdptr pServer, etdc::etd_state& shared_state)
         etdc::scoped_lock lk(shared_state.lock);
         ourCancellation = shared_state.cancellations.insert( shared_state.cancellations.end(),
                 // cancellation function void(void):
-                [&](void) {
+                [cancelCtx](void) {
                     // Atomically load the shared pointer
                     // http://en.cppreference.com/w/cpp/memory/shared_ptr/atomic
-                    etdc::etdc_fdptr  myFD = std::atomic_load(&pClient);
+                    etdc::etdc_fdptr  myFD = std::atomic_load(&cancelCtx->client);
 
-                    ETDCDEBUG(2, "Cancellation fn/signalling thread for data fd=" << myFD->__m_fd << std::endl);
-                    myFD->close(myFD->__m_fd);
-                    ::pthread_kill(thisThread, KillSignal); }
+                    if( myFD ) {
+                        ETDCDEBUG(2, "Cancellation fn/signalling thread for data fd=" << myFD->__m_fd << std::endl);
+                        myFD->close(myFD->__m_fd);
+                    } else {
+                        ETDCDEBUG(3, "Cancellation fn/signalling thread for data - no active client" << std::endl);
+                    }
+                    if( int rc = ::pthread_kill(cancelCtx->thread, KillSignal) )
+                        ETDCDEBUG(1, "Cancellation fn/pthread_kill(data) failed - " << rc << std::endl);
+                }
             );
     }
 
@@ -549,12 +574,13 @@ void data_server_thread(etdc::etdc_fdptr pServer, etdc::etd_state& shared_state)
         // Now we can get on with our lives - atomically store the client's
         // file descriptor as soon as accept() returns
         if( !std::atomic_load(&shared_state.cancelled) )
-            std::atomic_store(&pClient, pServer->accept(pServer->__m_fd));
+            std::atomic_store(&cancelCtx->client, pServer->accept(pServer->__m_fd));
 
         // OK we accepted a client. Now spawn a new acceptor - unless we're calling it a day
         if( !std::atomic_load(&shared_state.cancelled) )
             shared_state.add_thread(&data_server_thread<KillSignal>, pServer, std::ref(shared_state));
 
+        etdc::etdc_fdptr pClient = std::atomic_load(&cancelCtx->client);
         if( !pClient )
             throw std::runtime_error("No incoming data client?!");
         // Now we fall through handling the client
@@ -585,6 +611,7 @@ void data_server_thread(etdc::etdc_fdptr pServer, etdc::etd_state& shared_state)
     catch( ... ) {
         ETDCDEBUG(1, "data server thread got unknown exception" << std::endl);
     }
+    std::atomic_store(&cancelCtx->client, etdc::etdc_fdptr{});
     // Deregister our cancellation - only if we weren't being cancelled.
     if( !std::atomic_load(&shared_state.cancelled) ) {
         etdc::scoped_lock  lk(shared_state.lock);
