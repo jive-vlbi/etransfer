@@ -7129,15 +7129,15 @@ class basic_deserializer {
         parse_context() = default;
 
         /// @brief Construct a new parse_context object with non-default values for each parameter.
-        /// @param line The current line. (count from zero)
-        /// @param indent The indentation width in the current line. (count from zero)
-        /// @param state The parse context type.
-        /// @param p_node The underlying node associated to this context.
-        parse_context(uint32_t line, uint32_t indent, context_state_t state, basic_node_type* p_node) noexcept
-            : line(line),
-              indent(indent),
-              state(state),
-              p_node(p_node) {
+        /// @param line_value The current line. (count from zero)
+        /// @param indent_value The indentation width in the current line. (count from zero)
+        /// @param state_value The parse context type.
+        /// @param node_ptr The underlying node associated to this context.
+        parse_context(uint32_t line_value, uint32_t indent_value, context_state_t state_value, basic_node_type* node_ptr) noexcept
+            : line(line_value),
+              indent(indent_value),
+              state(state_value),
+              p_node(node_ptr) {
         }
 
         parse_context(const parse_context&) noexcept = default;
