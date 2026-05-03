@@ -197,7 +197,7 @@ $(repos)/%.d: Makefile
 	@ $(CXX) -MM $(CXXOPT) $(INCD) $($(*F)_SRC) | sed -e 's@^\(.*\)\.o:@$(repos)/src/\1.cco:@;' > $@
 	@ export TMP="`cat $@ | sed -n '/^[^:]*:/{ s/^[^:]*: *//;p; }' | tr ' ' '\n' | sort | uniq | tr '\n' ' ' | sed 's#\\\\##g'`"; printf "$(repos)/$*.d $(repos)/src/$*_version.cco: src/version.h $${TMP}\n" >> $@;
 	@ printf ".PHONY: $*.dep\n$*.dep : $($*_DEPS)\n" >> $@;
-	@ printf "$*.target: $(repos)/src/$*_version.cco $(repos)/$*.d $*.dep $($*_OBJS)\n\t$(LD) -o $(repos)/$* $($*_OBJS) $(repos)/src/$*_version.cco $(LIBD) $$(PLATFORMLIBS) $($(*F)_LIBS)\n" >> $@;
+	@ printf "$*.target: $(repos)/src/$*_version.cco $(repos)/$*.d $*.dep $($*_OBJS)\n\t$(LD) -o $(repos)/$* $($*_OBJS) $(repos)/src/$*_version.cco $(LIBD) $(PLATFORMLIBS) $($(*F)_LIBS)\n" >> $@;
 
 $(repos)/src/%_version.cco: 
 	@ echo "[creating version file for $* into $@]";
