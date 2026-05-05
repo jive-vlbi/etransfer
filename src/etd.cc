@@ -115,7 +115,29 @@ dbgMap = {
                                                                  etdc::ipv6_only  ipv6;
                                                                  etdc::getsockopt(pSok->__m_fd, rcv, ipv6, snd);
                                                                  ETDCDEBUG(1, s << "/TCP6 rcvbuf = " << rcv << " sndbuf = " << snd << ", ipv6 only = " << ipv6 << endl);
-                                                             }}
+                                                             }},
+    {"srt", [](etdc::etdc_fdptr pSok, std::string const& s) {
+                                etdc::srt_mss     mss;
+                                etdc::srt_max_bw  maxbw;
+                                etdc::srt_sndsyn  sndsyn;
+                                etdc::srt_rcvsyn  rcvsyn;
+                                etdc::getsockopt(pSok->__m_fd, sndsyn, rcvsyn, mss, maxbw);
+                                ETDCDEBUG(1, s << "/SRT rcvsyn = " << rcvsyn << " sndsyn = " << sndsyn
+                                               << " mss=" << untag(mss)
+                                               << " max_bw=" << (untag(maxbw)<0 ? "Inf" : etdc::sciprint(untag(maxbw), "Bps"))
+                                               << endl);
+                             }},
+    {"srt6", [](etdc::etdc_fdptr pSok, std::string const& s) {
+                                 etdc::srt_mss     mss;
+                                 etdc::srt_max_bw  maxbw;
+                                 etdc::srt_sndsyn  sndsyn;
+                                 etdc::srt_rcvsyn  rcvsyn;
+                                 etdc::getsockopt(pSok->__m_fd, sndsyn, rcvsyn, mss, maxbw);
+                                 ETDCDEBUG(1, s << "/SRT6 rcvsyn = " << rcvsyn << " sndsyn = " << sndsyn
+                                                << " mss=" << untag(mss)
+                                                << " max_bw=" << (untag(maxbw)<0 ? "Inf" : etdc::sciprint(untag(maxbw), "Bps"))
+                                                << endl);
+                             }}
 };
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -131,19 +153,19 @@ HUMANREADABLE(etdc::mss_type,    "int (bytes)")
 HUMANREADABLE(etdc::max_bw_type, "int (bytes per second)")
 
 // Let's make the URL syntax at least somewhat similar to that of the client:
-//     protocol://[local address][:port]
+//     protocol://[local address][[:#]port]
 //
 // In the string below the digits under the '(' are the submatch indices of that group.
 static const std::regex rxURL{
     /* protocol */
-    "((tcp|udt)6?)://"
+    "((tcp|udt|srt)6?)://"
 //   12 
     /* optional host name or IPv6 'coloned hex' (with optional interface suffix) in literal []'s*/
     "([-a-z0-9\\.]+|\\[[:0-9a-f]+(/[0-9]{1,3})?(%[a-z0-9\\.]+)?\\])?" 
 //   3                           4             5
     /* port number - maybe default? */
-    "(:([0-9]+))?"
-//   6 7
+    "(?:[:#]([0-9]+))?"
+//             6
     , std::regex_constants::ECMAScript | std::regex_constants::icase
 };
 
@@ -190,7 +212,7 @@ struct string2socket_type_m {
 
         // Merge our settings with the default client settings
         etdc::detail::update_srv( srvr, etdc::host_type(unbracket(m[3])),
-                (m[7].length() ? port(m[7]) :  __m_default_port),
+                (m[6].length() ? port(m[6]) :  __m_default_port),
                 etdc::so_rcvbuf{ __m_sockopts.bufSize }, etdc::so_sndbuf{ __m_sockopts.bufSize },
                 etdc::udt_rcvbuf{ 32*1024*1024 },
                 etdc::blocking_type{ true });
@@ -262,7 +284,7 @@ int main(int argc, char const*const*const argv) {
     AP::ArgumentParser  cmd( AP::version( buildinfo() ),
                              AP::docstring("'ftp' like etransfer server daemon, to be used with etransfer client for "
                                            "high speed file/directory transfers."),
-                             AP::docstring("addresses are given like (tcp|udt)[6]://[local address][:port]\n"
+                             AP::docstring("addresses are given like (tcp|udt|srt)[6]://[local address][[:#]port]\n"
                                            "where:\n"
                                            "    [local address] defaults to all interfaces\n"
                                            "    [port]          defaults to 4004 (command) or 8008 (data)\n"),

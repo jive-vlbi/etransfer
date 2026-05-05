@@ -43,14 +43,14 @@ namespace AP = argparse;
 // The client may support local URLs by just using "/path/to/file"
 //
 // Better shtick to what ppl understand:
-//  [[(tcp|udt)6?://][user@]host[#port]/]path
+//  [[(tcp|udt|srt)6?://][user@]host[#port]/]path
 //
 static const std::regex rxURL{
     /* remote prefix is optional! */
     "("
 //   1
     /* protocol */
-    "(((tcp|udt)6?):\\/\\/)?"
+    "(((tcp|udt|srt)6?):\\/\\/)?"
 //   234 
     /* optional user@ prefix */
     "(([a-z0-9]+)@)?" 
@@ -341,7 +341,7 @@ int main(int argc, char const*const*const argv) {
                                               "high speed file/directory transfers or it can be used "
                                               "to list the contents of a remote directory, if the remote "
                                               "etransfer daemon allows your credentials to do so."),
-                                AP::docstring("Remote URLs are formatted as\n\t[[tcp|udt][6]://][user@]host[#port]:/path\n"
+                                AP::docstring("Remote URLs are formatted as\n\t[[tcp|udt|srt][6]://][user@]host[#port]:/path\n"
                                               "Paths on the local machine are specified just as /<path> (i.e. absolute path)"),
                                 AP::docstring("The syntax on the remote URLs is slightly more complicated than e.g. scp(1) but that is "
                                               "because this client can trigger remote daemon => remote daemon transfers."),
