@@ -4465,6 +4465,16 @@ namespace srt {
 namespace UDT
 {
 
+SRTSOCKET socket()
+{
+    return srt::CUDT::socket();
+}
+
+SRTSOCKET socket(int domain, int type, int protocol)
+{
+    return srt::CUDT::socket(domain, type, protocol);
+}
+
 int startup()
 {
     return srt::CUDT::startup();
