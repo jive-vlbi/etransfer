@@ -467,6 +467,20 @@ int main(int argc, char const*const*const argv) {
              AP::constrain([](etdc::max_bw_type const& v) { return untag(v)==-1 || untag(v)>0; }, "-1 (Inf) or > 0 for set rate"),
              AP::docstring("Set UDT maximum bandwidth. Without suffix the number is interpreted as bytes per second. A suffix of 'kMG[Bb]i?ps' is supported: Bps = bytes per second, bps = bits per second; i[Bb]ps is base-1024, [Bb]ps is base-1000. Bits per second will be recomputed and rounded to nearest integer bytes per second lower than the value. Not honoured if data channel is TCP or doing remote-to-remote transfers. Default: unlimited.") );
 
+    // SRT parameters
+    cmd.add( AP::store_into(localState.srtMSS), AP::long_name("srt-mss"), AP::at_most(1),
+             AP::minimum_value( etdc::mss_type{64} ), AP::maximum_value( etdc::mss_type{64*1024} ),
+             AP::convert([](std::string const& s) { return mss(s); }),
+             AP::docstring("Set SRT maximum segment size in bytes. Falls back to --udt-mss if unset. Default: 1500") );
+
+    cmd.add( AP::store_into(localState.srtMaxBW), AP::long_name("srt-bw"), AP::at_most(1),
+             AP::convert([](std::string const& s) { return max_bw(s); }),
+             AP::constrain([](etdc::max_bw_type const& v) { return untag(v)==-1 || untag(v)>0; }, "-1 (Inf) or > 0 for set rate"),
+             AP::docstring("Set SRT maximum bandwidth. Inherits --udt-bw when not specified. Defaults to unlimited.") );
+
+    cmd.add( AP::store_into(localState.srtBufSize), AP::long_name("srt-buffer"), AP::at_most(1),
+             AP::docstring("Set SRT send/receive buffer size in bytes (SRTO_SNDBUF/SRTO_RCVBUF). No kMG suffix supported. Falls back to --buffer when not provided.") );
+
     cmd.add( AP::store_into(localState.bufSize), AP::long_name("buffer"),
              AP::docstring(std::string("Set send/receive buffer size in bytes. No kMG suffix supported. Default ")+etdc::repr(localState.bufSize)) );
 

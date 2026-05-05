@@ -651,6 +651,10 @@ namespace etdc {
             etdc::ipv6_only  ipv6_only  {};
             etdc::udt_linger udtLinger  {};
             etdc::udt_max_bw udtMaxBW   {};
+            etdc::srt_mss    srtMSS     {};
+            etdc::srt_rcvbuf srtBufSize {};
+            etdc::srt_sndbuf srtSndBufSize {};
+            etdc::srt_max_bw srtMaxBW   {};
         };
         const etdc::construct<server_settings>  update_srv( &server_settings::blocking,
                                                             &server_settings::backLog,
@@ -665,7 +669,11 @@ namespace etdc {
                                                             &server_settings::udtMSS,
                                                             &server_settings::ipv6_only,
                                                             &server_settings::udtLinger,
-                                                            &server_settings::udtMaxBW );
+                                                            &server_settings::udtMaxBW,
+                                                            &server_settings::srtMSS,
+                                                            &server_settings::srtBufSize,
+                                                            &server_settings::srtSndBufSize,
+                                                            &server_settings::srtMaxBW );
 
         using server_defaults_map = std::map<std::string, std::function<server_settings(void)>>;
 
@@ -950,11 +958,20 @@ namespace etdc {
                         socklen_t          sl( sizeof(struct sockaddr_in) );
                         struct sockaddr_in sa;
 
-                        const auto fc = (etdc::untag(srv.udtBufSize)/(std::max(etdc::untag(srv.udtMSS), 64)-28))+256;
+                        const auto effectiveRcvBuf = etdc::untag(srv.srtBufSize) ? etdc::untag(srv.srtBufSize)
+                                                                              : etdc::untag(srv.udtBufSize);
+                        const auto effectiveSndBuf = etdc::untag(srv.srtSndBufSize) ? etdc::untag(srv.srtSndBufSize)
+                                                                                     : etdc::untag(srv.udtSndBufSize);
+                        const auto baseMSS        = etdc::untag(srv.udtMSS) ? etdc::untag(srv.udtMSS) : 1500;
+                        const auto effectiveMSS   = etdc::untag(srv.srtMSS) ? etdc::untag(srv.srtMSS) : baseMSS;
+                        const auto effectiveBW    = etdc::untag(srv.srtMaxBW) ? etdc::untag(srv.srtMaxBW)
+                                                                              : etdc::untag(srv.udtMaxBW);
+                        const auto fc             = (effectiveRcvBuf / (std::max(effectiveMSS, 64) - 28)) + 256;
+
                         etdc::setsockopt(pSok->__m_fd, etdc::srt_reuseaddr{true}, etdc::srt_fc{fc},
-                                         etdc::srt_rcvbuf{etdc::untag(srv.udtBufSize)}, etdc::srt_sndbuf{etdc::untag(srv.udtSndBufSize)},
-                                         etdc::srt_mss{etdc::untag(srv.udtMSS)}, etdc::srt_linger{untag(srv.udtLinger)},
-                                         etdc::srt_max_bw{etdc::untag(srv.udtMaxBW)}, etdc::srt_messageapi{false},
+                                         etdc::srt_rcvbuf{effectiveRcvBuf}, etdc::srt_sndbuf{effectiveSndBuf},
+                                         etdc::srt_mss{effectiveMSS}, etdc::srt_linger{untag(srv.udtLinger)},
+                                         etdc::srt_max_bw{effectiveBW}, etdc::srt_messageapi{false},
                                          etdc::srt_transtype{SRTT_FILE});
 
                         if( srv.udpBufSize )
@@ -1000,11 +1017,20 @@ namespace etdc {
                         socklen_t           sl( sizeof(struct sockaddr_in6) );
                         struct sockaddr_in6 sa;
 
-                        const auto fc = (etdc::untag(srv.udtBufSize)/(std::max(etdc::untag(srv.udtMSS), 64)-28))+256;
+                        const auto effectiveRcvBuf = etdc::untag(srv.srtBufSize) ? etdc::untag(srv.srtBufSize)
+                                                                              : etdc::untag(srv.udtBufSize);
+                        const auto effectiveSndBuf = etdc::untag(srv.srtSndBufSize) ? etdc::untag(srv.srtSndBufSize)
+                                                                                     : etdc::untag(srv.udtSndBufSize);
+                        const auto baseMSS        = etdc::untag(srv.udtMSS) ? etdc::untag(srv.udtMSS) : 1500;
+                        const auto effectiveMSS   = etdc::untag(srv.srtMSS) ? etdc::untag(srv.srtMSS) : baseMSS;
+                        const auto effectiveBW    = etdc::untag(srv.srtMaxBW) ? etdc::untag(srv.srtMaxBW)
+                                                                              : etdc::untag(srv.udtMaxBW);
+                        const auto fc             = (effectiveRcvBuf / (std::max(effectiveMSS, 64) - 28)) + 256;
+
                         etdc::setsockopt(pSok->__m_fd, etdc::srt_reuseaddr{true}, etdc::srt_fc{fc},
-                                         etdc::srt_rcvbuf{etdc::untag(srv.udtBufSize)}, etdc::srt_sndbuf{etdc::untag(srv.udtSndBufSize)},
-                                         etdc::srt_mss{etdc::untag(srv.udtMSS)}, etdc::srt_linger{untag(srv.udtLinger)},
-                                         etdc::srt_max_bw{etdc::untag(srv.udtMaxBW)}, etdc::srt_messageapi{false},
+                                         etdc::srt_rcvbuf{effectiveRcvBuf}, etdc::srt_sndbuf{effectiveSndBuf},
+                                         etdc::srt_mss{effectiveMSS}, etdc::srt_linger{untag(srv.udtLinger)},
+                                         etdc::srt_max_bw{effectiveBW}, etdc::srt_messageapi{false},
                                          etdc::srt_transtype{SRTT_FILE});
 
                         if( srv.udpBufSize )
@@ -1083,6 +1109,10 @@ namespace etdc {
             etdc::ipv6_only  ipv6_only  {};
             etdc::udt_linger udtLinger  {};
             etdc::udt_max_bw udtMaxBW   {};
+            etdc::srt_mss    srtMSS     {};
+            etdc::srt_sndbuf srtBufSize {};
+            etdc::srt_rcvbuf srtRcvBufSize {};
+            etdc::srt_max_bw srtMaxBW   {};
             cancelfn_type    cancel_fn  {};
         };
         const etdc::construct<client_settings>  update_clnt( &client_settings::blocking,
@@ -1100,6 +1130,10 @@ namespace etdc {
                                                              &client_settings::ipv6_only,
                                                              &client_settings::udtLinger,
                                                              &client_settings::udtMaxBW,
+                                                             &client_settings::srtMSS,
+                                                             &client_settings::srtBufSize,
+                                                             &client_settings::srtRcvBufSize,
+                                                             &client_settings::srtMaxBW,
                                                              &client_settings::cancel_fn );
 
         using client_defaults_map = std::map<std::string, std::function<client_settings(void)>>;
@@ -1321,12 +1355,25 @@ namespace etdc {
 
                         sa.sin_port = etdc::htons_( clnt.clntPort );
 
-                        const auto fc = (etdc::untag(clnt.udtRcvBufSize)/(std::max(etdc::untag(clnt.udtMSS), 64)-28))+256;
+                        const auto effectiveRcvBuf = etdc::untag(clnt.srtRcvBufSize) ? etdc::untag(clnt.srtRcvBufSize)
+                                                                                      : etdc::untag(clnt.udtRcvBufSize);
+                        const auto effectiveSndBuf = etdc::untag(clnt.srtBufSize) ? etdc::untag(clnt.srtBufSize)
+                                                                                   : etdc::untag(clnt.udtBufSize);
+                        const auto baseMSS        = etdc::untag(clnt.udtMSS) ? etdc::untag(clnt.udtMSS) : 1500;
+                        const auto effectiveMSS   = etdc::untag(clnt.srtMSS) ? etdc::untag(clnt.srtMSS) : baseMSS;
+                        const auto effectiveBW    = etdc::untag(clnt.srtMaxBW) ? etdc::untag(clnt.srtMaxBW)
+                                                                                : etdc::untag(clnt.udtMaxBW);
+                        const auto fc             = (effectiveRcvBuf / (std::max(effectiveMSS, 64) - 28)) + 256;
+
                         etdc::setsockopt(pSok->__m_fd, etdc::srt_reuseaddr{true}, etdc::srt_fc{fc},
-                                         etdc::srt_sndbuf{etdc::untag(clnt.udtBufSize)}, etdc::srt_rcvbuf{etdc::untag(clnt.udtRcvBufSize)},
-                                         etdc::srt_mss{etdc::untag(clnt.udtMSS)}, etdc::srt_linger{untag(clnt.udtLinger)},
-                                         etdc::srt_max_bw{etdc::untag(clnt.udtMaxBW)}, etdc::srt_messageapi{false},
+                                         etdc::srt_sndbuf{effectiveSndBuf}, etdc::srt_rcvbuf{effectiveRcvBuf},
+                                         etdc::srt_mss{effectiveMSS}, etdc::srt_linger{untag(clnt.udtLinger)},
+                                         etdc::srt_max_bw{effectiveBW}, etdc::srt_messageapi{false},
                                          etdc::srt_transtype{SRTT_FILE});
+
+                        const auto inputBW = (effectiveBW>0) ? effectiveBW : -1;
+                        if( inputBW>0 )
+                            etdc::setsockopt(pSok->__m_fd, etdc::srt_inputbw{inputBW}, etdc::srt_mininputbw{inputBW/2});
 
                         if( clnt.udpBufSize )
                             etdc::setsockopt(pSok->__m_fd, etdc::srt_udp_sndbuf{etdc::untag(clnt.udpBufSize)});
@@ -1353,12 +1400,25 @@ namespace etdc {
 
                         sa.sin6_port = etdc::htons_( clnt.clntPort );
 
-                        const auto fc = (etdc::untag(clnt.udtRcvBufSize)/(std::max(etdc::untag(clnt.udtMSS), 64)-28))+256;
+                        const auto effectiveRcvBuf = etdc::untag(clnt.srtRcvBufSize) ? etdc::untag(clnt.srtRcvBufSize)
+                                                                                      : etdc::untag(clnt.udtRcvBufSize);
+                        const auto effectiveSndBuf = etdc::untag(clnt.srtBufSize) ? etdc::untag(clnt.srtBufSize)
+                                                                                   : etdc::untag(clnt.udtBufSize);
+                        const auto baseMSS        = etdc::untag(clnt.udtMSS) ? etdc::untag(clnt.udtMSS) : 1500;
+                        const auto effectiveMSS   = etdc::untag(clnt.srtMSS) ? etdc::untag(clnt.srtMSS) : baseMSS;
+                        const auto effectiveBW    = etdc::untag(clnt.srtMaxBW) ? etdc::untag(clnt.srtMaxBW)
+                                                                                : etdc::untag(clnt.udtMaxBW);
+                        const auto fc             = (effectiveRcvBuf / (std::max(effectiveMSS, 64) - 28)) + 256;
+
                         etdc::setsockopt(pSok->__m_fd, etdc::srt_reuseaddr{true}, etdc::srt_fc{fc},
-                                         etdc::srt_sndbuf{etdc::untag(clnt.udtBufSize)}, etdc::srt_rcvbuf{etdc::untag(clnt.udtRcvBufSize)},
-                                         etdc::srt_mss{etdc::untag(clnt.udtMSS)}, etdc::srt_linger{untag(clnt.udtLinger)},
-                                         etdc::srt_max_bw{etdc::untag(clnt.udtMaxBW)}, etdc::srt_messageapi{false},
+                                         etdc::srt_sndbuf{effectiveSndBuf}, etdc::srt_rcvbuf{effectiveRcvBuf},
+                                         etdc::srt_mss{effectiveMSS}, etdc::srt_linger{untag(clnt.udtLinger)},
+                                         etdc::srt_max_bw{effectiveBW}, etdc::srt_messageapi{false},
                                          etdc::srt_transtype{SRTT_FILE});
+
+                        const auto inputBW = (effectiveBW>0) ? effectiveBW : -1;
+                        if( inputBW>0 )
+                            etdc::setsockopt(pSok->__m_fd, etdc::srt_inputbw{inputBW}, etdc::srt_mininputbw{inputBW/2});
 
                         if( clnt.udpBufSize )
                             etdc::setsockopt(pSok->__m_fd, etdc::srt_udp_sndbuf{etdc::untag(clnt.udpBufSize)});

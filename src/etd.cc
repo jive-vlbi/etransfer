@@ -181,12 +181,15 @@ static std::string unbracket(std::string const& h) {
 struct socketoptions_type {
 
     socketoptions_type():
-        bufSize{ 32*1024*1024 }, udtMSS{ 0 }, udtBW{ 0 }
+        bufSize{ 32*1024*1024 }, udtMSS{ 0 }, udtBW{ 0 }, srtMSS{ 0 }, srtBW{ 0 }, srtBufSize{ 0 }
     {}
 
     size_t            bufSize;
     etdc::mss_type    udtMSS;
     etdc::max_bw_type udtBW;
+    etdc::mss_type    srtMSS;
+    etdc::max_bw_type srtBW;
+    size_t            srtBufSize;
 };
 
 
@@ -223,6 +226,17 @@ struct string2socket_type_m {
 
         if( untag(__m_sockopts.udtBW) )
             etdc::detail::update_srv( srvr, etdc::udt_max_bw{ untag(__m_sockopts.udtBW) } );
+
+        if( untag(__m_sockopts.srtMSS) )
+            etdc::detail::update_srv( srvr, etdc::srt_mss{ untag(__m_sockopts.srtMSS) } );
+
+        if( untag(__m_sockopts.srtBW) )
+            etdc::detail::update_srv( srvr, etdc::srt_max_bw{ untag(__m_sockopts.srtBW) } );
+
+        if( __m_sockopts.srtBufSize )
+            etdc::detail::update_srv( srvr,
+                                      etdc::srt_rcvbuf{ static_cast<int>(__m_sockopts.srtBufSize) },
+                                      etdc::srt_sndbuf{ static_cast<int>(__m_sockopts.srtBufSize) } );
 
         fd = mk_server( untag(proto), srvr );
 
@@ -342,6 +356,18 @@ int main(int argc, char const*const*const argv) {
              AP::convert([](std::string const& s) { return max_bw(s); }),
              AP::docstring("Set UDT maximum bandwidth. Without suffix the number is interpreted as bytes per second. A suffix of 'kMG[Bb]i?ps' is supported: Bps = bytes per second, bps = bits per second; i[Bb]ps is base-1024, [Bb]ps is base-1000. Bits per second will be recomputed and rounded to nearest integer bytes per second lower than the value. Not honoured if data channel is TCP or doing remote-to-remote transfers. Default: unlimited.") );
 
+    cmd.add( AP::store_into(sockopts.srtMSS), AP::long_name("srt-mss"), AP::at_most(1),
+             AP::minimum_value( etdc::mss_type{64} ), AP::maximum_value( etdc::mss_type{65536} ),
+             AP::convert([](std::string const& s) { return mss(s); }),
+             AP::docstring("Set SRT maximum segment size in bytes. Falls back to --udt-mss when omitted. Default: 1500") );
+
+    cmd.add( AP::store_into(sockopts.srtBW), AP::long_name("srt-bw"), AP::at_most(1),
+             AP::convert([](std::string const& s) { return max_bw(s); }),
+             AP::docstring("Set SRT maximum bandwidth. Inherits --udt-bw when not specified. Default: unlimited."),
+             AP::constrain([](etdc::max_bw_type const& v) { return untag(v)==-1 || untag(v)>0; }, "-1 (Inf) or > 0 for set rate") );
+
+    cmd.add( AP::store_into(sockopts.srtBufSize), AP::long_name("srt-buffer"), AP::at_most(1),
+             AP::docstring("Set SRT send/receive buffer size in bytes (SRTO_SNDBUF/SRTO_RCVBUF). No kMG suffix supported. Falls back to --buffer when not provided." ) );
 
     cmd.add( AP::store_into(sockopts.bufSize), AP::long_name("buffer"), AP::at_most(1),
              AP::docstring(std::string("Set send/receive buffer size. Default ")+etdc::repr(sockopts.bufSize)) );
@@ -435,6 +461,12 @@ int main(int argc, char const*const*const argv) {
         serverState.udtMSS = sockopts.udtMSS;
     if( untag(sockopts.udtBW)>0 )
         serverState.udtMaxBW = untag(sockopts.udtBW);
+    if( sockopts.srtBufSize )
+        serverState.srtBufSize = sockopts.srtBufSize;
+    if( sockopts.srtMSS )
+        serverState.srtMSS = sockopts.srtMSS;
+    if( untag(sockopts.srtBW)>0 || untag(sockopts.srtBW)==-1 )
+        serverState.srtMaxBW = untag(sockopts.srtBW);
 
     // data servers first such that the command servers know which data ports are available
     for(auto&& datasrv: cmd.get<std::list<std::string>>("data")) {

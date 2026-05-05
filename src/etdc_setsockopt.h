@@ -196,6 +196,8 @@ namespace etdc {
     using srt_udp_sndbuf= detail::SimpleSRTOption<SRTO_UDP_SNDBUF>;
     using srt_udp_rcvbuf= detail::SimpleSRTOption<SRTO_UDP_RCVBUF>;
     using srt_max_bw    = detail::SocketOption<int64_t, detail::SRTName<SRTO_MAXBW>, tags::srt_option, detail::Level<0>, tags::settable, tags::gettable>;
+    using srt_inputbw   = detail::SocketOption<int64_t, detail::SRTName<SRTO_INPUTBW>, tags::srt_option, detail::Level<0>, tags::settable>;
+    using srt_mininputbw= detail::SocketOption<int64_t, detail::SRTName<SRTO_MININPUTBW>, tags::srt_option, detail::Level<0>, tags::settable>;
     using srt_linger    = detail::SocketOption<struct linger, detail::SRTName<SRTO_LINGER>, tags::srt_option, detail::Level<0>, tags::settable, tags::gettable>;
     using srt_reuseaddr = detail::BooleanSRTOption<SRTO_REUSEADDR>;
     using srt_sndsyn    = detail::BooleanSRTOption<SRTO_SNDSYN>;
@@ -340,8 +342,8 @@ namespace etdc {
 
         using i2n_srt_map_type = std::map<SRT_SOCKOPT, std::string>;
         static const i2n_srt_map_type i2n_srt_map{ OPTION(SRTO_MSS), OPTION(SRTO_SNDBUF), OPTION(SRTO_RCVBUF), OPTION(SRTO_LINGER),
-                                                   OPTION(SRTO_MAXBW), OPTION(SRTO_FC), OPTION(SRTO_REUSEADDR), OPTION(SRTO_UDP_SNDBUF),
-                                                   OPTION(SRTO_UDP_RCVBUF), OPTION(SRTO_SNDSYN), OPTION(SRTO_RCVSYN), OPTION(SRTO_IPV6ONLY) };
+                                                   OPTION(SRTO_MAXBW), OPTION(SRTO_INPUTBW), OPTION(SRTO_MININPUTBW), OPTION(SRTO_FC), OPTION(SRTO_REUSEADDR),
+                                                   OPTION(SRTO_UDP_SNDBUF), OPTION(SRTO_UDP_RCVBUF), OPTION(SRTO_SNDSYN), OPTION(SRTO_RCVSYN), OPTION(SRTO_IPV6ONLY) };
 
         inline std::string srt_option_str(SRT_SOCKOPT o) {
             i2n_srt_map_type::const_iterator p = i2n_srt_map.find(o);
