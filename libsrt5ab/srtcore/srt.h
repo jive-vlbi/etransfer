@@ -753,33 +753,33 @@ SRT_API       int srt_cleanup(void);
 SRT_ATR_DEPRECATED_PX SRT_API SRTSOCKET srt_socket(int, int, int) SRT_ATR_DEPRECATED;
 SRT_API       SRTSOCKET srt_create_socket(void);
 
-SRT_API       int srt_bind         (SRTSOCKET u, const struct sockaddr* name, int namelen);
+SRT_API       int srt_bind       (SRTSOCKET u, const struct sockaddr* name, socklen_t namelen);
 SRT_API       int srt_bind_acquire (SRTSOCKET u, UDPSOCKET sys_udp_sock);
 // Old name of srt_bind_acquire(), please don't use
 // Planned deprecation removal: rel1.6.0
 SRT_ATR_DEPRECATED_PX static inline int srt_bind_peerof(SRTSOCKET u, UDPSOCKET sys_udp_sock) SRT_ATR_DEPRECATED;
 static inline int srt_bind_peerof  (SRTSOCKET u, UDPSOCKET sys_udp_sock) { return srt_bind_acquire(u, sys_udp_sock); }
 SRT_API       int srt_listen       (SRTSOCKET u, int backlog);
-SRT_API SRTSOCKET srt_accept       (SRTSOCKET u, struct sockaddr* addr, int* addrlen);
+SRT_API SRTSOCKET srt_accept       (SRTSOCKET u, struct sockaddr* addr, socklen_t* addrlen);
 SRT_API SRTSOCKET srt_accept_bond  (const SRTSOCKET listeners[], int lsize, int64_t msTimeOut);
 typedef int srt_listen_callback_fn   (void* opaq, SRTSOCKET ns, int hsversion, const struct sockaddr* peeraddr, const char* streamid);
 SRT_API       int srt_listen_callback(SRTSOCKET lsn, srt_listen_callback_fn* hook_fn, void* hook_opaque);
 typedef void srt_connect_callback_fn  (void* opaq, SRTSOCKET ns, int errorcode, const struct sockaddr* peeraddr, int token);
 SRT_API       int srt_connect_callback(SRTSOCKET clr, srt_connect_callback_fn* hook_fn, void* hook_opaque);
-SRT_API       int srt_connect      (SRTSOCKET u, const struct sockaddr* name, int namelen);
-SRT_API       int srt_connect_debug(SRTSOCKET u, const struct sockaddr* name, int namelen, int forced_isn);
+SRT_API       int srt_connect      (SRTSOCKET u, const struct sockaddr* name, socklen_t namelen);
+SRT_API       int srt_connect_debug(SRTSOCKET u, const struct sockaddr* name, socklen_t namelen, int forced_isn);
 SRT_API       int srt_connect_bind (SRTSOCKET u, const struct sockaddr* source,
-                                    const struct sockaddr* target, int len);
-SRT_API       int srt_rendezvous   (SRTSOCKET u, const struct sockaddr* local_name, int local_namelen,
-                                    const struct sockaddr* remote_name, int remote_namelen);
+                                    const struct sockaddr* target, socklen_t len);
+SRT_API       int srt_rendezvous   (SRTSOCKET u, const struct sockaddr* local_name, socklen_t local_namelen,
+                                    const struct sockaddr* remote_name, socklen_t remote_namelen);
 
 SRT_API       int srt_close        (SRTSOCKET u);
-SRT_API       int srt_getpeername  (SRTSOCKET u, struct sockaddr* name, int* namelen);
-SRT_API       int srt_getsockname  (SRTSOCKET u, struct sockaddr* name, int* namelen);
-SRT_API       int srt_getsockopt   (SRTSOCKET u, int level /*ignored*/, SRT_SOCKOPT optname, void* optval, int* optlen);
-SRT_API       int srt_setsockopt   (SRTSOCKET u, int level /*ignored*/, SRT_SOCKOPT optname, const void* optval, int optlen);
-SRT_API       int srt_getsockflag  (SRTSOCKET u, SRT_SOCKOPT opt, void* optval, int* optlen);
-SRT_API       int srt_setsockflag  (SRTSOCKET u, SRT_SOCKOPT opt, const void* optval, int optlen);
+SRT_API       int srt_getpeername  (SRTSOCKET u, struct sockaddr* name, socklen_t* namelen);
+SRT_API       int srt_getsockname  (SRTSOCKET u, struct sockaddr* name, socklen_t* namelen);
+SRT_API       int srt_getsockopt   (SRTSOCKET u, int level /*ignored*/, SRT_SOCKOPT optname, void* optval, socklen_t* optlen);
+SRT_API       int srt_setsockopt   (SRTSOCKET u, int level /*ignored*/, SRT_SOCKOPT optname, const void* optval, socklen_t optlen);
+SRT_API       int srt_getsockflag  (SRTSOCKET u, SRT_SOCKOPT opt, void* optval, socklen_t* optlen);
+SRT_API       int srt_setsockflag  (SRTSOCKET u, SRT_SOCKOPT opt, const void* optval, socklen_t optlen);
 
 typedef struct SRT_SocketGroupData_ SRT_SOCKGROUPDATA;
 
@@ -987,7 +987,7 @@ SRT_API SRT_SOCKOPT_CONFIG* srt_create_config(void);
 SRT_API void srt_delete_config(SRT_SOCKOPT_CONFIG* config /*nullable*/);
 SRT_API int srt_config_add(SRT_SOCKOPT_CONFIG* config, SRT_SOCKOPT option, const void* contents, int len);
 
-SRT_API SRT_SOCKGROUPCONFIG srt_prepare_endpoint(const struct sockaddr* src /*nullable*/, const struct sockaddr* adr, int namelen);
+SRT_API SRT_SOCKGROUPCONFIG srt_prepare_endpoint(const struct sockaddr* src /*nullable*/, const struct sockaddr* adr, socklen_t namelen);
 SRT_API       int srt_connect_group(SRTSOCKET group, SRT_SOCKGROUPCONFIG name[], int arraysize);
 
 #ifdef __cplusplus

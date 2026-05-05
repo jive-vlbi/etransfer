@@ -208,21 +208,21 @@ public: //API
     static int getGroupData(SRTSOCKET groupid, SRT_SOCKGROUPDATA* pdata, size_t* psize);
     static bool isgroup(SRTSOCKET sock) { return (sock & SRTGROUP_MASK) != 0; }
 #endif
-    static int bind(SRTSOCKET u, const sockaddr* name, int namelen);
+    static int bind(SRTSOCKET u, const sockaddr* name, socklen_t namelen);
     static int bind(SRTSOCKET u, UDPSOCKET udpsock);
     static int listen(SRTSOCKET u, int backlog);
-    static SRTSOCKET accept(SRTSOCKET u, sockaddr* addr, int* addrlen);
+    static SRTSOCKET accept(SRTSOCKET u, sockaddr* addr, socklen_t* addrlen);
     static SRTSOCKET accept_bond(const SRTSOCKET listeners [], int lsize, int64_t msTimeOut);
-    static int connect(SRTSOCKET u, const sockaddr* name, int namelen, int32_t forced_isn);
-    static int connect(SRTSOCKET u, const sockaddr* name, const sockaddr* tname, int namelen);
+    static int connect(SRTSOCKET u, const sockaddr* name, socklen_t namelen, int32_t forced_isn);
+    static int connect(SRTSOCKET u, const sockaddr* name, const sockaddr* tname, socklen_t namelen);
 #if ENABLE_BONDING
     static int connectLinks(SRTSOCKET grp, SRT_SOCKGROUPCONFIG links [], int arraysize);
 #endif
     static int close(SRTSOCKET u);
-    static int getpeername(SRTSOCKET u, sockaddr* name, int* namelen);
-    static int getsockname(SRTSOCKET u, sockaddr* name, int* namelen);
-    static int getsockopt(SRTSOCKET u, int level, SRT_SOCKOPT optname, void* optval, int* optlen);
-    static int setsockopt(SRTSOCKET u, int level, SRT_SOCKOPT optname, const void* optval, int optlen);
+    static int getpeername(SRTSOCKET u, sockaddr* name, socklen_t* namelen);
+    static int getsockname(SRTSOCKET u, sockaddr* name, socklen_t* namelen);
+    static int getsockopt(SRTSOCKET u, int level, SRT_SOCKOPT optname, void* optval, socklen_t* optlen);
+    static int setsockopt(SRTSOCKET u, int level, SRT_SOCKOPT optname, const void* optval, socklen_t optlen);
     static int send(SRTSOCKET u, const char* buf, int len, int flags);
     static int recv(SRTSOCKET u, char* buf, int len, int flags);
     static int sendmsg(SRTSOCKET u, const char* buf, int len, int ttl = SRT_MSGTTL_INF, bool inorder = false, int64_t srctime = 0);

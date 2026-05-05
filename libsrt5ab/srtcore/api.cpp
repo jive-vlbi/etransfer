@@ -54,6 +54,7 @@ modified by
 
 #include <exception>
 #include <stdexcept>
+#include <limits>
 #include <typeinfo>
 #include <iterator>
 #include <vector>
@@ -1054,11 +1055,11 @@ SRTSOCKET srt::CUDTUnited::accept_bond(const SRTSOCKET listeners[], int lsize, i
     // only the first found.
     int              lsn = st.begin()->first;
     sockaddr_storage dummy;
-    int              outlen = sizeof dummy;
+    socklen_t        outlen = sizeof dummy;
     return accept(lsn, ((sockaddr*)&dummy), (&outlen));
 }
 
-SRTSOCKET srt::CUDTUnited::accept(const SRTSOCKET listen, sockaddr* pw_addr, int* pw_addrlen)
+SRTSOCKET srt::CUDTUnited::accept(const SRTSOCKET listen, sockaddr* pw_addr, socklen_t* pw_addrlen)
 {
     if (pw_addr && !pw_addrlen)
     {
@@ -1114,13 +1115,15 @@ SRTSOCKET srt::CUDTUnited::accept(const SRTSOCKET listen, sockaddr* pw_addr, int
             {
                 // Check if the length of the buffer to fill the name in
                 // was large enough.
-                const int len = b->second.size();
+                const socklen_t len = static_cast<socklen_t>(b->second.size());
                 if (*pw_addrlen < len)
                 {
                     // In case when the address cannot be rewritten,
                     // DO NOT accept, but leave the socket in the queue.
                     throw CUDTException(MJ_NOTSUP, MN_INVAL, 0);
                 }
+                *pw_addrlen = len;
+                memcpy(pw_addr, b->second.get(), len);
             }
 
             u = b->first;
@@ -1194,17 +1197,18 @@ SRTSOCKET srt::CUDTUnited::accept(const SRTSOCKET listen, sockaddr* pw_addr, int
 
     if (pw_addr != NULL && pw_addrlen != NULL)
     {
-        memcpy((pw_addr), s->m_PeerAddr.get(), s->m_PeerAddr.size());
-        *pw_addrlen = s->m_PeerAddr.size();
+        const socklen_t len = static_cast<socklen_t>(s->m_PeerAddr.size());
+        memcpy(pw_addr, s->m_PeerAddr.get(), len);
+        *pw_addrlen = len;
     }
 
     return u;
 }
 
-int srt::CUDTUnited::connect(SRTSOCKET u, const sockaddr* srcname, const sockaddr* tarname, int namelen)
+int srt::CUDTUnited::connect(SRTSOCKET u, const sockaddr* srcname, const sockaddr* tarname, socklen_t namelen)
 {
     // Here both srcname and tarname must be specified
-    if (!srcname || !tarname || namelen < int(sizeof(sockaddr_in)))
+    if (!srcname || !tarname || namelen < socklen_t(sizeof(sockaddr_in)))
     {
         LOGC(aclog.Error,
              log << "connect(with source): invalid call: srcname=" << srcname << " tarname=" << tarname
@@ -1212,10 +1216,13 @@ int srt::CUDTUnited::connect(SRTSOCKET u, const sockaddr* srcname, const sockadd
         throw CUDTException(MJ_NOTSUP, MN_INVAL);
     }
 
-    sockaddr_any source_addr(srcname, namelen);
+    if (namelen > static_cast<socklen_t>(std::numeric_limits<sockaddr_any::len_t>::max()))
+        throw CUDTException(MJ_NOTSUP, MN_INVAL);
+
+    sockaddr_any source_addr(srcname, static_cast<sockaddr_any::len_t>(namelen));
     if (source_addr.len == 0)
         throw CUDTException(MJ_NOTSUP, MN_INVAL, 0);
-    sockaddr_any target_addr(tarname, namelen);
+    sockaddr_any target_addr(tarname, static_cast<sockaddr_any::len_t>(namelen));
     if (target_addr.len == 0)
         throw CUDTException(MJ_NOTSUP, MN_INVAL, 0);
 
@@ -1247,15 +1254,18 @@ int srt::CUDTUnited::connect(SRTSOCKET u, const sockaddr* srcname, const sockadd
     return connectIn(s, target_addr, SRT_SEQNO_NONE);
 }
 
-int srt::CUDTUnited::connect(const SRTSOCKET u, const sockaddr* name, int namelen, int32_t forced_isn)
+int srt::CUDTUnited::connect(const SRTSOCKET u, const sockaddr* name, socklen_t namelen, int32_t forced_isn)
 {
-    if (!name || namelen < int(sizeof(sockaddr_in)))
+    if (!name || namelen < socklen_t(sizeof(sockaddr_in)))
     {
         LOGC(aclog.Error, log << "connect(): invalid call: name=" << name << " namelen=" << namelen);
         throw CUDTException(MJ_NOTSUP, MN_INVAL);
     }
 
-    sockaddr_any target_addr(name, namelen);
+    if (namelen > static_cast<socklen_t>(std::numeric_limits<sockaddr_any::len_t>::max()))
+        throw CUDTException(MJ_NOTSUP, MN_INVAL);
+
+    sockaddr_any target_addr(name, static_cast<sockaddr_any::len_t>(namelen));
     if (target_addr.len == 0)
         throw CUDTException(MJ_NOTSUP, MN_INVAL, 0);
 
@@ -2150,7 +2160,7 @@ int srt::CUDTUnited::close(CUDTSocket* s)
     return 0;
 }
 
-void srt::CUDTUnited::getpeername(const SRTSOCKET u, sockaddr* pw_name, int* pw_namelen)
+void srt::CUDTUnited::getpeername(const SRTSOCKET u, sockaddr* pw_name, socklen_t* pw_namelen)
 {
     if (!pw_name || !pw_namelen)
         throw CUDTException(MJ_NOTSUP, MN_INVAL, 0);
@@ -2166,15 +2176,19 @@ void srt::CUDTUnited::getpeername(const SRTSOCKET u, sockaddr* pw_name, int* pw_
     if (!s->core().m_bConnected || s->core().m_bBroken)
         throw CUDTException(MJ_CONNECTION, MN_NOCONN, 0);
 
-    const int len = s->m_PeerAddr.size();
-    if (*pw_namelen < len)
+    const int addr_len_int = s->m_PeerAddr.size();
+    if (addr_len_int < 0)
         throw CUDTException(MJ_NOTSUP, MN_INVAL, 0);
 
-    memcpy((pw_name), &s->m_PeerAddr.sa, len);
-    *pw_namelen = len;
+    const socklen_t addr_len = static_cast<socklen_t>(addr_len_int);
+    if (*pw_namelen < addr_len)
+        throw CUDTException(MJ_NOTSUP, MN_INVAL, 0);
+
+    memcpy((pw_name), &s->m_PeerAddr.sa, addr_len_int);
+    *pw_namelen = addr_len;
 }
 
-void srt::CUDTUnited::getsockname(const SRTSOCKET u, sockaddr* pw_name, int* pw_namelen)
+void srt::CUDTUnited::getsockname(const SRTSOCKET u, sockaddr* pw_name, socklen_t* pw_namelen)
 {
     if (!pw_name || !pw_namelen)
         throw CUDTException(MJ_NOTSUP, MN_INVAL, 0);
@@ -2190,12 +2204,16 @@ void srt::CUDTUnited::getsockname(const SRTSOCKET u, sockaddr* pw_name, int* pw_
     if (s->m_Status == SRTS_INIT)
         throw CUDTException(MJ_CONNECTION, MN_NOCONN, 0);
 
-    const int len = s->m_SelfAddr.size();
-    if (*pw_namelen < len)
+    const int addr_len_int = s->m_SelfAddr.size();
+    if (addr_len_int < 0)
         throw CUDTException(MJ_NOTSUP, MN_INVAL, 0);
 
-    memcpy((pw_name), &s->m_SelfAddr.sa, len);
-    *pw_namelen = len;
+    const socklen_t addr_len = static_cast<socklen_t>(addr_len_int);
+    if (*pw_namelen < addr_len)
+        throw CUDTException(MJ_NOTSUP, MN_INVAL, 0);
+
+    memcpy((pw_name), &s->m_SelfAddr.sa, addr_len_int);
+    *pw_namelen = addr_len;
 }
 
 int srt::CUDTUnited::select(UDT::UDSET* readfds, UDT::UDSET* writefds, UDT::UDSET* exceptfds, const timeval* timeout)
@@ -3609,11 +3627,14 @@ int srt::CUDT::getGroupData(SRTSOCKET groupid, SRT_SOCKGROUPDATA* pdata, size_t*
 }
 #endif
 
-int srt::CUDT::bind(SRTSOCKET u, const sockaddr* name, int namelen)
+int srt::CUDT::bind(SRTSOCKET u, const sockaddr* name, socklen_t namelen)
 {
     try
     {
-        sockaddr_any sa(name, namelen);
+        if (namelen > static_cast<socklen_t>(std::numeric_limits<sockaddr_any::len_t>::max()))
+            return APIError(MJ_NOTSUP, MN_INVAL, 0);
+
+        sockaddr_any sa(name, static_cast<sockaddr_any::len_t>(namelen));
         if (sa.len == 0)
         {
             // This happens if the namelen check proved it to be
@@ -3713,7 +3734,7 @@ SRTSOCKET srt::CUDT::accept_bond(const SRTSOCKET listeners[], int lsize, int64_t
     }
 }
 
-SRTSOCKET srt::CUDT::accept(SRTSOCKET u, sockaddr* addr, int* addrlen)
+SRTSOCKET srt::CUDT::accept(SRTSOCKET u, sockaddr* addr, socklen_t* addrlen)
 {
     try
     {
@@ -3737,7 +3758,7 @@ SRTSOCKET srt::CUDT::accept(SRTSOCKET u, sockaddr* addr, int* addrlen)
     }
 }
 
-int srt::CUDT::connect(SRTSOCKET u, const sockaddr* name, const sockaddr* tname, int namelen)
+int srt::CUDT::connect(SRTSOCKET u, const sockaddr* name, const sockaddr* tname, socklen_t namelen)
 {
     try
     {
@@ -3791,7 +3812,7 @@ int srt::CUDT::connectLinks(SRTSOCKET grp, SRT_SOCKGROUPCONFIG targets[], int ar
 }
 #endif
 
-int srt::CUDT::connect(SRTSOCKET u, const sockaddr* name, int namelen, int32_t forced_isn)
+int srt::CUDT::connect(SRTSOCKET u, const sockaddr* name, socklen_t namelen, int32_t forced_isn)
 {
     try
     {
@@ -3829,7 +3850,7 @@ int srt::CUDT::close(SRTSOCKET u)
     }
 }
 
-int srt::CUDT::getpeername(SRTSOCKET u, sockaddr* name, int* namelen)
+int srt::CUDT::getpeername(SRTSOCKET u, sockaddr* name, socklen_t* namelen)
 {
     try
     {
@@ -3847,7 +3868,7 @@ int srt::CUDT::getpeername(SRTSOCKET u, sockaddr* name, int* namelen)
     }
 }
 
-int srt::CUDT::getsockname(SRTSOCKET u, sockaddr* name, int* namelen)
+int srt::CUDT::getsockname(SRTSOCKET u, sockaddr* name, socklen_t* namelen)
 {
     try
     {
@@ -3865,7 +3886,7 @@ int srt::CUDT::getsockname(SRTSOCKET u, sockaddr* name, int* namelen)
     }
 }
 
-int srt::CUDT::getsockopt(SRTSOCKET u, int, SRT_SOCKOPT optname, void* pw_optval, int* pw_optlen)
+int srt::CUDT::getsockopt(SRTSOCKET u, int, SRT_SOCKOPT optname, void* pw_optval, socklen_t* pw_optlen)
 {
     if (!pw_optval || !pw_optlen)
     {
@@ -3878,13 +3899,17 @@ int srt::CUDT::getsockopt(SRTSOCKET u, int, SRT_SOCKOPT optname, void* pw_optval
         if (u & SRTGROUP_MASK)
         {
             CUDTUnited::GroupKeeper k(uglobal(), u, CUDTUnited::ERH_THROW);
-            k.group->getOpt(optname, (pw_optval), (*pw_optlen));
+            int optlen_int = static_cast<int>(*pw_optlen);
+            k.group->getOpt(optname, (pw_optval), optlen_int);
+            *pw_optlen = static_cast<socklen_t>(optlen_int);
             return 0;
         }
 #endif
 
         CUDT& udt = uglobal().locateSocket(u, CUDTUnited::ERH_THROW)->core();
-        udt.getOpt(optname, (pw_optval), (*pw_optlen));
+        int optlen_int = static_cast<int>(*pw_optlen);
+        udt.getOpt(optname, (pw_optval), optlen_int);
+        *pw_optlen = static_cast<socklen_t>(optlen_int);
         return 0;
     }
     catch (const CUDTException& e)
@@ -3898,10 +3923,14 @@ int srt::CUDT::getsockopt(SRTSOCKET u, int, SRT_SOCKOPT optname, void* pw_optval
     }
 }
 
-int srt::CUDT::setsockopt(SRTSOCKET u, int, SRT_SOCKOPT optname, const void* optval, int optlen)
+int srt::CUDT::setsockopt(SRTSOCKET u, int, SRT_SOCKOPT optname, const void* optval, socklen_t optlen)
 {
-    if (!optval || optlen < 0)
+    if (!optval)
         return APIError(MJ_NOTSUP, MN_INVAL, 0);
+
+    if (optlen > static_cast<socklen_t>(std::numeric_limits<int>::max()))
+        return APIError(MJ_NOTSUP, MN_INVAL, 0);
+    int optlen_int = static_cast<int>(optlen);
 
     try
     {
@@ -3909,13 +3938,13 @@ int srt::CUDT::setsockopt(SRTSOCKET u, int, SRT_SOCKOPT optname, const void* opt
         if (u & SRTGROUP_MASK)
         {
             CUDTUnited::GroupKeeper k(uglobal(), u, CUDTUnited::ERH_THROW);
-            k.group->setOpt(optname, optval, optlen);
+            k.group->setOpt(optname, optval, optlen_int);
             return 0;
         }
 #endif
 
         CUDT& udt = uglobal().locateSocket(u, CUDTUnited::ERH_THROW)->core();
-        udt.setOpt(optname, optval, optlen);
+        udt.setOpt(optname, optval, optlen_int);
         return 0;
     }
     catch (const CUDTException& e)
@@ -4446,7 +4475,7 @@ int cleanup()
     return srt::CUDT::cleanup();
 }
 
-int bind(SRTSOCKET u, const struct sockaddr* name, int namelen)
+int bind(SRTSOCKET u, const struct sockaddr* name, socklen_t namelen)
 {
     return srt::CUDT::bind(u, name, namelen);
 }
@@ -4461,12 +4490,12 @@ int listen(SRTSOCKET u, int backlog)
     return srt::CUDT::listen(u, backlog);
 }
 
-SRTSOCKET accept(SRTSOCKET u, struct sockaddr* addr, int* addrlen)
+SRTSOCKET accept(SRTSOCKET u, struct sockaddr* addr, socklen_t* addrlen)
 {
     return srt::CUDT::accept(u, addr, addrlen);
 }
 
-int connect(SRTSOCKET u, const struct sockaddr* name, int namelen)
+int connect(SRTSOCKET u, const struct sockaddr* name, socklen_t namelen)
 {
     return srt::CUDT::connect(u, name, namelen, SRT_SEQNO_NONE);
 }
@@ -4476,29 +4505,29 @@ int close(SRTSOCKET u)
     return srt::CUDT::close(u);
 }
 
-int getpeername(SRTSOCKET u, struct sockaddr* name, int* namelen)
+int getpeername(SRTSOCKET u, struct sockaddr* name, socklen_t* namelen)
 {
     return srt::CUDT::getpeername(u, name, namelen);
 }
 
-int getsockname(SRTSOCKET u, struct sockaddr* name, int* namelen)
+int getsockname(SRTSOCKET u, struct sockaddr* name, socklen_t* namelen)
 {
     return srt::CUDT::getsockname(u, name, namelen);
 }
 
-int getsockopt(SRTSOCKET u, int level, SRT_SOCKOPT optname, void* optval, int* optlen)
+int getsockopt(SRTSOCKET u, int level, SRT_SOCKOPT optname, void* optval, socklen_t* optlen)
 {
     return srt::CUDT::getsockopt(u, level, optname, optval, optlen);
 }
 
-int setsockopt(SRTSOCKET u, int level, SRT_SOCKOPT optname, const void* optval, int optlen)
+int setsockopt(SRTSOCKET u, int level, SRT_SOCKOPT optname, const void* optval, socklen_t optlen)
 {
     return srt::CUDT::setsockopt(u, level, optname, optval, optlen);
 }
 
 // DEVELOPER API
 
-int connect_debug(SRTSOCKET u, const struct sockaddr* name, int namelen, int32_t forced_isn)
+int connect_debug(SRTSOCKET u, const struct sockaddr* name, socklen_t namelen, int32_t forced_isn)
 {
     return srt::CUDT::connect(u, name, namelen, forced_isn);
 }

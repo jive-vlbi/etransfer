@@ -79,7 +79,7 @@ int srt_connect_group(SRTSOCKET, SRT_SOCKGROUPCONFIG[], int) { return srt::CUDT:
 
 #endif
 
-SRT_SOCKGROUPCONFIG srt_prepare_endpoint(const struct sockaddr* src, const struct sockaddr* dst, int namelen)
+SRT_SOCKGROUPCONFIG srt_prepare_endpoint(const struct sockaddr* src, const struct sockaddr* dst, socklen_t namelen)
 {
     SRT_SOCKGROUPCONFIG data;
 #if ENABLE_BONDING
@@ -109,22 +109,22 @@ void srt_delete_config(SRT_SOCKOPT_CONFIG* in)
 }
 
 // Binding and connection management
-int srt_bind(SRTSOCKET u, const struct sockaddr * name, int namelen) { return srt::CUDT::bind(u, name, namelen); }
+int srt_bind(SRTSOCKET u, const struct sockaddr * name, socklen_t namelen) { return srt::CUDT::bind(u, name, namelen); }
 int srt_bind_acquire(SRTSOCKET u, UDPSOCKET udpsock) { return srt::CUDT::bind(u, udpsock); }
 int srt_listen(SRTSOCKET u, int backlog) { return srt::CUDT::listen(u, backlog); }
-SRTSOCKET srt_accept(SRTSOCKET u, struct sockaddr * addr, int * addrlen) { return srt::CUDT::accept(u, addr, addrlen); }
+SRTSOCKET srt_accept(SRTSOCKET u, struct sockaddr * addr, socklen_t * addrlen) { return srt::CUDT::accept(u, addr, addrlen); }
 SRTSOCKET srt_accept_bond(const SRTSOCKET lsns[], int lsize, int64_t msTimeOut) { return srt::CUDT::accept_bond(lsns, lsize, msTimeOut); }
-int srt_connect(SRTSOCKET u, const struct sockaddr * name, int namelen) { return srt::CUDT::connect(u, name, namelen, SRT_SEQNO_NONE); }
-int srt_connect_debug(SRTSOCKET u, const struct sockaddr * name, int namelen, int forced_isn) { return srt::CUDT::connect(u, name, namelen, forced_isn); }
+int srt_connect(SRTSOCKET u, const struct sockaddr * name, socklen_t namelen) { return srt::CUDT::connect(u, name, namelen, SRT_SEQNO_NONE); }
+int srt_connect_debug(SRTSOCKET u, const struct sockaddr * name, socklen_t namelen, int forced_isn) { return srt::CUDT::connect(u, name, namelen, forced_isn); }
 int srt_connect_bind(SRTSOCKET u,
         const struct sockaddr* source,
-        const struct sockaddr* target, int target_len)
+        const struct sockaddr* target, socklen_t target_len)
 {
     return srt::CUDT::connect(u, source, target, target_len);
 }
 
-int srt_rendezvous(SRTSOCKET u, const struct sockaddr* local_name, int local_namelen,
-        const struct sockaddr* remote_name, int remote_namelen)
+int srt_rendezvous(SRTSOCKET u, const struct sockaddr* local_name, socklen_t local_namelen,
+        const struct sockaddr* remote_name, socklen_t remote_namelen)
 {
     bool yes = 1;
     srt::CUDT::setsockopt(u, 0, SRTO_RENDEZVOUS, &yes, sizeof yes);
@@ -157,16 +157,16 @@ int srt_close(SRTSOCKET u)
     return srt::CUDT::close(u);
 }
 
-int srt_getpeername(SRTSOCKET u, struct sockaddr * name, int * namelen) { return srt::CUDT::getpeername(u, name, namelen); }
-int srt_getsockname(SRTSOCKET u, struct sockaddr * name, int * namelen) { return srt::CUDT::getsockname(u, name, namelen); }
-int srt_getsockopt(SRTSOCKET u, int level, SRT_SOCKOPT optname, void * optval, int * optlen)
+int srt_getpeername(SRTSOCKET u, struct sockaddr * name, socklen_t * namelen) { return srt::CUDT::getpeername(u, name, namelen); }
+int srt_getsockname(SRTSOCKET u, struct sockaddr * name, socklen_t * namelen) { return srt::CUDT::getsockname(u, name, namelen); }
+int srt_getsockopt(SRTSOCKET u, int level, SRT_SOCKOPT optname, void * optval, socklen_t * optlen)
 { return srt::CUDT::getsockopt(u, level, optname, optval, optlen); }
-int srt_setsockopt(SRTSOCKET u, int level, SRT_SOCKOPT optname, const void * optval, int optlen)
+int srt_setsockopt(SRTSOCKET u, int level, SRT_SOCKOPT optname, const void * optval, socklen_t optlen)
 { return srt::CUDT::setsockopt(u, level, optname, optval, optlen); }
 
-int srt_getsockflag(SRTSOCKET u, SRT_SOCKOPT opt, void* optval, int* optlen)
+int srt_getsockflag(SRTSOCKET u, SRT_SOCKOPT opt, void* optval, socklen_t* optlen)
 { return srt::CUDT::getsockopt(u, 0, opt, optval, optlen); }
-int srt_setsockflag(SRTSOCKET u, SRT_SOCKOPT opt, const void* optval, int optlen)
+int srt_setsockflag(SRTSOCKET u, SRT_SOCKOPT opt, const void* optval, socklen_t optlen)
 { return srt::CUDT::setsockopt(u, 0, opt, optval, optlen); }
 
 int srt_send(SRTSOCKET u, const char * buf, int len) { return srt::CUDT::send(u, buf, len, 0); }

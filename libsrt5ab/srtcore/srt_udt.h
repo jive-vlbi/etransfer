@@ -136,16 +136,16 @@ namespace srt {
         SRT_API int cleanup();
         SRT_API SRTSOCKET socket();
         SRT_API SRTSOCKET socket(int , int , int );
-        SRT_API int bind(SRTSOCKET u, const struct sockaddr* name, int namelen);
+        SRT_API int bind(SRTSOCKET u, const struct sockaddr* name, socklen_t namelen);
         SRT_API int bind2(SRTSOCKET u, UDPSOCKET udpsock);
         SRT_API int listen(SRTSOCKET u, int backlog);
-        SRT_API SRTSOCKET accept(SRTSOCKET u, struct sockaddr* addr, int* addrlen);
-        SRT_API int connect(SRTSOCKET u, const struct sockaddr* name, int namelen);
+        SRT_API SRTSOCKET accept(SRTSOCKET u, struct sockaddr* addr, socklen_t* addrlen);
+        SRT_API int connect(SRTSOCKET u, const struct sockaddr* name, socklen_t namelen);
         SRT_API int close(SRTSOCKET u);
-        SRT_API int getpeername(SRTSOCKET u, struct sockaddr* name, int* namelen);
-        SRT_API int getsockname(SRTSOCKET u, struct sockaddr* name, int* namelen);
-        SRT_API int getsockopt(SRTSOCKET u, int level, SRT_SOCKOPT optname, void* optval, int* optlen);
-        SRT_API int setsockopt(SRTSOCKET u, int level, SRT_SOCKOPT optname, const void* optval, int optlen);
+        SRT_API int getpeername(SRTSOCKET u, struct sockaddr* name, socklen_t* namelen);
+        SRT_API int getsockname(SRTSOCKET u, struct sockaddr* name, socklen_t* namelen);
+        SRT_API int getsockopt(SRTSOCKET u, int level, SRT_SOCKOPT optname, void* optval, socklen_t* optlen);
+        SRT_API int setsockopt(SRTSOCKET u, int level, SRT_SOCKOPT optname, const void* optval, socklen_t optlen);
         SRT_API int send(SRTSOCKET u, const char* buf, int len, int flags);
         SRT_API int recv(SRTSOCKET u, char* buf, int len, int flags);
 

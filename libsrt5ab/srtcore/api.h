@@ -299,10 +299,10 @@ public:
     int       bind(CUDTSocket* u, const sockaddr_any& name);
     int       bind(CUDTSocket* u, UDPSOCKET udpsock);
     int       listen(const SRTSOCKET u, int backlog);
-    SRTSOCKET accept(const SRTSOCKET listen, sockaddr* addr, int* addrlen);
+    SRTSOCKET accept(const SRTSOCKET listen, sockaddr* addr, socklen_t* addrlen);
     SRTSOCKET accept_bond(const SRTSOCKET listeners[], int lsize, int64_t msTimeOut);
-    int       connect(SRTSOCKET u, const sockaddr* srcname, const sockaddr* tarname, int tarlen);
-    int       connect(const SRTSOCKET u, const sockaddr* name, int namelen, int32_t forced_isn);
+    int       connect(SRTSOCKET u, const sockaddr* srcname, const sockaddr* tarname, socklen_t tarlen);
+    int       connect(const SRTSOCKET u, const sockaddr* name, socklen_t namelen, int32_t forced_isn);
     int       connectIn(CUDTSocket* s, const sockaddr_any& target, int32_t forced_isn);
 #if ENABLE_BONDING
     int groupConnect(CUDTGroup* g, SRT_SOCKGROUPCONFIG targets[], int arraysize);
@@ -310,8 +310,8 @@ public:
 #endif
     int  close(const SRTSOCKET u);
     int  close(CUDTSocket* s);
-    void getpeername(const SRTSOCKET u, sockaddr* name, int* namelen);
-    void getsockname(const SRTSOCKET u, sockaddr* name, int* namelen);
+    void getpeername(const SRTSOCKET u, sockaddr* name, socklen_t* namelen);
+    void getsockname(const SRTSOCKET u, sockaddr* name, socklen_t* namelen);
     int  select(srt::UDT::UDSET* readfds, srt::UDT::UDSET* writefds, srt::UDT::UDSET* exceptfds, const timeval* timeout);
     int  selectEx(const std::vector<SRTSOCKET>& fds,
                   std::vector<SRTSOCKET>*       readfds,
