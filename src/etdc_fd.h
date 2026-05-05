@@ -954,7 +954,8 @@ namespace etdc {
                         etdc::setsockopt(pSok->__m_fd, etdc::srt_reuseaddr{true}, etdc::srt_fc{fc},
                                          etdc::srt_rcvbuf{etdc::untag(srv.udtBufSize)}, etdc::srt_sndbuf{etdc::untag(srv.udtSndBufSize)},
                                          etdc::srt_mss{etdc::untag(srv.udtMSS)}, etdc::srt_linger{untag(srv.udtLinger)},
-                                         etdc::srt_max_bw{etdc::untag(srv.udtMaxBW)});
+                                         etdc::srt_max_bw{etdc::untag(srv.udtMaxBW)}, etdc::srt_messageapi{false},
+                                         etdc::srt_transtype{SRTT_FILE});
 
                         if( srv.udpBufSize )
                             etdc::setsockopt(pSok->__m_fd, etdc::srt_udp_rcvbuf{etdc::untag(srv.udpBufSize)});
@@ -1003,7 +1004,8 @@ namespace etdc {
                         etdc::setsockopt(pSok->__m_fd, etdc::srt_reuseaddr{true}, etdc::srt_fc{fc},
                                          etdc::srt_rcvbuf{etdc::untag(srv.udtBufSize)}, etdc::srt_sndbuf{etdc::untag(srv.udtSndBufSize)},
                                          etdc::srt_mss{etdc::untag(srv.udtMSS)}, etdc::srt_linger{untag(srv.udtLinger)},
-                                         etdc::srt_max_bw{etdc::untag(srv.udtMaxBW)});
+                                         etdc::srt_max_bw{etdc::untag(srv.udtMaxBW)}, etdc::srt_messageapi{false},
+                                         etdc::srt_transtype{SRTT_FILE});
 
                         if( srv.udpBufSize )
                             etdc::setsockopt(pSok->__m_fd, etdc::srt_udp_rcvbuf{etdc::untag(srv.udpBufSize)});
@@ -1323,7 +1325,8 @@ namespace etdc {
                         etdc::setsockopt(pSok->__m_fd, etdc::srt_reuseaddr{true}, etdc::srt_fc{fc},
                                          etdc::srt_sndbuf{etdc::untag(clnt.udtBufSize)}, etdc::srt_rcvbuf{etdc::untag(clnt.udtRcvBufSize)},
                                          etdc::srt_mss{etdc::untag(clnt.udtMSS)}, etdc::srt_linger{untag(clnt.udtLinger)},
-                                         etdc::srt_max_bw{etdc::untag(clnt.udtMaxBW)});
+                                         etdc::srt_max_bw{etdc::untag(clnt.udtMaxBW)}, etdc::srt_messageapi{false},
+                                         etdc::srt_transtype{SRTT_FILE});
 
                         if( clnt.udpBufSize )
                             etdc::setsockopt(pSok->__m_fd, etdc::srt_udp_sndbuf{etdc::untag(clnt.udpBufSize)});
@@ -1354,7 +1357,8 @@ namespace etdc {
                         etdc::setsockopt(pSok->__m_fd, etdc::srt_reuseaddr{true}, etdc::srt_fc{fc},
                                          etdc::srt_sndbuf{etdc::untag(clnt.udtBufSize)}, etdc::srt_rcvbuf{etdc::untag(clnt.udtRcvBufSize)},
                                          etdc::srt_mss{etdc::untag(clnt.udtMSS)}, etdc::srt_linger{untag(clnt.udtLinger)},
-                                         etdc::srt_max_bw{etdc::untag(clnt.udtMaxBW)});
+                                         etdc::srt_max_bw{etdc::untag(clnt.udtMaxBW)}, etdc::srt_messageapi{false},
+                                         etdc::srt_transtype{SRTT_FILE});
 
                         if( clnt.udpBufSize )
                             etdc::setsockopt(pSok->__m_fd, etdc::srt_udp_sndbuf{etdc::untag(clnt.udpBufSize)});

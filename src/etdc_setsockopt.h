@@ -200,6 +200,8 @@ namespace etdc {
     using srt_reuseaddr = detail::BooleanSRTOption<SRTO_REUSEADDR>;
     using srt_sndsyn    = detail::BooleanSRTOption<SRTO_SNDSYN>;
     using srt_rcvsyn    = detail::BooleanSRTOption<SRTO_RCVSYN>;
+    using srt_messageapi= detail::BooleanSRTOption<SRTO_MESSAGEAPI>;
+    using srt_transtype = detail::SimpleSRTOption<SRTO_TRANSTYPE>;
     using srt_ipv6only  = detail::BooleanSRTOption<SRTO_IPV6ONLY>;
 
 
