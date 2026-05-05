@@ -40,6 +40,8 @@
 #include <map>
 #include <string>
 #include <stdexcept>
+#include <type_traits>
+#include <cstdint>
 
 namespace etdc {
 
@@ -268,12 +270,12 @@ namespace etdc {
 
         template <>
         struct srt_native_sockopt<bool> {
-            using type = int;
+            using type = std::uint8_t;
 
             static type to_native(bool b) {
-                return b ? 1 : 0;
+                return static_cast<type>(b ? 1 : 0);
             }
-            static bool from_native(int v) {
+            static bool from_native(type v) {
                 return v!=0;
             }
         };
