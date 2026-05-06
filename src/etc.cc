@@ -36,6 +36,7 @@
 #include <iterator>
 #include <iostream>
 #include <functional>
+#include <memory>
 
 using namespace std;
 namespace AP = argparse;
@@ -296,12 +297,23 @@ namespace etc {
             rv->protocolVersion();
         }
         catch( ... ) {
-            // Oh crap ... reconnect and set the protocol version manually to 0
+            // Maybe it was a daemon that only understands the legacy
+            // protocol-version command. Attempt once more without the
+            // extended probe before falling back to version 0 semantics.
             rv = ::mk_etdproxy( std::forward<Args>(args)... );
-            // And we should make sure that we only set it once - i.e. that
-            // the previous "supported protocol version" is not yet set
-            ETDCASSERT( rv->set_protocolVersion( 0 ) == etdc::ETDServerInterface::unknownProtocolVersion,
-                        "The proxy had its protocol version already set?!" );
+            if( auto proxy = std::dynamic_pointer_cast<etdc::ETDProxy>(rv) )
+                proxy->preferExtendedProbe(false);
+            try {
+                rv->protocolVersion();
+            }
+            catch( ... ) {
+                // Oh crap ... reconnect and set the protocol version manually to 0
+                rv = ::mk_etdproxy( std::forward<Args>(args)... );
+                // And we should make sure that we only set it once - i.e. that
+                // the previous "supported protocol version" is not yet set
+                ETDCASSERT( rv->set_protocolVersion( 0 ) == etdc::ETDServerInterface::unknownProtocolVersion,
+                            "The proxy had its protocol version already set?!" );
+            }
         }
         return rv;
     }
