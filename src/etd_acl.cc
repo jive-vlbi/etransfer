@@ -142,7 +142,7 @@ namespace etdc {
     }
 
     bool ACL::check( section_type which, std::string const& path ) const {
-        auto const& section = _m_sections[static_cast<int>(which)];
+        auto const& lcl_section = _m_sections[static_cast<int>(which)];
         auto matches = [&](rule const& r) {
             return ::fnmatch(r.pattern.c_str(), path.c_str(), FNM_PATHNAME)==0;
         };
@@ -157,24 +157,24 @@ namespace etdc {
             return false;
         };
 
-        const bool default_is_allow = section.default_rule.allow;
+        const bool default_is_allow = lcl_section.default_rule.allow;
 
         if( default_is_allow ) {
             bool decision;
-            if( evaluate_rules(section.deny_rules, decision) )
+            if( evaluate_rules(lcl_section.deny_rules, decision) )
                 return decision;
-            if( evaluate_rules(section.allow_rules, decision) )
+            if( evaluate_rules(lcl_section.allow_rules, decision) )
                 return decision;
         } else {
             bool decision;
-            if( evaluate_rules(section.allow_rules, decision) )
+            if( evaluate_rules(lcl_section.allow_rules, decision) )
                 return decision;
-            if( evaluate_rules(section.deny_rules, decision) )
+            if( evaluate_rules(lcl_section.deny_rules, decision) )
                 return decision;
         }
 
-        if( matches(section.default_rule) )
-            return section.default_rule.allow;
+        if( matches(lcl_section.default_rule) )
+            return lcl_section.default_rule.allow;
 
         return false;
     }

@@ -13125,8 +13125,8 @@ public:
     /// @param[in] node A basic_node object to be serialized.
     /// @return The resulting string object from the serialization of the given node.
     /// @sa https://fktn-k.github.io/fkYAML/api/basic_node/serialize/
-    static std::string serialize(const basic_node& node) {
-        return serializer_type().serialize(node);
+    static std::string serialize(const basic_node& node_v) {
+        return serializer_type().serialize(node_v);
     }
 
     /// @brief Serialize basic_node objects into a string.
@@ -13141,10 +13141,10 @@ public:
     /// @return A YAML sequence node.
     /// @sa https://fktn-k.github.io/fkYAML/api/basic_node/sequence/
     static basic_node sequence() {
-        basic_node node;
-        node.m_attrs = detail::node_attr_bits::seq_bit;
-        node.m_value.p_seq = detail::create_object<sequence_type>();
-        return node;
+        basic_node lcl_node;
+        lcl_node.m_attrs = detail::node_attr_bits::seq_bit;
+        lcl_node.m_value.p_seq = detail::create_object<sequence_type>();
+        return lcl_node;
     } // LCOV_EXCL_LINE
 
     /// @brief A factory method for sequence basic_node objects with lvalue sequence_type objects.
@@ -13152,10 +13152,10 @@ public:
     /// @return A YAML sequence node.
     /// @sa https://fktn-k.github.io/fkYAML/api/basic_node/sequence/
     static basic_node sequence(const sequence_type& seq) {
-        basic_node node;
-        node.m_attrs = detail::node_attr_bits::seq_bit;
-        node.m_value.p_seq = detail::create_object<sequence_type>(seq);
-        return node;
+        basic_node lcl_node;
+        lcl_node.m_attrs = detail::node_attr_bits::seq_bit;
+        lcl_node.m_value.p_seq = detail::create_object<sequence_type>(seq);
+        return lcl_node;
     } // LCOV_EXCL_LINE
 
     /// @brief A factory method for sequence basic_node objects with rvalue sequence_type objects.
@@ -13163,20 +13163,20 @@ public:
     /// @return A YAML sequence node.
     /// @sa https://fktn-k.github.io/fkYAML/api/basic_node/sequence/
     static basic_node sequence(sequence_type&& seq) {
-        basic_node node;
-        node.m_attrs = detail::node_attr_bits::seq_bit;
-        node.m_value.p_seq = detail::create_object<sequence_type>(std::move(seq));
-        return node;
+        basic_node lcl_node;
+        lcl_node.m_attrs = detail::node_attr_bits::seq_bit;
+        lcl_node.m_value.p_seq = detail::create_object<sequence_type>(std::move(seq));
+        return lcl_node;
     } // LCOV_EXCL_LINE
 
     /// @brief A factory method for mapping basic_node objects without mapping_type objects.
     /// @return A YAML mapping node.
     /// @sa https://fktn-k.github.io/fkYAML/api/basic_node/mapping/
     static basic_node mapping() {
-        basic_node node;
-        node.m_attrs = detail::node_attr_bits::map_bit;
-        node.m_value.p_map = detail::create_object<mapping_type>();
-        return node;
+        basic_node lcl_node;
+        lcl_node.m_attrs = detail::node_attr_bits::map_bit;
+        lcl_node.m_value.p_map = detail::create_object<mapping_type>();
+        return lcl_node;
     } // LCOV_EXCL_LINE
 
     /// @brief A factory method for mapping basic_node objects with lvalue mapping_type objects.
@@ -13184,10 +13184,10 @@ public:
     /// @return A YAML mapping node.
     /// @sa https://fktn-k.github.io/fkYAML/api/basic_node/mapping/
     static basic_node mapping(const mapping_type& map) {
-        basic_node node;
-        node.m_attrs = detail::node_attr_bits::map_bit;
-        node.m_value.p_map = detail::create_object<mapping_type>(map);
-        return node;
+        basic_node lcl_node;
+        lcl_node.m_attrs = detail::node_attr_bits::map_bit;
+        lcl_node.m_value.p_map = detail::create_object<mapping_type>(map);
+        return lcl_node;
     } // LCOV_EXCL_LINE
 
     /// @brief A factory method for mapping basic_node objects with rvalue mapping_type objects.
@@ -13195,10 +13195,10 @@ public:
     /// @return A YAML mapping node.
     /// @sa https://fktn-k.github.io/fkYAML/api/basic_node/mapping/
     static basic_node mapping(mapping_type&& map) {
-        basic_node node;
-        node.m_attrs = detail::node_attr_bits::map_bit;
-        node.m_value.p_map = detail::create_object<mapping_type>(std::move(map));
-        return node;
+        basic_node lcl_node;
+        lcl_node.m_attrs = detail::node_attr_bits::map_bit;
+        lcl_node.m_value.p_map = detail::create_object<mapping_type>(std::move(map));
+        return lcl_node;
     } // LCOV_EXCL_LINE
 
     /// @brief A factory method for alias basic_node objects referencing the given anchor basic_node object.
@@ -13213,10 +13213,10 @@ public:
             throw fkyaml::exception("Cannot create an alias without anchor name.");
         }
 
-        basic_node node = anchor_node;
-        node.m_attrs &= ~detail::node_attr_mask::anchoring;
-        node.m_attrs |= detail::node_attr_bits::alias_bit;
-        return node;
+        basic_node lcl_node = anchor_node;
+        lcl_node.m_attrs &= ~detail::node_attr_mask::anchoring;
+        lcl_node.m_attrs |= detail::node_attr_bits::alias_bit;
+        return lcl_node;
     } // LCOV_EXCL_LINE
 
 public:
@@ -13316,19 +13316,19 @@ public:
             throw fkyaml::type_error("operator[] is unavailable for a scalar node.", get_type());
         }
 
-        const node_value& node_value = resolve_reference().m_value;
+        const node_value& lcl_node_value = resolve_reference().m_value;
 
         if (is_sequence()) {
             if FK_YAML_UNLIKELY (!key.is_integer()) {
                 throw fkyaml::type_error(
                     "An argument of operator[] for sequence nodes must be an integer.", get_type());
             }
-            FK_YAML_ASSERT(node_value.p_seq != nullptr);
-            return node_value.p_seq->operator[](std::forward<KeyType>(key).template get_value<int>());
+            FK_YAML_ASSERT(lcl_node_value.p_seq != nullptr);
+            return lcl_node_value.p_seq->operator[](std::forward<KeyType>(key).template get_value<int>());
         }
 
-        FK_YAML_ASSERT(node_value.p_map != nullptr);
-        return node_value.p_map->operator[](std::forward<KeyType>(key));
+        FK_YAML_ASSERT(lcl_node_value.p_map != nullptr);
+        return lcl_node_value.p_map->operator[](std::forward<KeyType>(key));
     }
 
     /// @brief A subscript operator of the basic_node class with a basic_node key object.
@@ -13342,19 +13342,19 @@ public:
             throw fkyaml::type_error("operator[] is unavailable for a scalar node.", get_type());
         }
 
-        const node_value& node_value = resolve_reference().m_value;
+        const node_value& lcl_node_value = resolve_reference().m_value;
 
         if (is_sequence()) {
             if FK_YAML_UNLIKELY (!key.is_integer()) {
                 throw fkyaml::type_error(
                     "An argument of operator[] for sequence nodes must be an integer.", get_type());
             }
-            FK_YAML_ASSERT(node_value.p_seq != nullptr);
-            return node_value.p_seq->operator[](key.template get_value<int>());
+            FK_YAML_ASSERT(lcl_node_value.p_seq != nullptr);
+            return lcl_node_value.p_seq->operator[](key.template get_value<int>());
         }
 
-        FK_YAML_ASSERT(node_value.p_map != nullptr);
-        return node_value.p_map->operator[](std::forward<KeyType>(key));
+        FK_YAML_ASSERT(lcl_node_value.p_map != nullptr);
+        return lcl_node_value.p_map->operator[](std::forward<KeyType>(key));
     }
 
     /// @brief An equal-to operator of the basic_node class.
@@ -13871,9 +13871,9 @@ public:
 
         auto p_meta = mp_meta;
 
-        basic_node node;
-        node.swap(*this);
-        p_meta->anchor_table.emplace(anchor_name, std::move(node));
+        basic_node lcl_node;
+        lcl_node.swap(*this);
+        p_meta->anchor_table.emplace(anchor_name, std::move(lcl_node));
 
         m_attrs &= ~detail::node_attr_mask::anchoring;
         m_attrs |= detail::node_attr_bits::anchor_bit;
@@ -13899,9 +13899,9 @@ public:
 
         auto p_meta = mp_meta;
 
-        basic_node node;
-        node.swap(*this);
-        p_meta->anchor_table.emplace(anchor_name, std::move(node));
+        basic_node lcl_node;
+        lcl_node.swap(*this);
+        p_meta->anchor_table.emplace(anchor_name, std::move(lcl_node));
 
         m_attrs &= ~detail::node_attr_mask::anchoring;
         m_attrs |= detail::node_attr_bits::anchor_bit;
