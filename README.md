@@ -151,6 +151,19 @@ over UDT/IPv6:46227.
 Both the e-transfer daemon and client support the "--help" command line option explain all options.
 
 
+## Daemon features
+
+### Idle transfer timeout / automatic cleanup
+
+Motivation: previously, when clients would disappear mid-transfer (e.g. crashes, network splits, aborted processes), the daemon would keep their session state around, keeping a lock on the destination file, preventing starting a new transfer until the daemon was restarted. This can now be mitigated by setting an idle timeout, after which a transfer gets automatically removed from the daemon's state and retransfer can be attempted.
+
+New option:
+
+- `--inactive-timeout <seconds>` – if set to a positive value, the daemon spawns a watchdog thread that cancels transfers which have seen no progress for the specified number of seconds. The default is “disabled” (timeout ≤ 0).
+
+When a timeout triggers, the daemon force-closes the transfer’s command and data connections and removes the lock on the destination path in question, freeing it for a new attempt. Clients may want to use the `--resume` file copy mode to pick up where the stalled transfer left off.
+
+
 ## File copy modes
 
 Because the etransfer programs expect to transfer large files over long
