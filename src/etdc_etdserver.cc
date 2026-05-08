@@ -41,7 +41,7 @@ namespace etdc {
     sockname2string_fn sockname2str( etdc::protocolversion_type v) {
         if( v==0 || v== ETDServerInterface::unknownProtocolVersion )
             return sockname2str_v0;
-        if( v==1 )
+        if( v>=1 )
             return sockname2str_v1;
         throw std::runtime_error("sockname2str/request for unsupported protocolversion " + etdc::repr(v));
     }
@@ -1050,8 +1050,9 @@ namespace etdc {
     dataaddrlist_type ETDProxy::dataChannelAddr( void ) const {
         // We are a proxy for a remote end and if we know that the remote end supports extended
         // data channel specification we ask for that
-        static const std::string msg{ (__m_protocolVersion == 0 || __m_protocolVersion == ETDServerInterface::unknownProtocolVersion) ?
-                                      "data-channel-addr\n" : "data-channel-addr-ext\n" };
+        const bool legacyCmd = (__m_protocolVersion == 0 || __m_protocolVersion == ETDServerInterface::unknownProtocolVersion);
+        const std::string msg = legacyCmd ? "data-channel-addr\n" : "data-channel-addr-ext\n";
+
         ETDCDEBUG(4, "ETDProxy::dataChannelAddr/sending message '" << msg << "'" << std::endl);
         ETDCASSERTX(__m_connection->write(__m_connection->__m_fd, msg.data(), msg.size())==(ssize_t)msg.size());
 
@@ -1259,7 +1260,14 @@ namespace etdc {
             return __m_protocolVersion;
 
         // Hmmm don't know what's at the other end, better check
-        static const std::string msg{ "protocol-version\n" };
+        std::ostringstream msgBuf;
+        const bool         tryExtended = __m_attemptExtendedProbe && (ETDServerInterface::currentProtocolVersion>=3);
+
+        if( tryExtended )
+            msgBuf << "protocol-version " << ETDServerInterface::currentProtocolVersion << '\n';
+        else
+            msgBuf << "protocol-version\n";
+        const std::string  msg( msgBuf.str() );
         ETDCDEBUG(4, "ETDProxy::protocolVersion/sending message '" << msg << "'" << std::endl);
         ETDCASSERTX(__m_connection->write(__m_connection->__m_fd, msg.data(), msg.size())==(ssize_t)msg.size());
 
@@ -1267,8 +1275,9 @@ namespace etdc {
         const size_t            bufSz( 2048 );
         std::unique_ptr<char[]> buffer(new char[bufSz]);
 
-        size_t            curPos{ 0 };
-        std::string       state;
+        size_t                    curPos{ 0 };
+        std::string               state;
+        protocolversion_type      remoteVersion = ETDServerInterface::unknownProtocolVersion;
 
         while( curPos<bufSz ) {
             const ssize_t n = __m_connection->read(__m_connection->__m_fd, &buffer[curPos], bufSz-curPos);
@@ -1295,12 +1304,21 @@ namespace etdc {
             ETDCASSERT(fields[1].str()=="OK", "protocolVersion failed: " << fields[2].str());
 
             // The format should be "OK <number>"
-            __m_protocolVersion = std::stoul( fields[3].str() );
+            remoteVersion = std::stoul( fields[3].str() );
+            __m_protocolVersion = (remoteVersion<ETDServerInterface::currentProtocolVersion)
+                                  ? remoteVersion
+                                  : ETDServerInterface::currentProtocolVersion;
 
             // Otherwise we're done
             break;
         }
+        ETDCASSERT(remoteVersion!=ETDServerInterface::unknownProtocolVersion, "protocolVersion negotiation failed to determine remote version");
+        __m_attemptExtendedProbe = false;
         return __m_protocolVersion;
+    }
+
+    void ETDProxy::preferExtendedProbe(bool enable) {
+        __m_attemptExtendedProbe = enable;
     }
 
     //////////////////////////////////////////////////////////////////////
@@ -1357,7 +1375,7 @@ namespace etdc {
                 static const std::regex  rxRemoveUUID("^(remove-uuid|cancel)\\s+(\\S+)$", etdc_rxFlags);
                                                 //      1              2
                                                 //      what to do     UUID
-                static const std::regex  rxProtocolVersion("^protocol-version$", etdc_rxFlags);
+                static const std::regex  rxProtocolVersion("^protocol-version(?:\\s+([0-9]+))?$", etdc_rxFlags);
 
                 // Match it against the known commands
                 std::smatch              fields;
@@ -1444,8 +1462,28 @@ namespace etdc {
                         // Did client ask for data-channel-addr-ext?
                         // Note we do not use "sockname2str(protocolVersion)" here because this
                         // is _us_ answering a query from someone else, we are not the *proxy* for someone else
-                        auto       f       = (fields[1].str().empty() ? sockname2str_v0 : sockname2str_v1);
-                        const auto entries = __m_etdserver.dataChannelAddr();
+                        const bool legacyQuery = fields[1].str().empty();
+                        protocolversion_type peerVersion = __m_clientProtocolVersion;
+
+                        if( peerVersion==ETDServerInterface::unknownProtocolVersion )
+                            peerVersion = legacyQuery ? 0 : 1;
+
+                        auto       f       = sockname2str( peerVersion );
+                        auto       entries = __m_etdserver.dataChannelAddr();
+
+                        if( peerVersion<=1 ) {
+                            entries.remove_if([](sockname_type const& sn) {
+                                auto const& proto = get_protocol(sn);
+                                return !(proto=="tcp" || proto=="tcp6" || proto=="udt" || proto=="udt6");
+                            });
+                        }
+
+                        if( peerVersion<3 ) {
+                            entries.remove_if([](sockname_type const& sn) {
+                                auto const& proto = get_protocol(sn);
+                                return (proto=="srt" || proto=="srt6");
+                            });
+                        }
 
                         std::transform(std::begin(entries), std::end(entries), std::back_inserter(replies),
                                        [&](sockname_type const& sn) { std::ostringstream oss; oss << "OK " << f(sn); return oss.str(); });
@@ -1465,6 +1503,14 @@ namespace etdc {
                             replies.emplace_back( removeResult ? "OK" : "ERR Failed to remove UUID" );
                         }
                     } else if( std::regex_match(*line, fields, rxProtocolVersion) ) {
+                        if( fields[1].matched ) {
+                            protocolversion_type requested = std::stoul(fields[1].str());
+                            protocolversion_type negotiated = (__m_etdserver.protocolVersion()<requested)
+                                                              ? __m_etdserver.protocolVersion()
+                                                              : requested;
+
+                            __m_clientProtocolVersion = negotiated;
+                        }
                         // and add a final OK
                         replies.emplace_back("OK "+repr(__m_etdserver.protocolVersion()));
                     } else {

@@ -7,7 +7,7 @@ data does not flow through the client's machine and/or network.
 - The system natively supports remote wildcards; it is possible to transfer
 multiple files irrespective of wether they are remote or local. Since Apr 2026 (v1.2), the daemon also [supports access control lists (ACLs)](#access-control-lists) to restrict read and/or write access to specific files or directories.
 
-- The etransfer tools support TCP and [UDT](https://github.com/netvirt/udt4) over both IPv4 and IPv6. The UDT protocol is orders of magnitude faster on long, fat, network connections.
+- The etransfer tools support TCP, [UDT](https://github.com/netvirt/udt4), and [SRT](https://www.srtalliance.org/) over both IPv4 and IPv6. The UDT and SRT protocols are orders of magnitude faster on long, fat, network connections; SRT adds more stability on top of similar congestion-control behaviour. (See also [UDT or SRT?](#transport-protocols-udt-or-srt))
 
 - Single e-transfer daemon command and data channels are sufficient to support multiple parallel clients. The daemon allows specifiying multiple command and/or data channels for the purpose of offering the service over multiple protocols or to fine-tune support of specific protocol(s) on specific interfaces, see [Example](#Example).
 
@@ -21,6 +21,7 @@ multiple files irrespective of wether they are remote or local. Since Apr 2026 (
 
 <!--- line breaking in Markdown according to
       https://stackoverflow.com/a/36600196  -->
+[`Version 1.2`](https://github.com/jive-vlbi/etransfer/issues/30) introduces optional [SRT](https://www.srtalliance.org/) data channels alongside TCP and UDT.<br/>
 [`Version 1.1`](https://github.com/jive-vlbi/etransfer/releases/tag/v1.1) was tagged on Feb 10 2022; log into file-in-directory, compile issues, NFS workaround, fix bug in UUID generator and SIGSEGV in fmtTime<br/>
 [`Version 1.0.1`](https://github.com/jive-vlbi/etransfer/releases/tag/v1.0.1) was tagged on Jun 02 2021; bug in v1.0 found after release: superfluous comma in regex for multiple data channel "parsing"<br/>
 [`Version 1.0`](https://github.com/jive-vlbi/etransfer/releases/tag/v1.0) was tagged on May 25 2021<br/><br/>
@@ -135,7 +136,7 @@ Note: it is important to prevent the shell from expanding the wildcard pattern!
 Remote source and/or destination paths are specified a little more complex
 than e.g. in simple `scp(1)`:
 ```bash
-   [[tcp|udt][6]://][user@]host[#port]:/path 
+   [[tcp|udt|srt][6]://][user@]host[#port]:/path 
 ```
 So `host:/path` is the absolute minimum which needs to be specified for a
 remote URL and is shorthand for `tcp://host#4004:/path`.
@@ -312,3 +313,12 @@ In case of problems with this (same port number on different address spaces)
 it should be easy enough to run the different protocols on different ports -
 it's transparent to the client, modulo firewall configuration(s) blocking
 those port(s) at either end of the transfer.
+
+## Transport protocols: UDT or SRT?
+
+The daemon can advertise several data-channel protocols; the client will try them in order until one connects. In practice you will usually choose between:
+
+- **UDT (UDP-based Data Transfer)** – a high-performance protocol that shines on dedicated, high-latency, or high-bandwidth links. It is extremely efficient for bulk-data moves when you control both ends of the network path and do not need encryption.
+- **SRT (Secure Reliable Transport)** – built on UDT’s ideas but a more stable implementation. Should add more robust NAT/firewall traversal. Definitely try to advertise an SRT data channel when traversing less predictable networks.
+
+**Note:** It is recommended to put SRT before UDT as clients will try to connect in order of daemon command line order. Older clients that do not support SRT do not get offered the SRT data channel - it will be filtered out, so to be ultimately compatible configure both SRT and UDT channels. Newer clients that do support SRT will prefer that over UDT in such a configuration.

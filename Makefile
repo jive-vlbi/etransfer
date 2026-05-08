@@ -81,9 +81,9 @@ etd_RELEASE=dev
 etd_OBJS=$(call mkobjs,etd)
 
 # targets that etd depends upon
-# Link in support for UDT  
+# Link in support for UDT and SRT
 #etd_DEPS=libudt4hv pthread
-etd_DEPS=libudt5ab pthread fkyaml
+etd_DEPS=libudt5ab libsrt5ab fkyaml pthread
 
 # etransfer client
 etc_SRC=src/etc.cc src/reentrant.cc src/etdc_fd.cc src/etdc_etdserver.cc src/etdc_debug.cc src/etd_acl.cc
@@ -91,10 +91,10 @@ etc_VERSION=1.2
 etc_RELEASE=dev
 etc_OBJS=$(call mkobjs,etc)
 
-# targets that etd depends upon
-# Link in support for UDT  
+# targets that etc depends upon
+# Link in support for UDT and SRT
 #etc_DEPS=libudt4hv pthread
-etc_DEPS=libudt5ab pthread
+etc_DEPS=libudt5ab libsrt5ab pthread
 
 
 t3_SRC=src/t3.cc
@@ -127,12 +127,17 @@ ifeq ($(TODO),)
 	TODO=etc etd
 endif
 
-# If any of the targets need libutd4, add that include path
+# If any of the targets need libudt, add that include path
 ifneq ($(strip $(findstring libudt, $(foreach P, $(TODO), $($(P)_DEPS)))),)
 	INCD+=-I$(shell pwd)/libudt5ab
 	PLATFORMLIBS+=-L./$(repos)/libudt5ab -ludt5ab
 	#INCD+=-I$(shell pwd)/libudt4hv
 	#PLATFORMLIBS+=-L./$(repos)/libudt4hv -ludt4hv
+endif
+# If any of the targets need libsrt, add that include path
+ifneq ($(strip $(findstring libsrt, $(foreach P, $(TODO), $($(P)_DEPS)))),)
+	INCD+=-I$(shell pwd)/libsrt5ab/srtcore
+	PLATFORMLIBS+=-L./$(repos)/libsrt5ab -lsrt5ab
 endif
 # If any of the targets need pthread, add that library
 ifneq ($(strip $(findstring pthread, $(foreach P, $(TODO), $($(P)_DEPS)))),)
@@ -146,7 +151,7 @@ endif
 
 
 # Hints to gmake 
-.PHONY: info clean %.depend %.version %.target libudt4hv libudt5ab pthread %.dep
+.PHONY: info clean %.depend %.version %.target libudt4hv libudt5ab libsrt5ab pthread %.dep
 .PRECIOUS: $(repos)/src/%_version.cco $(repos)/%.d
 
 
@@ -159,15 +164,21 @@ all: $(foreach P, $(DEFAULTTARGETS), $(addsuffix .target, $(P)))
 info:
 	@echo "info: TODO=$(TODO)"; echo "repos=$(repos)"; echo "OBJS: $(foreach T, $(TODO), $($(T)_OBJS))"
 	@echo "INCD=$(INCD)"; echo "D=$(D)"; echo "PLATFORMLIBS=$(PLATFORMLIBS)"
+	@$(MAKE) -C libudt5ab -f Makefile B2B="$(B2B)" CPP="$(CXX)" REPOS="$(repos)" BUILD="$(BUILD)" info
+	@$(MAKE) -C libsrt5ab -f Makefile B2B="$(B2B)" CPP="$(CXX)" REPOS="$(repos)" BUILD="$(BUILD)" info
 
 clean: $(foreach P, $(DEFAULTTARGETS), $(addsuffix .clean, $(P)))
 	-$(MAKE) -C libudt4hv -f Makefile B2B="$(B2B)" REPOS="$(repos)" clean
+	-$(MAKE) -C libudt5ab -f Makefile B2B="$(B2B)" CPP="$(CXX)" REPOS="$(repos)" BUILD="$(BUILD)" clean
+	-$(MAKE) -C libsrt5ab -f Makefile B2B="$(B2B)" CPP="$(CXX)" REPOS="$(repos)" BUILD="$(BUILD)" clean
 	@echo "cleaned: $(DEFAULTTARGETS)"
 
 libudt4hv: 
 	@$(MAKE) -C libudt4hv -f Makefile B2B="$(B2B)" CPP="$(CXX)" REPOS="$(repos)" BUILD="$(BUILD)"
 libudt5ab: 
 	@$(MAKE) -C libudt5ab -f Makefile B2B="$(B2B)" CPP="$(CXX)" REPOS="$(repos)" BUILD="$(BUILD)"
+libsrt5ab:
+	@$(MAKE) -C libsrt5ab -f Makefile B2B="$(B2B)" CPP="$(CXX)" REPOS="$(repos)" BUILD="$(BUILD)"
 
 %.target: %.version %.depend %.dep
 	$(LD) -o $* $($*_OBJS) $(repos)/src/$*_version.cco $(LIBD) $(PLATFORMLIBS) $($*F_LIBS)
@@ -185,7 +196,7 @@ libudt5ab:
 # Let g++ generate deps for the source files. Then we manually add the
 # dependencies listed in the per program specification and also write
 # a specific target rule
-$(repos)/%.d: 
+$(repos)/%.d: Makefile
 	@ mkdir -p $(repos)
 	@ $(CXX) -MM $(CXXOPT) $(INCD) $($(*F)_SRC) | sed -e 's@^\(.*\)\.o:@$(repos)/src/\1.cco:@;' > $@
 	@ export TMP="`cat $@ | sed -n '/^[^:]*:/{ s/^[^:]*: *//;p; }' | tr ' ' '\n' | sort | uniq | tr '\n' ' ' | sed 's#\\\\##g'`"; printf "$(repos)/$*.d $(repos)/src/$*_version.cco: src/version.h $${TMP}\n" >> $@;

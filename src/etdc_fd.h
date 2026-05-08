@@ -31,15 +31,19 @@
 #include <reentrant.h>
 #include <tagged.h>
 #include <udt.h>
+#include <srt_udt.h>
+#include <srt.h>
 
 // C++
 #include <map>
 #include <regex>
 #include <tuple>
+#include <algorithm>
 #include <chrono>
 #include <memory>
 #include <thread>
 #include <string>
+#include <sstream>
 #include <iostream>
 #include <functional>
 
@@ -276,6 +280,30 @@ namespace etdc {
         etdc_udt6();
         etdc_udt6(int fd); // take over a file descriptor e.g. from ::accept()
         virtual ~etdc_udt6();
+
+        private:
+            void setup_basic_fns( void );
+    };
+
+    // An SRT socket
+    struct etdc_srt:
+        public etdc_fd
+    {
+        etdc_srt();
+        etdc_srt(int fd);
+
+        virtual ~etdc_srt();
+
+        protected:
+            void setup_basic_fns( void );
+    };
+
+    struct etdc_srt6:
+        public etdc_srt
+    {
+        etdc_srt6();
+        etdc_srt6(int fd); // take over a file descriptor e.g. from ::accept()
+        virtual ~etdc_srt6();
 
         private:
             void setup_basic_fns( void );
@@ -583,14 +611,28 @@ namespace etdc {
     namespace detail {
         constexpr static int defaultUDTBufSize{ 320*1024*1024 };
 
+        inline std::string format_srt_error_details(int err_code, int native_errno, const char* err_msg) {
+            std::ostringstream oss;
+            oss << (err_msg ? err_msg : "<unknown>") << " (code=" << err_code << ", errno=" << native_errno << ")";
+            return oss.str();
+        }
+
+        inline std::string format_srt_error() {
+            int native_errno = 0;
+            int err_code = srt_getlasterror(&native_errno);
+            return format_srt_error_details(err_code, native_errno, srt_getlasterror_str());
+        }
+
         // For creating sokkits
         using protocol_map_type = std::map<std::string, std::function<etdc_fdptr(void)>>;
 
         static const  protocol_map_type protocol_map = { 
-            {"tcp",  []() { return std::make_shared<etdc_tcp>();  }},
-            {"tcp6", []() { return std::make_shared<etdc_tcp6>(); }},
-            {"udt",  []() { return std::make_shared<etdc_udt>();  }},
-            {"udt6", []() { return std::make_shared<etdc_udt6>(); }}
+            {"tcp",  []() { return std::make_shared<etdc_tcp>();   }},
+            {"tcp6", []() { return std::make_shared<etdc_tcp6>();  }},
+            {"udt",  []() { return std::make_shared<etdc_udt>();   }},
+            {"udt6", []() { return std::make_shared<etdc_udt6>();  }},
+            {"srt",  []() { return std::make_shared<etdc_srt>();   }},
+            {"srt6", []() { return std::make_shared<etdc_srt6>();  }}
         };
 
 
@@ -617,28 +659,35 @@ namespace etdc {
             etdc::tcp_keepidle  tcpKeepIdle {};
             etdc::tcp_keepintvl tcpKeepIntvl {};
 #endif // !ETDC_HAVE_TCP_KEEPALIVE
+            etdc::srt_mss       srtMSS     {};
+            etdc::srt_rcvbuf    srtBufSize {};
+            etdc::srt_sndbuf    srtSndBufSize {};
+            etdc::srt_max_bw    srtMaxBW   {};
         };
-        const etdc::construct<server_settings>  update_srv(  &server_settings::blocking
-                                                            ,&server_settings::backLog
-                                                            ,&server_settings::srvHost
-                                                            ,&server_settings::srvPort
-                                                            ,&server_settings::rcvBufSize
-                                                            ,&server_settings::sndBufSize
-                                                            ,&server_settings::udtBufSize
-                                                            ,&server_settings::udtSndBufSize
-                                                            ,&server_settings::udpBufSize
-                                                            ,&server_settings::udpSndBufSize
-                                                            ,&server_settings::udtMSS
-                                                            ,&server_settings::ipv6_only
-                                                            ,&server_settings::udtLinger
-                                                            ,&server_settings::udtMaxBW
-                                                            ,&server_settings::soKeepAlive
+        const etdc::construct<server_settings>  update_srv( &server_settings::blocking,
+                                                            &server_settings::backLog,
+                                                            &server_settings::srvHost,
+                                                            &server_settings::srvPort,
+                                                            &server_settings::rcvBufSize,
+                                                            &server_settings::sndBufSize,
+                                                            &server_settings::udtBufSize,
+                                                            &server_settings::udtSndBufSize,
+                                                            &server_settings::udpBufSize,
+                                                            &server_settings::udpSndBufSize,
+                                                            &server_settings::udtMSS,
+                                                            &server_settings::ipv6_only,
+                                                            &server_settings::udtLinger,
+                                                            &server_settings::udtMaxBW,
+                                                            &server_settings::soKeepAlive,
 #ifdef ETDC_HAVE_TCP_KEEPALIVE
-                                                            ,&server_settings::tcpKeepCnt
-                                                            ,&server_settings::tcpKeepIdle
-                                                            ,&server_settings::tcpKeepIntvl
+                                                            &server_settings::tcpKeepCnt,
+                                                            &server_settings::tcpKeepIdle,
+                                                            &server_settings::tcpKeepIntvl,
 #endif // !ETDC_HAVE_TCP_KEEPALIVE
-                                                            );
+                                                            &server_settings::srtMSS,
+                                                            &server_settings::srtBufSize,
+                                                            &server_settings::srtSndBufSize,
+                                                            &server_settings::srtMaxBW );
 
         using server_defaults_map = std::map<std::string, std::function<server_settings(void)>>;
 
@@ -685,6 +734,26 @@ namespace etdc {
                                                 any_port, etdc::udt_linger{{0,0}},
                                                 etdc::udt_mss{1500},
                                                 etdc::udt_max_bw{-1} );
+                         }},
+            {"srt", []() { return update_srv.mk(backlog_type{4},
+                                                blocking_type{true},
+                                                etdc::udt_rcvbuf{defaultUDTBufSize},
+                                                etdc::udt_sndbuf{defaultUDTBufSize},
+                                                etdc::udp_sndbuf{32*1024*1024},
+                                                etdc::udp_rcvbuf{32*1024*1024},
+                                                any_port, etdc::udt_linger{{0,0}},
+                                                etdc::udt_mss{1500},
+                                                etdc::udt_max_bw{-1} );
+                         }},
+            {"srt6", []() { return update_srv.mk(backlog_type{4},
+                                                 blocking_type{true},
+                                                 etdc::udt_rcvbuf{defaultUDTBufSize},
+                                                 etdc::udt_sndbuf{defaultUDTBufSize},
+                                                 etdc::udp_sndbuf{32*1024*1024},
+                                                 etdc::udp_rcvbuf{32*1024*1024},
+                                                 any_port, etdc::udt_linger{{0,0}},
+                                                 etdc::udt_mss{1500},
+                                                 etdc::udt_max_bw{-1} );
                          }}
         };
 
@@ -755,7 +824,7 @@ namespace etdc {
                                     "listening on tcp[" << sa << "] - " << etdc::strerror(errno));
 
                         // And we can now actually enable the accept function
-                        pSok->accept = [=](int f) {
+                        pSok->accept = [=](int f) -> std::shared_ptr<etdc_fd> {
                             socklen_t           ipl( sizeof(struct sockaddr_in) );
                             struct sockaddr_in  ip;
                             int                 fd = ::accept(f, reinterpret_cast<struct sockaddr*>(&ip), &ipl);
@@ -963,8 +1032,133 @@ namespace etdc {
                             return (fd==-1) ? std::shared_ptr<etdc_fd>() : std::make_shared<etdc::etdc_udt6>(fd);
                         };
                     }}
-            /////////// More protocols may follow?
+            ,
+            ////////// SRT server  (IPv4)
+            {"srt", [](etdc_fdptr pSok, detail::server_settings const& srv) -> void {
+                        socklen_t          sl( sizeof(struct sockaddr_in) );
+                        struct sockaddr_in sa;
+
+                        const auto effectiveRcvBuf = etdc::untag(srv.srtBufSize) ? etdc::untag(srv.srtBufSize)
+                                                                              : etdc::untag(srv.udtBufSize);
+                        const auto effectiveSndBuf = etdc::untag(srv.srtSndBufSize) ? etdc::untag(srv.srtSndBufSize)
+                                                                                     : etdc::untag(srv.udtSndBufSize);
+                        const auto baseMSS        = etdc::untag(srv.udtMSS) ? etdc::untag(srv.udtMSS) : 1500;
+                        const auto effectiveMSS   = etdc::untag(srv.srtMSS) ? etdc::untag(srv.srtMSS) : baseMSS;
+                        const auto effectiveBW    = etdc::untag(srv.srtMaxBW) ? etdc::untag(srv.srtMaxBW)
+                                                                              : etdc::untag(srv.udtMaxBW);
+                        const auto fc             = (effectiveRcvBuf / (std::max(effectiveMSS, 64) - 28)) + 256;
+
+                        etdc::setsockopt(pSok->__m_fd, etdc::srt_reuseaddr{true}, etdc::srt_fc{fc},
+                                         etdc::srt_rcvbuf{effectiveRcvBuf}, etdc::srt_sndbuf{effectiveSndBuf},
+                                         etdc::srt_mss{effectiveMSS}, etdc::srt_linger{untag(srv.udtLinger)},
+                                         etdc::srt_max_bw{effectiveBW}, etdc::srt_messageapi{false},
+                                         etdc::srt_transtype{SRTT_FILE});
+
+                        if( srv.udpBufSize )
+                            etdc::setsockopt(pSok->__m_fd, etdc::srt_udp_rcvbuf{etdc::untag(srv.udpBufSize)});
+                        if( srv.udpSndBufSize )
+                            etdc::setsockopt(pSok->__m_fd, etdc::srt_udp_sndbuf{etdc::untag(srv.udpSndBufSize)});
+
+                        ETDCSYSCALL(etdc::resolve_host<etdc::EmptyMeansAny>(srv.srvHost, SOCK_STREAM, IPPROTO_TCP, sa),
+                                    "Failed to resolve/srt '" << srv.srvHost << "'");
+
+                        sa.sin_port = etdc::htons_( srv.srvPort );
+
+                        pSok->setblocking(pSok->__m_fd, etdc::untag(srv.blocking));
+
+                        ETDCSYSCALL(srt::UDT::bind(pSok->__m_fd, reinterpret_cast<const struct sockaddr*>(&sa), sl)!=SRT_ERROR,
+                                    "binding to srt[" << sa << "] - " << detail::format_srt_error());
+
+                        ETDCSYSCALL(srt::UDT::listen(pSok->__m_fd, etdc::untag(srv.backLog))!=SRT_ERROR,
+                                    "listening on srt[" << sa << "] - " << detail::format_srt_error());
+
+                        pSok->accept = [=](int f) {
+                            socklen_t           ipl( sizeof(struct sockaddr_in) );
+                            struct sockaddr_in  ip;
+                            SRTSOCKET           fd = srt::UDT::accept(f, reinterpret_cast<struct sockaddr*>(&ip), &ipl);
+
+                            if( fd==srt::UDT::INVALID_SOCK ) {
+                                int       native_errno = 0;
+                                const int err_code = srt_getlasterror(&native_errno);
+
+                                ETDCSYSCALL(!srv.blocking && err_code==SRT_EASYNCRCV,
+                                            "failed to accept on srt[" << sa << "] - "
+                                            << detail::format_srt_error_details(err_code, native_errno, srt_getlasterror_str()));
+                            }
+
+                            return (fd==srt::UDT::INVALID_SOCK)
+                                ? std::shared_ptr<etdc_fd>()
+                                : std::shared_ptr<etdc_fd>(std::make_shared<etdc::etdc_srt>(fd));
+                        };
+                    }}
+            ,
+            ////////// SRT server  (IPv6)
+            {"srt6", [](etdc_fdptr pSok, detail::server_settings const& srv) -> void {
+                        socklen_t           sl( sizeof(struct sockaddr_in6) );
+                        struct sockaddr_in6 sa;
+
+                        const auto effectiveRcvBuf = etdc::untag(srv.srtBufSize) ? etdc::untag(srv.srtBufSize)
+                                                                              : etdc::untag(srv.udtBufSize);
+                        const auto effectiveSndBuf = etdc::untag(srv.srtSndBufSize) ? etdc::untag(srv.srtSndBufSize)
+                                                                                     : etdc::untag(srv.udtSndBufSize);
+                        const auto baseMSS        = etdc::untag(srv.udtMSS) ? etdc::untag(srv.udtMSS) : 1500;
+                        const auto effectiveMSS   = etdc::untag(srv.srtMSS) ? etdc::untag(srv.srtMSS) : baseMSS;
+                        const auto effectiveBW    = etdc::untag(srv.srtMaxBW) ? etdc::untag(srv.srtMaxBW)
+                                                                              : etdc::untag(srv.udtMaxBW);
+                        const auto fc             = (effectiveRcvBuf / (std::max(effectiveMSS, 64) - 28)) + 256;
+
+                        etdc::setsockopt(pSok->__m_fd, etdc::srt_reuseaddr{true}, etdc::srt_fc{fc},
+                                         etdc::srt_rcvbuf{effectiveRcvBuf}, etdc::srt_sndbuf{effectiveSndBuf},
+                                         etdc::srt_mss{effectiveMSS}, etdc::srt_linger{untag(srv.udtLinger)},
+                                         etdc::srt_max_bw{effectiveBW}, etdc::srt_messageapi{false},
+                                         etdc::srt_transtype{SRTT_FILE});
+
+                        if( srv.udpBufSize )
+                            etdc::setsockopt(pSok->__m_fd, etdc::srt_udp_rcvbuf{etdc::untag(srv.udpBufSize)});
+                        if( srv.udpSndBufSize )
+                            etdc::setsockopt(pSok->__m_fd, etdc::srt_udp_sndbuf{etdc::untag(srv.udpSndBufSize)});
+
+                        ETDCSYSCALL(etdc::resolve_host<etdc::EmptyMeansAny>(srv.srvHost, SOCK_STREAM, IPPROTO_TCP, sa),
+                                    "Failed to resolve/srt6 '" << srv.srvHost << "'");
+                        std::smatch scope;
+                        if( std::regex_search(srv.srvHost, scope, rxScope) )
+                            sa.sin6_scope_id = ::if_nametoindex(scope[1].str().c_str());
+                        else
+                            sa.sin6_scope_id = 0;
+
+                        sa.sin6_port = etdc::htons_( srv.srvPort );
+
+                        etdc::setsockopt(pSok->__m_fd, etdc::srt_ipv6only{ etdc::untag(srv.ipv6_only) });
+
+                        pSok->setblocking(pSok->__m_fd, etdc::untag(srv.blocking));
+
+                        ETDCSYSCALL(srt::UDT::bind(pSok->__m_fd, reinterpret_cast<const struct sockaddr*>(&sa), sl)!=SRT_ERROR,
+                                    "binding to srt6[" << sa << "] - " << detail::format_srt_error());
+
+                        ETDCSYSCALL(srt::UDT::listen(pSok->__m_fd, etdc::untag(srv.backLog))!=SRT_ERROR,
+                                    "listening on srt6[" << sa << "] - " << detail::format_srt_error());
+
+                        pSok->accept = [=](int f) {
+                            socklen_t            ipl( sizeof(struct sockaddr_in6) );
+                            struct sockaddr_in6  ip;
+                            SRTSOCKET            fd = srt::UDT::accept(f, reinterpret_cast<struct sockaddr*>(&ip), &ipl);
+
+                            if( fd==srt::UDT::INVALID_SOCK ) {
+                                int       native_errno = 0;
+                                const int err_code = srt_getlasterror(&native_errno);
+
+                                ETDCSYSCALL(!srv.blocking && err_code==SRT_EASYNCRCV,
+                                            "failed to accept on srt6[" << sa << "] - "
+                                            << detail::format_srt_error_details(err_code, native_errno, srt_getlasterror_str()));
+                            }
+
+                            return (fd==srt::UDT::INVALID_SOCK)
+                                ? std::shared_ptr<etdc_fd>()
+                                : std::shared_ptr<etdc_fd>(std::make_shared<etdc::etdc_srt6>(fd));
+                        };
+                    }}
         };
+    /////////// More protocols may follow?
 
 
         //////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -995,6 +1189,10 @@ namespace etdc {
             etdc::ipv6_only  ipv6_only  {};
             etdc::udt_linger udtLinger  {};
             etdc::udt_max_bw udtMaxBW   {};
+            etdc::srt_mss    srtMSS     {};
+            etdc::srt_sndbuf srtBufSize {};
+            etdc::srt_rcvbuf srtRcvBufSize {};
+            etdc::srt_max_bw srtMaxBW   {};
             cancelfn_type    cancel_fn  {};
         };
         const etdc::construct<client_settings>  update_clnt( &client_settings::blocking,
@@ -1012,6 +1210,10 @@ namespace etdc {
                                                              &client_settings::ipv6_only,
                                                              &client_settings::udtLinger,
                                                              &client_settings::udtMaxBW,
+                                                             &client_settings::srtMSS,
+                                                             &client_settings::srtBufSize,
+                                                             &client_settings::srtRcvBufSize,
+                                                             &client_settings::srtMaxBW,
                                                              &client_settings::cancel_fn );
 
         using client_defaults_map = std::map<std::string, std::function<client_settings(void)>>;
@@ -1052,6 +1254,28 @@ namespace etdc {
                                                  blocking_type{true},
                                                  etdc::udt_max_bw{-1},
                                                  cancelfn_type{noCancelFn} );
+                        }},
+            {"srt", []() { return update_clnt.mk(etdc::udt_mss{1500},
+                                                 any_port, etdc::udt_linger{{0, 0}},
+                                                 numretry_type{2}, retrydelay_type{5},
+                                                 etdc::udt_sndbuf{defaultUDTBufSize},
+                                                 etdc::udt_rcvbuf{defaultUDTBufSize},
+                                                 etdc::udp_sndbuf{32*1024*1024},
+                                                 etdc::udp_rcvbuf{32*1024*1024},
+                                                 blocking_type{true},
+                                                 etdc::udt_max_bw{-1},
+                                                 cancelfn_type{noCancelFn} );
+                         }},
+            {"srt6", []() { return update_clnt.mk(etdc::udt_mss{1500},
+                                                  any_port, etdc::udt_linger{{0,0}},
+                                                  numretry_type{2}, retrydelay_type{5},
+                                                  etdc::udt_sndbuf{defaultUDTBufSize},
+                                                  etdc::udt_rcvbuf{defaultUDTBufSize},
+                                                  etdc::udp_sndbuf{32*1024*1024},
+                                                  etdc::udp_rcvbuf{32*1024*1024},
+                                                  blocking_type{true},
+                                                  etdc::udt_max_bw{-1},
+                                                  cancelfn_type{noCancelFn} );
                          }}
         };
 
@@ -1200,6 +1424,93 @@ namespace etdc {
                         ETDCSYSCALL(UDT::connect(pSok->__m_fd, reinterpret_cast<struct sockaddr const*>(&sa), sl)!=UDT::ERROR,
                                     "connecting to udt6[" << sa << "] - " << UDT::getlasterror().getErrorMessage());
                         // Not much else to do ...
+                    }}
+            ,
+            {"srt", [](etdc_fdptr pSok, detail::client_settings const& clnt) {
+                        int                sl( sizeof(struct sockaddr_in) );
+                        struct sockaddr_in sa;
+
+                        ETDCSYSCALL(etdc::resolve_host<etdc::EmptyMeansInvalid>(clnt.clntHost, SOCK_STREAM, IPPROTO_TCP, sa),
+                                    "Failed to resolve/srt '" << clnt.clntHost << "'");
+
+                        sa.sin_port = etdc::htons_( clnt.clntPort );
+
+                        const auto effectiveRcvBuf = etdc::untag(clnt.srtRcvBufSize) ? etdc::untag(clnt.srtRcvBufSize)
+                                                                                      : etdc::untag(clnt.udtRcvBufSize);
+                        const auto effectiveSndBuf = etdc::untag(clnt.srtBufSize) ? etdc::untag(clnt.srtBufSize)
+                                                                                   : etdc::untag(clnt.udtBufSize);
+                        const auto baseMSS        = etdc::untag(clnt.udtMSS) ? etdc::untag(clnt.udtMSS) : 1500;
+                        const auto effectiveMSS   = etdc::untag(clnt.srtMSS) ? etdc::untag(clnt.srtMSS) : baseMSS;
+                        const auto effectiveBW    = etdc::untag(clnt.srtMaxBW) ? etdc::untag(clnt.srtMaxBW)
+                                                                                : etdc::untag(clnt.udtMaxBW);
+                        const auto fc             = (effectiveRcvBuf / (std::max(effectiveMSS, 64) - 28)) + 256;
+
+                        etdc::setsockopt(pSok->__m_fd, etdc::srt_reuseaddr{true}, etdc::srt_fc{fc},
+                                         etdc::srt_sndbuf{effectiveSndBuf}, etdc::srt_rcvbuf{effectiveRcvBuf},
+                                         etdc::srt_mss{effectiveMSS}, etdc::srt_linger{untag(clnt.udtLinger)},
+                                         etdc::srt_max_bw{effectiveBW}, etdc::srt_messageapi{false},
+                                         etdc::srt_transtype{SRTT_FILE});
+
+                        const auto inputBW = (effectiveBW>0) ? effectiveBW : -1;
+                        if( inputBW>0 )
+                            etdc::setsockopt(pSok->__m_fd, etdc::srt_inputbw{inputBW}, etdc::srt_mininputbw{inputBW/2});
+
+                        if( clnt.udpBufSize )
+                            etdc::setsockopt(pSok->__m_fd, etdc::srt_udp_sndbuf{etdc::untag(clnt.udpBufSize)});
+                        if( clnt.udpRcvBufSize )
+                            etdc::setsockopt(pSok->__m_fd, etdc::srt_udp_rcvbuf{etdc::untag(clnt.udpRcvBufSize)});
+
+                        pSok->setblocking(pSok->__m_fd, etdc::untag(clnt.blocking));
+
+                        ETDCSYSCALL(srt::UDT::connect(pSok->__m_fd, reinterpret_cast<struct sockaddr const*>(&sa), sl)!=SRT_ERROR,
+                                    "connecting to srt[" << sa << "] - " << detail::format_srt_error());
+                    }}
+            ,
+            {"srt6", [](etdc_fdptr pSok, detail::client_settings const& clnt) {
+                        int                 sl( sizeof(struct sockaddr_in6) );
+                        struct sockaddr_in6 sa;
+
+                        ETDCSYSCALL(etdc::resolve_host<etdc::EmptyMeansInvalid>(clnt.clntHost, SOCK_STREAM, IPPROTO_TCP, sa),
+                                    "Failed to resolve/srt6 '" << clnt.clntHost << "'");
+                        std::smatch scope;
+                        if( std::regex_search(clnt.clntHost, scope, rxScope) )
+                            sa.sin6_scope_id = ::if_nametoindex(scope[1].str().c_str());
+                        else
+                            sa.sin6_scope_id = 0;
+
+                        sa.sin6_port = etdc::htons_( clnt.clntPort );
+
+                        const auto effectiveRcvBuf = etdc::untag(clnt.srtRcvBufSize) ? etdc::untag(clnt.srtRcvBufSize)
+                                                                                      : etdc::untag(clnt.udtRcvBufSize);
+                        const auto effectiveSndBuf = etdc::untag(clnt.srtBufSize) ? etdc::untag(clnt.srtBufSize)
+                                                                                   : etdc::untag(clnt.udtBufSize);
+                        const auto baseMSS        = etdc::untag(clnt.udtMSS) ? etdc::untag(clnt.udtMSS) : 1500;
+                        const auto effectiveMSS   = etdc::untag(clnt.srtMSS) ? etdc::untag(clnt.srtMSS) : baseMSS;
+                        const auto effectiveBW    = etdc::untag(clnt.srtMaxBW) ? etdc::untag(clnt.srtMaxBW)
+                                                                                : etdc::untag(clnt.udtMaxBW);
+                        const auto fc             = (effectiveRcvBuf / (std::max(effectiveMSS, 64) - 28)) + 256;
+
+                        etdc::setsockopt(pSok->__m_fd, etdc::srt_reuseaddr{true}, etdc::srt_fc{fc},
+                                         etdc::srt_sndbuf{effectiveSndBuf}, etdc::srt_rcvbuf{effectiveRcvBuf},
+                                         etdc::srt_mss{effectiveMSS}, etdc::srt_linger{untag(clnt.udtLinger)},
+                                         etdc::srt_max_bw{effectiveBW}, etdc::srt_messageapi{false},
+                                         etdc::srt_transtype{SRTT_FILE});
+
+                        const auto inputBW = (effectiveBW>0) ? effectiveBW : -1;
+                        if( inputBW>0 )
+                            etdc::setsockopt(pSok->__m_fd, etdc::srt_inputbw{inputBW}, etdc::srt_mininputbw{inputBW/2});
+
+                        if( clnt.udpBufSize )
+                            etdc::setsockopt(pSok->__m_fd, etdc::srt_udp_sndbuf{etdc::untag(clnt.udpBufSize)});
+                        if( clnt.udpRcvBufSize )
+                            etdc::setsockopt(pSok->__m_fd, etdc::srt_udp_rcvbuf{etdc::untag(clnt.udpRcvBufSize)});
+
+                        etdc::setsockopt(pSok->__m_fd, etdc::srt_ipv6only{ etdc::untag(clnt.ipv6_only) });
+
+                        pSok->setblocking(pSok->__m_fd, etdc::untag(clnt.blocking));
+
+                        ETDCSYSCALL(srt::UDT::connect(pSok->__m_fd, reinterpret_cast<struct sockaddr const*>(&sa), sl)!=SRT_ERROR,
+                                    "connecting to srt6[" << sa << "] - " << detail::format_srt_error());
                     }}
         };
     }

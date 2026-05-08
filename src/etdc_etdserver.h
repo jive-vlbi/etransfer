@@ -128,7 +128,7 @@ namespace etdc {
             virtual protocolversion_type  set_protocolVersion( protocolversion_type ) = 0;
 
             // The version of the protocol this code understands
-            static const protocolversion_type currentProtocolVersion = 1;
+            static const protocolversion_type currentProtocolVersion = 3;
             static const protocolversion_type unknownProtocolVersion = ~((protocolversion_type)0);
 
             virtual ~ETDServerInterface() {}
@@ -186,7 +186,8 @@ namespace etdc {
     class ETDProxy: public ETDServerInterface {
         public:
             explicit ETDProxy(etdc::etdc_fdptr conn):
-                __m_connection( conn ), __m_protocolVersion( ETDServerInterface::unknownProtocolVersion )
+                __m_connection( conn ), __m_protocolVersion( ETDServerInterface::unknownProtocolVersion ),
+                __m_attemptExtendedProbe( true )
             { ETDCASSERT(__m_connection, "The proxy must have a valid connection"); }
 
             virtual filelist_type     listPath(std::string const& /*path*/, bool /*allow tilde expansion*/) const;
@@ -210,6 +211,8 @@ namespace etdc {
             // Returns previous protocol version
             virtual protocolversion_type  set_protocolVersion( protocolversion_type pvn );
 
+            void preferExtendedProbe(bool enable);
+
             template <typename... Options>
             int setsockopt(Options&&... options) {
                 return etdc::setsockopt(__m_connection->__m_fd, std::forward<Options>(options)...);
@@ -221,6 +224,7 @@ namespace etdc {
             // Because we are a proxy we only have a connection to the other end
             etdc::etdc_fdptr             __m_connection;
             mutable protocolversion_type __m_protocolVersion;
+            mutable bool                 __m_attemptExtendedProbe;
     };
 
     //////////////////////////////////////////////////////////////////////
@@ -239,7 +243,8 @@ namespace etdc {
 
             template <typename... Args>
             explicit ETDServerWrapper(etdc::etdc_fdptr conn, Args&&... args):
-                __m_etdserver( std::forward<Args>(args)... ), __m_connection(conn)
+                __m_etdserver( std::forward<Args>(args)... ), __m_connection(conn),
+                __m_clientProtocolVersion( ETDServerInterface::unknownProtocolVersion )
             {
                 ETDCASSERT(__m_connection, "The server wrapper must have a valid connection");
                 this->handle();
@@ -249,6 +254,7 @@ namespace etdc {
             // We operate on shared state
             ETDServer           __m_etdserver;
             etdc::etdc_fdptr    __m_connection;
+            protocolversion_type __m_clientProtocolVersion;
 
             // Sucks the connection empty for commands
             void handle( void );
