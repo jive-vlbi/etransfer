@@ -151,6 +151,29 @@ over UDT/IPv6:46227.
 Both the e-transfer daemon and client support the "--help" command line option explain all options.
 
 
+## Daemon features
+
+### TCP keepalive controls
+
+Motivation: long-lived TCP command connections can be silently dropped by stateful firewalls and load-balancers when they sit idle, e.g. during a long/slow data transfer when no commands/replies flow between the client and daemon. The daemon now supports explicit TCP keepalive management (see note below the options though) instead of relying on per-host defaults.
+
+New options:
+
+- `--tcp-keepalive=true|false` – toggle `SO_KEEPALIVE` on accepted command
+  sockets. The default stays `false`; pass `true` to enable probing.
+- `--tcp-keepcount <n>` – (if supported by the platform) send at most `<n>`
+  probes before giving up. Minimum value is 1.
+- `--tcp-keepinterval <seconds>` – (if supported) number of seconds between
+  individual probes once keepalive is enabled.
+- `--tcp-keepidle <seconds>` – (if supported) idle time before the first
+  keepalive probe fires.
+
+The tuning flags are automatically exposed if the underlying OS indicate support. The tuning settings only take effect when keepalive is switched on. Unsupported parameters are ignored without failing the daemon startup.
+
+For background on Linux-specific keepalive defaults and sysctls, see the
+[Linux TCP keepalive tuning guide](https://www.man7.org/linux/man-pages/man7/tcp.7.html#TCP_KEEPALIVE).
+
+
 ## File copy modes
 
 Because the etransfer programs expect to transfer large files over long
