@@ -174,7 +174,7 @@ private:
     int fa;
     LogLevel::type level;
     static const size_t MAX_PREFIX_SIZE = 32;
-    char prefix[MAX_PREFIX_SIZE+1];
+    char prefix[MAX_PREFIX_SIZE+32];
     LogConfig* src_config;
 
     bool isset(int flg) { return (src_config->flags & flg) != 0; }
@@ -200,7 +200,7 @@ public:
 #if defined(_MSC_VER) && _MSC_VER < 1900
             _snprintf(prefix, MAX_PREFIX_SIZE, "%s:%s", your_pfx, logger_pfx);
 #else
-            snprintf(prefix, MAX_PREFIX_SIZE + 1, "%s:%s", your_pfx, logger_pfx);
+            snprintf(prefix, MAX_PREFIX_SIZE + 16, "%s:%s", your_pfx, logger_pfx);
 #endif
         }
         else
