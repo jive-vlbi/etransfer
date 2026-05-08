@@ -75,7 +75,7 @@ mkobjs=$(foreach O, $(patsubst %.c, %.co, $(patsubst %.cc, %.cco, $(patsubst %.S
 #         only set this variable if you actually need it
 
 # etransfer daemon
-etd_SRC=src/etd.cc src/reentrant.cc src/etdc_fd.cc src/etdc_etdserver.cc src/etdc_debug.cc
+etd_SRC=src/etd.cc src/reentrant.cc src/etdc_fd.cc src/etdc_etdserver.cc src/etdc_debug.cc src/etd_acl.cc
 etd_VERSION=1.2
 etd_RELEASE=dev
 etd_OBJS=$(call mkobjs,etd)
@@ -83,10 +83,10 @@ etd_OBJS=$(call mkobjs,etd)
 # targets that etd depends upon
 # Link in support for UDT  
 #etd_DEPS=libudt4hv pthread
-etd_DEPS=libudt5ab pthread
+etd_DEPS=libudt5ab pthread fkyaml
 
 # etransfer client
-etc_SRC=src/etc.cc src/reentrant.cc src/etdc_fd.cc src/etdc_etdserver.cc src/etdc_debug.cc
+etc_SRC=src/etc.cc src/reentrant.cc src/etdc_fd.cc src/etdc_etdserver.cc src/etdc_debug.cc src/etd_acl.cc
 etc_VERSION=1.2
 etc_RELEASE=dev
 etc_OBJS=$(call mkobjs,etc)
@@ -138,6 +138,10 @@ endif
 ifneq ($(strip $(findstring pthread, $(foreach P, $(TODO), $($(P)_DEPS)))),)
 	BASEOPT+=-pthread -D_REENTRANT -D_POSIX_PTHREAD_SEMANTICS 
 	PLATFORMLIBS+=-lpthread
+endif
+# If any of the targets need the YAML parser, add that library
+ifneq ($(strip $(findstring fkyaml, $(foreach P, $(TODO), $($(P)_DEPS)))),)
+	INCD+=-I$(shell pwd)/fkyaml
 endif
 
 

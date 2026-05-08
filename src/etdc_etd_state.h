@@ -22,6 +22,7 @@
 
 // Own headers
 #include <etdc_fd.h>
+#include <etd_acl.h>
 #include <etdc_uuid.h>
 #include <etdc_thread.h>
 #include <utilities.h>
@@ -123,6 +124,7 @@ namespace etdc {
         size_t                  bufSize{ 32*1024*1024 };
         std::mutex              lock;
         unsigned int            n_threads;
+        etdc::ACLptr            acl;
         etdc::mss_type          udtMSS{ 0/*1500*/ };
         etdc::max_bw_type       udtMaxBW{ 0/*-1*/ };
         cancellist_type         cancellations;

@@ -139,6 +139,8 @@ HUMANREADABLE(etdc::tcp_keepintvl, "int")
 HUMANREADABLE(etdc::tcp_keepidle, "int")
 #endif
 
+HUMANREADABLE(etdc::ACLptr,      "file")
+
 // Let's make the URL syntax at least somewhat similar to that of the client:
 //     protocol://[local address][:port]
 //
@@ -445,6 +447,19 @@ int main(int argc, char const*const*const argv) {
              AP::docstring(std::string("Set send/receive buffer size. Default ")+etdc::repr(sockopts.bufSize)) );
 
     // command servers; we require at least one of 'm
+    cmd.add( AP::store_into(serverState.acl), AP::long_name("acl"), AP::at_most(1),
+             AP::docstring("Read YAML access control configuration from this file.\n\n"
+                          "\t brief YAML format summary:\n"
+                          "\t\tread|write:\n"
+                          "\t\t  default: {allow|deny}: <glob pattern>\n"
+                          "\t\t  allow|deny:\n"
+                          "\t\t    - \"<glob pattern>\"\n"
+                          "\t\t    - ...\n"),
+             AP::convert([](std::string const& p) {
+                 ETDCSYSCALL(::access(p.c_str(), R_OK)==0, "ACL file '" << p << "' must exist and be readable");
+                 return std::make_shared<etdc::ACL>( etdc::ACL::readFromFile(p) );
+             }) );
+
     cmd.add( AP::collect<std::string>(), AP::long_name("command"),
              // Constraints on the number + form of the argument
              AP::at_least(1), AP::match(rxURL),

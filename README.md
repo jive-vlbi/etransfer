@@ -5,7 +5,7 @@
 data does not flow through the client's machine and/or network.
 
 - The system natively supports remote wildcards; it is possible to transfer
-multiple files irrespective of wether they are remote or local.
+multiple files irrespective of wether they are remote or local. Since Apr 2026 (v1.2), the daemon also [supports access control lists (ACLs)](#access-control-lists) to restrict read and/or write access to specific files or directories.
 
 - The etransfer tools support TCP and [UDT](https://github.com/netvirt/udt4) over both IPv4 and IPv6. The UDT protocol is orders of magnitude faster on long, fat, network connections.
 
@@ -150,6 +150,34 @@ over UDT/IPv6:46227.
 
 Both the e-transfer daemon and client support the "--help" command line option explain all options.
 
+## Daemon features
+
+### Access control lists
+
+The daemon can optionally read an access control list via the `--acl <file>` option. The file must be readable by the daemon and contains a YAML document describing per-section allow/deny glob patterns:
+
+```yaml
+read:
+  default:
+    allow: "**"
+  deny:
+    - "/restricted/**"
+
+write:
+  default:
+    deny: "**"
+  allow:
+    - "/data/projects/**"
+    - "/scratch/*/uploads"
+```
+
+Both top-level sections (`read` and `write`) are required; the daemon refuses to
+start if either mapping is missing. Inside a section:
+
+- `default` is a single rule that specifies whether matching paths should be allowed or denied when no other rule matches. The `allow`/`deny` key inside the default rule holds a glob pattern; if the path matches the pattern the decision is applied, otherwise the request is rejected. To apply the default to every path use `"**"`, because the daemon evaluates patterns with `fnmatch(3)` and the `FNM_PATHNAME` flag.
+- `allow` and `deny` are optional lists of glob patterns evaluated in the order shown above. The first matching rule decides the outcome.
+
+All glob patterns are interpreted using `fnmatch(3)` with `FNM_PATHNAME`, so `/foo/*` matches immediate children and `/foo/**` can be used to match recursively.
 
 ## Daemon features
 

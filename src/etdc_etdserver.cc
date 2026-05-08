@@ -127,8 +127,22 @@ namespace etdc {
         // and (2) does not get globbed for it is just one file
         const bool              isDevZero( std::regex_match(path, etdc::rxDevZero) );
 
-        if( isDevZero ) 
+        etdc::ACLptr const      acl = __m_shared_state.get().acl;
+        std::function<bool(std::string const&)> aclAllows = [](std::string const&) { return true; };
+
+        if( acl ) {
+            aclAllows = [acl](std::string const& candidate) {
+                std::string normalized( detail::normalize_path(candidate) );
+                if( normalized.size()>1 && normalized.back()=='/' )
+                    normalized.erase( normalized.size()-1 );
+                return acl->allowRead( normalized );
+            };
+        }
+
+        if( isDevZero ) {
+            ETDCASSERT(aclAllows(path), "listPath(" << path << ") denied by ACL");
             return filelist_type{ path };
+        }
 
         // glob() is MT unsafe so we had better make sure only one thread executes this
         //static std::mutex       globMutex;
@@ -160,8 +174,18 @@ namespace etdc {
         //    std::lock_guard<std::mutex> scopedlock(globMutex);
         //}
         
-        // Now that we have the results, we can 
-        return filelist_type(&files->gl_pathv[0], &files->gl_pathv[files->gl_pathc]);
+        filelist_type results;
+
+        for(size_t idx = 0; idx<files->gl_pathc; ++idx) {
+            std::string entry( files->gl_pathv[idx] );
+
+            if( !aclAllows(entry) )
+                continue;
+
+            results.emplace_back( std::move(entry) );
+        }
+
+        return results;
     }
 
     //////////////////////////////////////////////////////////////////////////////////////
@@ -185,6 +209,9 @@ namespace etdc {
         ETDCASSERT(transfers.find(__m_uuid)==transfers.end(), "requestFileWrite: this server is already busy");
 
         const std::string nPath( detail::normalize_path(path) );
+
+        if( shared_state.acl )
+            ETDCASSERT(shared_state.acl->allowWrite(nPath), "requestFileWrite(" << path << ") denied by ACL");
 
         // Attempt to open path new, write or append [reject read!]
         ETDCASSERT(allowedModes.find(mode)!=std::end(allowedModes),
@@ -242,6 +269,9 @@ namespace etdc {
         // Before doing anything - see if this server already has an entry for this (normalized) path -
         // we can only honour this request if it's opened for reading [multiple readers = ok]
         const std::string nPath( detail::normalize_path(path) );
+
+        if( shared_state.acl )
+            ETDCASSERT(shared_state.acl->allowRead(nPath), "requestFileRead(" << path << ") denied by ACL");
         const auto  pathPtr = std::find_if(std::begin(transfers), std::end(transfers),
                                            std::bind([&](std::string const& p) { return p==nPath; },
                                                      std::bind(std::mem_fn(&transferprops_type::path), std::bind(etdc::snd_type(), std::placeholders::_1))));
