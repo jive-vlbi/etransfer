@@ -281,10 +281,12 @@ namespace etdc {
 
             static void pull_n(size_t n, etdc::etdc_fdptr src, etdc::etdc_fdptr dst,
                                size_t rdPos, const size_t endPos, const size_t bufSz, std::unique_ptr<char[]>& buf,
-                               std::function<void(void)>& update_f);
+                               std::function<void(void)>& update_f,
+                               etdc::uuid_type const& uuid);
             static void push_n(size_t n, etdc::etdc_fdptr src, etdc::etdc_fdptr dst,
                                size_t rdPos, const size_t endPos, const size_t bufSz, std::unique_ptr<char[]>& buf,
-                               std::function<void(void)>& update_f);
+                               std::function<void(void)>& update_f,
+                               etdc::uuid_type const& uuid);
 
     };
 } // namespace etdc

@@ -320,15 +320,15 @@ namespace argparse {
 
         template <>
         std::string demangle_f<argparse::detail::constraint>( void ) {
-            return "constraint";
+            return "";
         }
         template <>
         std::string demangle_f<argparse::detail::precondition>( void ) {
-            return "precondition";
+            return "";
         }
         template <>
         std::string demangle_f<argparse::detail::postcondition>( void ) {
-            return "postcondition";
+            return "";
         }
         template <>
         std::string demangle_f<argparse::detail::formatcondition>( void ) {
@@ -1044,10 +1044,18 @@ namespace argparse {
     //    4. a range N->M can easily be formed by combining "at_least(N), at_most(M)"
     //
     auto at_least(unsigned int n) -> typename detail::constraint_op<unsigned int, detail::postcondition, std::greater_equal>::Result {
-        return detail::constraint_op<unsigned int, detail::postcondition, std::greater_equal>::mk(n, "argument count");
+        using result_type = typename detail::constraint_op<unsigned int, detail::postcondition, std::greater_equal>::Result;
+
+        const std::string doc = (n==1)
+            ? std::string("Requires at least one occurrence")
+            : detail::build_string("Requires at least ", n, " occurrences");
+
+        return result_type(doc, detail::Constraint<unsigned int>([=](unsigned int count) {
+            return std::greater_equal<unsigned int>()(count, n);
+        }));
     }
 
-    // Note: at_most(n) means that the precondtion has to be "< n" because,
+    // Note: at_most(n) means that the precondition has to be "< n" because,
     //       in fact, this could have been implemented as a post condition but 
     //       then the action has already executed. The point of "at_most()"
     //       should be to ensure that the action is /never/ executed more than
@@ -1056,7 +1064,16 @@ namespace argparse {
     auto at_most(unsigned int n) -> typename detail::constraint_op<unsigned int, detail::precondition, std::less>::Result {
         if( n<1 )
             throw std::logic_error("at_most() with requirement < 1 makes no sense at all.");
-        return detail::constraint_op<unsigned int, detail::precondition, std::less>::mk(n, "argument count");
+
+        using result_type = typename detail::constraint_op<unsigned int, detail::precondition, std::less>::Result;
+
+        const std::string doc = (n==1)
+            ? std::string("May be provided at most once")
+            : detail::build_string("May be provided at most ", n, " times");
+
+        return result_type(doc, detail::Constraint<unsigned int>([=](unsigned int count) {
+            return std::less<unsigned int>()(count, n);
+        }));
     }
 
     namespace detail {
@@ -1335,9 +1352,12 @@ namespace argparse {
                 auto   allConstraints = std::tuple_cat(direct, instances);
 
                 // Capture the docstrings, filtering out the ones that are empty
+                const auto prefix = demangle_f<Category>();
+                const auto formatted_prefix = prefix.empty() ? std::string() : prefix + ": ";
+
                 functools::filter_v(
                             [](std::string const& s){ return !s.empty(); },
-                            functools::map(functools::map(allConstraints, typecast()), docstr_getter_t(demangle_f<Category>()+":")),
+                            functools::map(functools::map(allConstraints, typecast()), docstr_getter_t(formatted_prefix)),
                             std::inserter(docs, docs.end()) );
                 return ConstraintS<element_type>(
                         [=](element_type const& value) {
