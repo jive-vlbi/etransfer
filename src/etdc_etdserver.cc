@@ -31,6 +31,11 @@
 #include <glob.h>
 #include <string.h>
 
+// Make sure our zignal handlert has C-linkage
+extern "C" {
+    void dummy_timeout_signal_handler(int) { }
+}
+
 namespace etdc {
 
     sockname2string_fn sockname2str( etdc::protocolversion_type v) {
@@ -492,10 +497,15 @@ namespace etdc {
                     ssize_t const thisWrite = transfer.data_fd->write(transfer.data_fd->__m_fd, &buffer[nWritten], nRead-nWritten);
 
                     if( thisWrite<=0 ) {
-                        reason   = ((thisWrite==-1) ? std::string(etdc::strerror(errno)) : std::string("write should never have returned 0"));
+                        reason   = ((thisWrite==-1) ? std::string(etdc::strerror(errno)) : std::string("remote server hung up connection"));
                         remoteOK = false;
                         break;
                     }
+//                    if( thisWrite<=0 ) {
+//                        reason   = ((thisWrite==-1) ? std::string(etdc::strerror(errno)) : std::string("write should never have returned 0"));
+//                        remoteOK = false;
+//                        break;
+//                    }
                     nWritten += thisWrite;
                 }
                 if( nWritten<nRead )
@@ -683,7 +693,7 @@ namespace etdc {
                     ssize_t const thisWrite = transfer.fd->write(transfer.fd->__m_fd, &buffer[nWritten], nRead-nWritten);
 
                     if( thisWrite<=0 ) {
-                        reason   = ((thisWrite==-1) ? std::string(etdc::strerror(errno)) : std::string("write should never have returned 0"));
+                        reason   = ((thisWrite==-1) ? std::string(etdc::strerror(errno)) : std::string("write should never have returned 0 writing to local file"));
                         remoteOK = false;
                         break;
                     }
@@ -1630,11 +1640,26 @@ namespace etdc {
             
             // We found a valid command in the buffer, there may be raw bytes left following that command.
             // Therefore we initialize our read position to the end of the command we found.
-            const size_t  rdPos( command.position() + command.length() ); 
+            const size_t  rdPos( command.position() + command.length() );
+            pthread_t     thisThread{ ::pthread_self() };
+            const int     kill_signal{ SIGUSR1 };
+            std::function<void(void)> update_function{ [=]() { xfer_ptr->second->lastUpdate.store( transfer_clock::now() ); } };
+
+            // Before installing the timeout handler, must unblock a killsignal such
+            // that the other thread can _actually_ signal us
+            etdc::install_handler(dummy_timeout_signal_handler, {kill_signal});
+            // Install callback fn that another thread can call to close our
+            // fd's and pthread_kill() us to get us out of a blocking syscall
+            xfer_ptr->second->timeout_function = [=]() {
+                __m_connection->close( __m_connection->__m_fd );
+                xfer_ptr->second->fd->close( xfer_ptr->second->fd->__m_fd );
+                ::pthread_kill( thisThread, kill_signal );
+            };
+            // pass the xfer_ptr->lastUpdate var
             if( push )
-                ETDDataServer::push_n(sz, xfer_ptr->second->fd, __m_connection, rdPos, curPos, bufSz, buffer);
+                ETDDataServer::push_n(sz, xfer_ptr->second->fd, __m_connection, rdPos, curPos, bufSz, buffer, update_function);
             else
-                ETDDataServer::pull_n(sz, __m_connection, xfer_ptr->second->fd, rdPos, curPos, bufSz, buffer);
+                ETDDataServer::pull_n(sz, __m_connection, xfer_ptr->second->fd, rdPos, curPos, bufSz, buffer, update_function);
             // This command has been served, ready to accept next
             curPos = 0;
         }
@@ -1647,7 +1672,8 @@ namespace etdc {
     // ignore any extra bytes sent by the client and overwrite everything in
     // the buffer
     void ETDDataServer::push_n(size_t n, etdc::etdc_fdptr src, etdc::etdc_fdptr dst,
-                               size_t /*rdPos*/, const size_t /*endPos*/, const size_t bufSz, std::unique_ptr<char[]>& buf) {
+                               size_t /*rdPos*/, const size_t /*endPos*/, const size_t bufSz, std::unique_ptr<char[]>& buf,
+                               std::function<void(void)>& update_f) {
         while( n>0 ) {
             // Amount of bytes to process in this iteration
             const ssize_t nRead = std::min(n, bufSz);
@@ -1657,6 +1683,7 @@ namespace etdc {
 
             ETDCASSERT((aRead=src->read(src->__m_fd, &buf[0], nRead))>0,
                        ((aRead==-1) ? std::string(etdc::strerror(errno)) : std::string("read() returned 0 - hung up?!")));
+            update_f();
 
             // Keep on writing untill all bytes that were read are actually written
             while( aRead>0 ) {
@@ -1665,6 +1692,7 @@ namespace etdc {
                            ((thisWrite==-1) ? std::string(etdc::strerror(errno)) : std::string("write should never have returned 0?!")) );
                 aRead    -= thisWrite;
                 nWritten += thisWrite;
+                update_f();
             }
             n -= (size_t)nWritten;
         }
@@ -1679,7 +1707,8 @@ namespace etdc {
     // raw bytes immediately following the command. We flush those to the
     // file first and then we can use the whole buffer for reading bytes.
     void ETDDataServer::pull_n(size_t n, etdc::etdc_fdptr src, etdc::etdc_fdptr dst,
-                               size_t rdPos, const size_t endPos, const size_t bufSz, std::unique_ptr<char[]>& buf) {
+                               size_t rdPos, const size_t endPos, const size_t bufSz, std::unique_ptr<char[]>& buf,
+                               std::function<void(void)>& update_f) {
         // rdPos:  current start of read area in buf
         // endPos: passed in from above; this is where the initial command
         //         reader left off
@@ -1700,6 +1729,7 @@ namespace etdc {
             ETDCASSERT((aRead = src->read(src->__m_fd, &buf[wrEnd], nRead))>=0, "Failed to read bytes from client - " << etdc::strerror(errno));
             // Now we can bump wrEnd by that amount [at this point aRead might still be zero]
             wrEnd += aRead;
+            update_f();
 
             // If there are no bytes to write to file that means that 0
             // bytes were read and no bytes still left in buffer == error
@@ -1708,6 +1738,7 @@ namespace etdc {
             // Now flush the amount of available bytes to the destination
             ETDCASSERTX(dst->write(dst->__m_fd, &buf[rdPos], wrEnd-rdPos)==ssize_t(wrEnd-rdPos));
             n -= (wrEnd - rdPos);
+            update_f();
 
             // Now we are sure we can use the whole buffer for reading bytes
             // from the client
