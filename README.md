@@ -180,7 +180,6 @@ start if either mapping is missing. Inside a section:
 
 All glob patterns are interpreted using `fnmatch(3)` with `FNM_PATHNAME`, so `/foo/*` matches immediate children and `/foo/**` can be used to match recursively.
 
-## Daemon features
 
 ### TCP keepalive controls
 
