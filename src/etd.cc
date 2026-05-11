@@ -327,8 +327,8 @@ void transfer_monitor_thread(etdc::etd_state& serverState, float /*etdc::transfe
                 }
 
                 timed_out_ids.push_back( xfer->first );
-                ETDCDEBUG(0, "transfer_monitor_thread: transfer " << xfer->second->path << " {om: " <<
-                             xfer->second->openMode << ", uuid: " << xfer->first << "} timed out" << std::endl);
+                ETDCDEBUG(0, "transfer_monitor_thread: transfer " << xfer->second->path << " [om=" <<
+                             xfer->second->openMode << "] [uuid=" << xfer->first << "] timed out" << std::endl);
             }
         }
         lk.unlock();
