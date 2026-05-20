@@ -24,6 +24,7 @@
 #include <string>
 #include <memory>
 #include <vector>
+#include <regex>
 
 
 namespace etdc {
@@ -59,6 +60,8 @@ namespace etdc {
             struct rule {
                 bool        allow;
                 std::string pattern;
+                bool        has_prefix;
+                std::regex  prefix_regex;
             };
 
             struct section {
@@ -73,6 +76,9 @@ namespace etdc {
             // Will throw on wonky yaml
             void            initFromYAML( void );
             bool            check( section_type which, std::string const& path ) const;
+            static bool     has_recursive_suffix(std::string const& pattern);
+            static void     validate_pattern(std::string const& pattern, std::string const& context);
+            static void     populate_rule(rule& target_rule);
     };
 
     using ACLptr = std::shared_ptr<etdc::ACL>;
