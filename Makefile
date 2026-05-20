@@ -120,6 +120,11 @@ ttls_VERSION=0
 ttls_OBJS=$(call mkobjs,ttls)
 ttls_DEPS=pthread
 
+tACL_SRC=src/tACL.cc src/etd_acl.cc
+tACL_VERSION=0
+tACL_OBJS=$(call mkobjs,tACL)
+tACL_DEPS=fkyaml
+
 # Process make command line targets and filter out the ones that we should build
 # This is only to be able to include the correct dependency files
 TODO=$(strip $(filter-out install, $(filter-out Repos%, $(filter-out chown, $(filter-out Makefile, $(filter-out clean, $(filter-out info, $(filter-out all, $(MAKECMDGOALS)))))))))

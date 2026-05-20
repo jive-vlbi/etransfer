@@ -29,9 +29,73 @@ namespace etdc {
     //    _m_root = fkyaml::node::
     //{}
 
+    bool ACL::has_recursive_suffix(std::string const& pattern) {
+        return pattern.size() >= 2 && pattern.compare(pattern.size() - 2, 2, "**") == 0;
+    }
+
+    void ACL::validate_pattern(std::string const& pattern, std::string const& context) {
+        const std::size_t pos = pattern.find("**");
+        if (pos != std::string::npos) {
+            const std::size_t last_pos = pattern.rfind("**");
+            ETDCASSERT(pos == last_pos, "Invalid pattern '" << pattern << "' in " << context
+                       << ": multiple '**' sequences are not supported");
+            ETDCASSERT(pos == pattern.size() - 2, "Invalid pattern '" << pattern << "' in " << context
+                       << ": '**' must terminate the pattern");
+            if (pos > 0) {
+                ETDCASSERT(pattern[pos - 1] == '/', "Invalid pattern '" << pattern << "' in " << context
+                           << ": '**' must be preceded by '/' when a prefix is present");
+            }
+        }
+    }
+
+    void ACL::populate_rule(rule& target_rule) {
+        target_rule.has_prefix = has_recursive_suffix(target_rule.pattern);
+        if (target_rule.has_prefix) {
+            const std::string prefix_glob = target_rule.pattern.substr(0, target_rule.pattern.size() - 2);
+
+            std::string regex_pattern("^");
+            regex_pattern.reserve(prefix_glob.size() * 2 + 8);
+
+            for(char ch : prefix_glob) {
+                if( ch == '*' ) {
+                    regex_pattern.append("[^/]*");
+                    continue;
+                }
+                if( ch == '?' ) {
+                    regex_pattern.append("[^/]");
+                    continue;
+                }
+
+                switch( ch ) {
+                    case '.': case '^': case '$': case '+':
+                    case '{': case '}': case '(': case ')':
+                    case '[': case ']': case '|': case '\\':
+                        regex_pattern.push_back('\\');
+                        break;
+                    default:
+                        break;
+                }
+                regex_pattern.push_back(ch);
+            }
+
+            if( prefix_glob.empty() ) {
+                regex_pattern.append(".*");
+            } else {
+                if( !regex_pattern.empty() && regex_pattern.back() == '/' ) {
+                    regex_pattern.pop_back();
+                }
+                regex_pattern.append("(?:/.*)?");
+            }
+
+            target_rule.prefix_regex = std::regex(regex_pattern);
+        } else {
+            target_rule.prefix_regex = std::regex();
+        }
+    }
+
     // Our ACL requires a few things.
     // Permissions tested in order, first to match wins.
-    // <path> may contain "*" and "?" globbing
+    // <path> may contain "*" and "?" globbing or may end with "**" for recursive matching
     //
     // read:
     //  default:
@@ -98,7 +162,11 @@ namespace etdc {
                        "Node '" << nm << "': key '" << (allow? "allow" : "deny") << "' is not a string (path)");
 
             section& target = _m_sections[static_cast<int>(which)];
-            target.default_rule = rule{ allow, allow ? m_def["allow"].as_str() : m_def["deny"].as_str() };
+            const std::string default_pattern = allow ? m_def["allow"].as_str() : m_def["deny"].as_str();
+            validate_pattern(default_pattern, nm + " default rule");
+            target.default_rule.allow = allow;
+            target.default_rule.pattern = default_pattern;
+            populate_rule(target.default_rule);
             target.allow_rules.clear();
             target.deny_rules.clear();
 
@@ -111,12 +179,24 @@ namespace etdc {
 
             if( n.contains("allow") ) {
                 for(auto const& entry : n["allow"]) {
-                    target.allow_rules.push_back(rule{true, entry.as_str()});
+                    const std::string pattern = entry.as_str();
+                    validate_pattern(pattern, nm + " allow rule");
+                    rule allow_rule;
+                    allow_rule.allow   = true;
+                    allow_rule.pattern = pattern;
+                    populate_rule(allow_rule);
+                    target.allow_rules.push_back(allow_rule);
                 }
             }
             if( n.contains("deny") ) {
                 for(auto const& entry : n["deny"]) {
-                    target.deny_rules.push_back(rule{false, entry.as_str()});
+                    const std::string pattern = entry.as_str();
+                    validate_pattern(pattern, nm + " deny rule");
+                    rule deny_rule;
+                    deny_rule.allow   = false;
+                    deny_rule.pattern = pattern;
+                    populate_rule(deny_rule);
+                    target.deny_rules.push_back(deny_rule);
                 }
             }
         };
@@ -143,7 +223,17 @@ namespace etdc {
 
     bool ACL::check( section_type which, std::string const& path ) const {
         auto const& lcl_section = _m_sections[static_cast<int>(which)];
-        auto matches = [&](rule const& r) {
+        const auto matches = [&](rule const& r) {
+            if( r.has_prefix ) {
+                if( path.empty() ) {
+                    return false;
+                }
+                std::smatch match;
+                if( !std::regex_match(path, match, r.prefix_regex) ) {
+                    return false;
+                }
+                return match.size() > 0;
+            }
             return ::fnmatch(r.pattern.c_str(), path.c_str(), FNM_PATHNAME)==0;
         };
 

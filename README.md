@@ -154,7 +154,7 @@ Both the e-transfer daemon and client support the "--help" command line option e
 
 ### Access control lists
 
-The daemon can optionally read an access control list via the `--acl <file>` option. The file must be readable by the daemon and contains a YAML document describing per-section allow/deny glob patterns:
+The daemon can optionally read an access control list via the `--acl <file>` option. The file must be readable by the daemon and contains a YAML document describing per-section allow/deny glob patterns. Patterns follow the rules of `fnmatch(3)` with the `FNM_PATHNAME` flag; slashes must be matched explicitly, and a trailing `**` enables recursive matching beneath the given prefix. A bare `"**"` applies to all paths.
 
 ```yaml
 read:
@@ -174,10 +174,14 @@ write:
 Both top-level sections (`read` and `write`) are required; the daemon refuses to
 start if either mapping is missing. Inside a section:
 
-- `default` is a single rule that specifies whether matching paths should be allowed or denied when no other rule matches. The `allow`/`deny` key inside the default rule holds a glob pattern; if the path matches the pattern the decision is applied, otherwise the request is rejected. To apply the default to every path use `"**"`, because the daemon evaluates patterns with `fnmatch(3)` and the `FNM_PATHNAME` flag.
+- `default` is a single rule that specifies whether matching paths should be allowed or denied when no other rule matches. The `allow`/`deny` key inside the default rule holds a glob pattern; if the path matches the pattern the decision is applied, otherwise the request is rejected. To apply the default to every path use "**".
 - `allow` and `deny` are optional lists of glob patterns evaluated in the order shown above. The first matching rule decides the outcome.
 
-All glob patterns are interpreted using `fnmatch(3)` with `FNM_PATHNAME`, so `/foo/*` matches immediate children and `/foo/**` can be used to match recursively.
+Additional globbing notes:
+
+- Patterns use `fnmatch(3)` with `FNM_PATHNAME`, so `/foo/*` matches only immediate children of `/foo`.
+- A pattern ending in `**` (e.g. `/data/**`) matches the named directory and everything deeper beneath it.
+- `**` is only allowed as the final token in a pattern (with an optional `/` before it).
 
 ## File copy modes
 

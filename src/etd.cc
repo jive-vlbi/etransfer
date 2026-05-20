@@ -334,7 +334,10 @@ int main(int argc, char const*const*const argv) {
                           "\t\t  default: {allow|deny}: <glob pattern>\n"
                           "\t\t  allow|deny:\n"
                           "\t\t    - \"<glob pattern>\"\n"
-                          "\t\t    - ...\n"),
+                          "\t\t    - ...\n\n"
+                          "\t Patterns honour fnmatch(3) with FNM_PATHNAME.\n"
+                          "\t A pattern ending in \"**\" matches recursively under its prefix.\n"
+                          "\t \"**\" may only appear at the end (e.g. /data/**)."),
              AP::convert([](std::string const& p) {
                  ETDCSYSCALL(::access(p.c_str(), R_OK)==0, "ACL file '" << p << "' must exist and be readable");
                  return std::make_shared<etdc::ACL>( etdc::ACL::readFromFile(p) );
