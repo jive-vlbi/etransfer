@@ -89,21 +89,26 @@ def _format_remote_url(port: int, path: str) -> str:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--daemon", default=None, help="path to etd binary (default: repo src/etd)")
+    parser.add_argument("--daemon", default=None, help="path to etd binary (default: repo src/etd); used for both ends unless overridden")
+    parser.add_argument("--source-daemon", default=None, help="override etd binary for the source daemon")
+    parser.add_argument("--dest-daemon", default=None, help="override etd binary for the destination daemon")
     parser.add_argument("--client", default=None, help="path to etc binary (default: repo src/etc)")
     parser.add_argument("--data-scheme", default="tcp", help="data channel scheme for both daemons (default: %(default)s)")
     parser.add_argument("--source-data-scheme", default=None, help="override data scheme for the source daemon")
     parser.add_argument("--dest-data-scheme", default=None, help="override data scheme for the destination daemon")
     parser.add_argument("--daemon-extra", action="append", default=[], help="additional flag(s) passed to both etd instances")
     parser.add_argument("--client-extra", action="append", default=[], help="additional flag(s) passed to etc")
+    parser.add_argument("--timeout", type=float, default=None, help="abort the etc client run after this many seconds (no timeout by default)")
     parser.add_argument("--keep-daemons", action="store_true", help="leave daemons running after the transfer (for debugging)")
     args = parser.parse_args(argv)
 
     repo_root = Path(__file__).resolve().parents[1]
-    etd_path = Path(args.daemon) if args.daemon else repo_root / "src" / "etd"
+    default_etd = repo_root / "src" / "etd"
+    source_etd_path = Path(args.source_daemon or args.daemon or default_etd)
+    dest_etd_path = Path(args.dest_daemon or args.daemon or default_etd)
     etc_path = Path(args.client) if args.client else repo_root / "src" / "etc"
 
-    for tool, path in ("etd", etd_path), ("etc", etc_path):
+    for tool, path in ("source etd", source_etd_path), ("destination etd", dest_etd_path), ("etc", etc_path):
         if not path.exists():
             raise FileNotFoundError(f"{tool} binary not found at {path}")
 
@@ -116,7 +121,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     dest_data_scheme = args.dest_data_scheme or args.data_scheme
 
     source_cmd = [
-        str(etd_path),
+        str(source_etd_path),
         "--command",
         _format_data_addr("tcp", source_cmd_port),
         "--data",
@@ -128,7 +133,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         str(32 * 1024 * 1024),
     ]
     dest_cmd = [
-        str(etd_path),
+        str(dest_etd_path),
         "--command",
         _format_data_addr("tcp", dest_cmd_port),
         "--data",
@@ -160,7 +165,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         client_cmd.extend([source_url, dest_url])
 
         print("Invoking etc:", " ".join(client_cmd), flush=True)
-        result = subprocess.run(client_cmd, check=False, capture_output=True, text=True)
+        try:
+            result = subprocess.run(
+                client_cmd, check=False, capture_output=True, text=True, timeout=args.timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            print(f"etc did not finish within {args.timeout}s; aborting", file=sys.stderr)
+            if exc.stdout:
+                print("---- begin etc stdout (partial) ----")
+                sys.stdout.write(exc.stdout if isinstance(exc.stdout, str) else exc.stdout.decode(errors="replace"))
+                print("\n---- end etc stdout (partial) ----")
+            if exc.stderr:
+                print("---- begin etc stderr (partial) ----", file=sys.stderr)
+                sys.stderr.write(exc.stderr if isinstance(exc.stderr, str) else exc.stderr.decode(errors="replace"))
+                print("\n---- end etc stderr (partial) ----", file=sys.stderr)
+            return 124
 
         if result.stdout:
             print("---- begin etc stdout ----")
