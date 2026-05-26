@@ -1503,16 +1503,41 @@ namespace etdc {
                             replies.emplace_back( removeResult ? "OK" : "ERR Failed to remove UUID" );
                         }
                     } else if( std::regex_match(*line, fields, rxProtocolVersion) ) {
+                        // Two forms of "protocol-version" exist:
+                        //   * "protocol-version <N>"  (since issue-30 / SRT support):
+                        //       the client advertises its own maximum N. We pick
+                        //       min(N, ours) and reply that.
+                        //   * "protocol-version"      (legacy, v1.0 / v1.1):
+                        //       no negotiation possible. v1.0 / v1.1 clients only
+                        //       know how to handle protocol versions {0, 1}; their
+                        //       sockname2str() throws std::runtime_error on anything
+                        //       else, which terminates the program. Cap the reply at
+                        //       version 1 so old clients do not crash when talking
+                        //       to a daemon whose currentProtocolVersion has since
+                        //       been bumped past their understanding.
+                        protocolversion_type reply_v;
                         if( fields[1].matched ) {
-                            protocolversion_type requested = std::stoul(fields[1].str());
-                            protocolversion_type negotiated = (__m_etdserver.protocolVersion()<requested)
-                                                              ? __m_etdserver.protocolVersion()
-                                                              : requested;
-
-                            __m_clientProtocolVersion = negotiated;
+                            const protocolversion_type requested = std::stoul(fields[1].str());
+                            reply_v = (__m_etdserver.protocolVersion()<requested)
+                                      ? __m_etdserver.protocolVersion()
+                                      : requested;
+                            __m_clientProtocolVersion = reply_v;
+                        } else {
+                            // Legacy probe. Cap at the highest version that pre-
+                            // extended-probe clients are known to handle (1), but
+                            // never exceed our own maximum.
+                            reply_v = (__m_etdserver.protocolVersion() < 1u)
+                                      ? __m_etdserver.protocolVersion()
+                                      : 1u;
+                            // Deliberately do NOT set __m_clientProtocolVersion here:
+                            // the data-channel-addr[-ext] handler distinguishes a
+                            // v1.0 client (legacy "data-channel-addr") from a v1.1
+                            // client (extended "data-channel-addr-ext") via its own
+                            // legacyQuery fallback when __m_clientProtocolVersion is
+                            // still unknownProtocolVersion.
                         }
                         // and add a final OK
-                        replies.emplace_back("OK "+repr(__m_etdserver.protocolVersion()));
+                        replies.emplace_back("OK "+repr(reply_v));
                     } else {
                         ETDCDEBUG(4, "line '" << *line << "' did not match any regex" << std::endl);
                         __m_connection->close( __m_connection->__m_fd );
