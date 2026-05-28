@@ -41,6 +41,44 @@ namespace etdc {
         throw std::runtime_error("sockname2str/request for unsupported protocolversion " + etdc::repr(v));
     }
 
+    // Filter a list of data-channel addresses, removing any whose scheme is
+    // not understood by a peer that speaks the given protocol version.
+    //
+    // This is the single source of truth for the (data-channel scheme) <->
+    // (protocol version) mapping shared between:
+    //   * the daemon's `data-channel-addr[-ext]` reply handler, which filters
+    //     what it advertises to a less-capable direct peer;
+    //   * `ETDProxy::sendFile`, which filters the addresses it forwards to a
+    //     less-capable source daemon when orchestrating a daemon-to-daemon
+    //     transfer (the source daemon will dial these on the client's behalf).
+    //
+    // Schemes introduced at each protocol version:
+    //   v0+: tcp, tcp6, udt, udt6
+    //   v3+: srt, srt6
+    //
+    // When extending the protocol with new data-channel schemes, add the
+    // version gate below; both call-sites pick the change up automatically.
+    static void filter_dataaddrs_for_protocol(dataaddrlist_type& addrs,
+                                              protocolversion_type peerVersion) {
+        // Constraint: peers at version <= 1 only know the original family
+        // (tcp, tcp6, udt, udt6). Drop anything else.
+        if( peerVersion<=1 ) {
+            addrs.remove_if([](sockname_type const& sn) {
+                auto const& proto = get_protocol(sn);
+                return !(proto=="tcp" || proto=="tcp6" || proto=="udt" || proto=="udt6");
+            });
+        }
+        // Constraint: SRT was introduced at version 3. Drop SRT for older
+        // peers (covers the v0 / v1 cases above redundantly, and the v2 case
+        // explicitly).
+        if( peerVersion<3 ) {
+            addrs.remove_if([](sockname_type const& sn) {
+                auto const& proto = get_protocol(sn);
+                return (proto=="srt" || proto=="srt6");
+            });
+        }
+    }
+
     // Two specializations of reading off_t from std::string
     template <>
     void string2off_t<long int>(std::string const& s, long int& o) {
@@ -1129,9 +1167,30 @@ namespace etdc {
         sockname2string_fn       f{ sockname2str( __m_protocolVersion ) };
         std::ostringstream       msgBuf;
 
+        // We're about to ask the remote (source) daemon to dial back to the
+        // destination's data-channel addresses we collected on its behalf.
+        // The destination may have advertised schemes the source does not
+        // know about (e.g. SRT to a v1.1 source), in which case the source
+        // would silently pick the first address it parsed and hang inside
+        // mk_client(). Filter the list to schemes the source's negotiated
+        // protocol version is guaranteed to understand.
+        dataaddrlist_type        usable( dataaddrs );
+        filter_dataaddrs_for_protocol(usable, __m_protocolVersion);
+
+        if( usable.empty() ) {
+            std::ostringstream    err;
+            err << "sendFile: none of the " << dataaddrs.size()
+                << " data-channel address(es) the destination advertised "
+                << "are usable by the source daemon (protocol version "
+                << __m_protocolVersion << "). Schemes offered: ";
+            for(auto p = dataaddrs.begin(); p!=dataaddrs.end(); p++)
+                err << (p==dataaddrs.begin() ? "" : ",") << get_protocol(*p);
+            throw std::runtime_error(err.str());
+        }
+
         msgBuf << "send-file " << srcUUID << " " << dstUUID << " " << todo << " ";
-        for(auto p = dataaddrs.begin(); p!=dataaddrs.end(); p++)
-            msgBuf << ((p!=dataaddrs.begin()) ? "," : "") << f( *p );
+        for(auto p = usable.begin(); p!=usable.end(); p++)
+            msgBuf << ((p!=usable.begin()) ? "," : "") << f( *p );
         msgBuf << '\n';
         const std::string  msg( msgBuf.str() );
 
@@ -1431,24 +1490,40 @@ namespace etdc {
                         auto       f       = sockname2str( peerVersion );
                         auto       entries = __m_etdserver.dataChannelAddr();
 
-                        if( peerVersion<=1 ) {
-                            entries.remove_if([](sockname_type const& sn) {
-                                auto const& proto = get_protocol(sn);
-                                return !(proto=="tcp" || proto=="tcp6" || proto=="udt" || proto=="udt6");
-                            });
-                        }
+                        // Remember the configured schemes before version-
+                        // filtering so we can produce a helpful diagnostic if
+                        // the filter would otherwise leave nothing to
+                        // advertise (e.g. daemon listens on SRT only and a
+                        // pre-v3 peer is probing).
+                        std::vector<protocol_type> configuredSchemes;
+                        configuredSchemes.reserve(entries.size());
+                        for(auto const& sn: entries)
+                            configuredSchemes.push_back(get_protocol(sn));
 
-                        if( peerVersion<3 ) {
-                            entries.remove_if([](sockname_type const& sn) {
-                                auto const& proto = get_protocol(sn);
-                                return (proto=="srt" || proto=="srt6");
-                            });
-                        }
+                        // Drop schemes the peer cannot understand, using the
+                        // shared filter helper (see top of this file).
+                        filter_dataaddrs_for_protocol(entries, peerVersion);
 
-                        std::transform(std::begin(entries), std::end(entries), std::back_inserter(replies),
-                                       [&](sockname_type const& sn) { std::ostringstream oss; oss << "OK " << f(sn); return oss.str(); });
-                        // and add a final OK
-                        replies.emplace_back("OK");
+                        if( entries.empty() && !configuredSchemes.empty() ) {
+                            // Symmetrical guard to the one in ETDProxy::sendFile:
+                            // if no advertised scheme is usable by this peer's
+                            // protocol version, fail fast with a clear ERR rather
+                            // than silently returning an empty list (which would
+                            // either cause a hang or a confusing downstream
+                            // failure on the peer).
+                            std::ostringstream    err;
+                            err << "ERR no data-channel address compatible with protocol version "
+                                << peerVersion << " (configured schemes: ";
+                            for(size_t i=0; i<configuredSchemes.size(); ++i)
+                                err << (i==0 ? "" : ",") << configuredSchemes[i];
+                            err << ")";
+                            replies.emplace_back(err.str());
+                        } else {
+                            std::transform(std::begin(entries), std::end(entries), std::back_inserter(replies),
+                                           [&](sockname_type const& sn) { std::ostringstream oss; oss << "OK " << f(sn); return oss.str(); });
+                            // and add a final OK
+                            replies.emplace_back("OK");
+                        }
                     } else if( std::regex_match(*line, fields, rxRemoveUUID) ) {
                         // Could be remove | cancel
                         etdc::uuid_type const  uuid{ fields[2].str() };
