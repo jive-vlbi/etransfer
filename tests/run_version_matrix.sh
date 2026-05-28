@@ -21,6 +21,12 @@ PROBE="$SCRIPT_DIR/remote_to_remote_probe.py"
 # containing the ready-built `etc` and `etd` binaries.
 ALL_VERSIONS=(1.0 1.1 master issue-30)
 
+# Versions whose etd binary can host an SRT data-channel listener. Used by
+# the srt sub-pass to decide whether a given daemon should be configured
+# with "srt,udt" or just "udt": pre-issue-30 etds do not recognise srt://
+# URLs and would refuse to start, so we only hand them schemes they know.
+SRT_CAPABLE_VERSIONS=(issue-30)
+
 # Mirrors what the Makefile computes for its build directory:
 #   $(shell uname -sm | sed 's/\( \{1,\}\)/-/g')-$(B2B)-$(BUILD)
 # i.e. "Darwin-arm64-native-opt" on this machine.
@@ -31,14 +37,25 @@ usage() {
 Usage: $(basename "$0") [options]
 
 Run remote_to_remote_probe.py over every (etc, src-etd, dst-etd) tuple
-drawn from the requested version sets.
+drawn from the requested version sets. The matrix is executed in two
+sub-passes:
+
+  pass "tcp"  baseline    every daemon listens on tcp only
+  pass "srt"  SRT exposure SRT-capable daemons listen on "srt,udt" with SRT
+                          listed first (so a source daemon would, without
+                          the version-aware filter in ETDProxy::sendFile,
+                          prefer SRT and hang against a pre-v3 source);
+                          other daemons listen on udt. Tuples whose dst is
+                          not SRT-capable degrade to a UDT regression test,
+                          which complements the tcp baseline.
 
 Options:
   --etc-versions "v1 v2 ..."   etc client versions to test (default: all)
   --src-versions "v1 v2 ..."   source daemon versions (default: all)
   --dst-versions "v1 v2 ..."   destination daemon versions (default: all)
   --timeout SECS               per-tuple timeout, passed to the probe (default: 30)
-  --logdir DIR                 where per-tuple logs are stored
+  --logdir DIR                 where per-tuple logs are stored. One sub-
+                               directory per pass is created inside it.
                                (default: \$REPO_ROOT/tests/version_matrix_logs)
   --keep-logs                  do not wipe the logdir before running
   -h, --help                   this help
@@ -46,6 +63,8 @@ Options:
 Known versions: ${ALL_VERSIONS[*]}
 Each version maps to:
   ${REPO_ROOT}/${ARCH_PREFIX}-<version>/{etc,etd}
+
+SRT-capable versions: ${SRT_CAPABLE_VERSIONS[*]}
 EOF
 }
 
@@ -103,56 +122,121 @@ mkdir -p "$logdir"
 # Storage of per-tuple results. macOS still ships bash 3.2 which has no
 # associative arrays, so we keep records in a tempfile and look them up
 # with awk for the summary. Format: tab-separated
-#   etc_v <TAB> src_v <TAB> dst_v <TAB> verdict
+#   pass <TAB> etc_v <TAB> src_v <TAB> dst_v <TAB> verdict
 results_file="$(mktemp "${TMPDIR:-/tmp}/run_version_matrix.XXXXXX")"
 trap 'rm -f "$results_file"' EXIT
 
 record() {
-    # $1=etc $2=src $3=dst $4=verdict
-    printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" >> "$results_file"
+    # $1=pass $2=etc $3=src $4=dst $5=verdict
+    printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5" >> "$results_file"
 }
 lookup() {
-    # $1=etc $2=src $3=dst -> prints verdict or empty string
-    awk -F'\t' -v e="$1" -v s="$2" -v d="$3" \
-        '$1==e && $2==s && $3==d {print $4; exit}' "$results_file"
+    # $1=pass $2=etc $3=src $4=dst -> prints verdict or empty string
+    awk -F'\t' -v p="$1" -v e="$2" -v s="$3" -v d="$4" \
+        '$1==p && $2==e && $3==s && $4==d {print $5; exit}' "$results_file"
+}
+
+# Returns 0 if $1 (version) is in SRT_CAPABLE_VERSIONS, non-zero otherwise.
+version_is_srt_capable() {
+    local v="$1" cap
+    for cap in "${SRT_CAPABLE_VERSIONS[@]}"; do
+        [[ "$v" == "$cap" ]] && return 0
+    done
+    return 1
+}
+
+# Per-pass scheme selection. Each pass has a fixed policy for converting a
+# (role, version) pair into the daemon's --data scheme list.
+#
+#   tcp pass: every daemon gets "tcp" -- baseline regression coverage.
+#   srt pass: SRT-capable daemons get "srt,udt" with SRT listed FIRST so
+#             that a source daemon dialled with this list would prefer SRT
+#             (and, without the version-aware filter in ETDProxy::sendFile,
+#             hang against a pre-v3 source). Other daemons get "udt", their
+#             richest universally-understood transport.
+schemes_for() {
+    # $1=pass $2=version  ->  prints scheme spec
+    local pass="$1" version="$2"
+    case "$pass" in
+        tcp)
+            echo "tcp"
+            ;;
+        srt)
+            if version_is_srt_capable "$version"; then
+                echo "srt,udt"
+            else
+                echo "udt"
+            fi
+            ;;
+        *)
+            echo "tcp"
+            ;;
+    esac
+}
+
+# Both passes run the full (etc x src x dst) grid. Tuples that do not
+# involve any SRT-capable daemon in the srt pass simply degrade to a UDT
+# regression test (pass 1 covers TCP), which is a useful side-benefit of
+# keeping both grids the same shape so they can be diffed side by side.
+declare -a PASSES=(tcp srt)
+
+run_pass() {
+    # $1=pass name
+    local pass="$1"
+    local pass_logdir="${logdir}/${pass}"
+    mkdir -p "$pass_logdir"
+
+    echo
+    echo "================ pass '${pass}' ================"
+
+    for etc_v in "${etc_versions[@]}"; do
+        for src_v in "${src_versions[@]}"; do
+            for dst_v in "${dst_versions[@]}"; do
+                total=$((total + 1))
+                tuple_label="etc-${etc_v}__src-${src_v}__dst-${dst_v}"
+                log="${pass_logdir}/${tuple_label}.log"
+                printf "  [%s] %-44s ... " "$pass" "$tuple_label"
+
+                local src_schemes dst_schemes
+                src_schemes="$(schemes_for "$pass" "$src_v")"
+                dst_schemes="$(schemes_for "$pass" "$dst_v")"
+
+                start=$(date +%s)
+                if python3 "$PROBE" \
+                        --client="$(bin_for etc "$etc_v")" \
+                        --source-daemon="$(bin_for etd "$src_v")" \
+                        --dest-daemon="$(bin_for etd "$dst_v")" \
+                        --source-data-scheme="$src_schemes" \
+                        --dest-data-scheme="$dst_schemes" \
+                        --timeout="$timeout_s" \
+                        >"$log" 2>&1; then
+                    rc=0
+                else
+                    rc=$?
+                fi
+                dt=$(( $(date +%s) - start ))
+                if (( rc == 0 )); then
+                    record "$pass" "$etc_v" "$src_v" "$dst_v" "PASS"
+                    passed=$((passed + 1))
+                    printf "PASS (%ds)\n" "$dt"
+                elif (( rc == 124 )); then
+                    record "$pass" "$etc_v" "$src_v" "$dst_v" "TIMEOUT"
+                    printf "TIMEOUT (%ds)\n" "$dt"
+                else
+                    record "$pass" "$etc_v" "$src_v" "$dst_v" "FAIL(${rc})"
+                    printf "FAIL rc=%d (%ds)\n" "$rc" "$dt"
+                fi
+            done
+        done
+    done
 }
 
 total=0
 passed=0
 start_all=$(date +%s)
 
-for etc_v in "${etc_versions[@]}"; do
-    for src_v in "${src_versions[@]}"; do
-        for dst_v in "${dst_versions[@]}"; do
-            total=$((total + 1))
-            label="etc-${etc_v}__src-${src_v}__dst-${dst_v}"
-            log="${logdir}/${label}.log"
-            printf "  running %-44s ... " "$label"
-            start=$(date +%s)
-            if python3 "$PROBE" \
-                    --client="$(bin_for etc "$etc_v")" \
-                    --source-daemon="$(bin_for etd "$src_v")" \
-                    --dest-daemon="$(bin_for etd "$dst_v")" \
-                    --timeout="$timeout_s" \
-                    >"$log" 2>&1; then
-                rc=0
-            else
-                rc=$?
-            fi
-            dt=$(( $(date +%s) - start ))
-            if (( rc == 0 )); then
-                record "$etc_v" "$src_v" "$dst_v" "PASS"
-                passed=$((passed + 1))
-                printf "PASS (%ds)\n" "$dt"
-            elif (( rc == 124 )); then
-                record "$etc_v" "$src_v" "$dst_v" "TIMEOUT"
-                printf "TIMEOUT (%ds)\n" "$dt"
-            else
-                record "$etc_v" "$src_v" "$dst_v" "FAIL(${rc})"
-                printf "FAIL rc=%d (%ds)\n" "$rc" "$dt"
-            fi
-        done
-    done
+for pass in "${PASSES[@]}"; do
+    run_pass "$pass"
 done
 
 end_all=$(date +%s)
@@ -163,24 +247,29 @@ summary_file="${logdir}/summary.txt"
 {
     echo "================ summary ================"
     echo "date:    $(date '+%Y-%m-%d %H:%M:%S %z')"
+    echo "passes:  ${PASSES[*]}"
     echo "logs in: $logdir"
     echo "$passed / $total passed in $((end_all - start_all))s"
 
     cell_width=14
-    for etc_v in "${etc_versions[@]}"; do
+    for pass in "${PASSES[@]}"; do
         echo
-        echo "etc = $etc_v"
-        printf "  %-12s" 'src \ dst'
-        for dst_v in "${dst_versions[@]}"; do
-            printf " %-${cell_width}s" "$dst_v"
-        done
-        printf "\n"
-        for src_v in "${src_versions[@]}"; do
-            printf "  %-12s" "$src_v"
+        echo "---- pass '${pass}' ----"
+        for etc_v in "${etc_versions[@]}"; do
+            echo
+            echo "etc = $etc_v"
+            printf "  %-12s" 'src \ dst'
             for dst_v in "${dst_versions[@]}"; do
-                printf " %-${cell_width}s" "$(lookup "$etc_v" "$src_v" "$dst_v")"
+                printf " %-${cell_width}s" "$dst_v"
             done
             printf "\n"
+            for src_v in "${src_versions[@]}"; do
+                printf "  %-12s" "$src_v"
+                for dst_v in "${dst_versions[@]}"; do
+                    printf " %-${cell_width}s" "$(lookup "$pass" "$etc_v" "$src_v" "$dst_v")"
+                done
+                printf "\n"
+            done
         done
     done
 } | tee "$summary_file"

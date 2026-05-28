@@ -81,6 +81,20 @@ def _format_data_addr(proto: str, port: int) -> str:
     return f"{proto}://127.0.0.1:{port}"
 
 
+def _split_schemes(spec: str) -> list:
+    """Parse a comma-separated scheme spec into a non-empty list of schemes.
+
+    Used by both ``--source-data-scheme`` and ``--dest-data-scheme`` so a
+    single daemon can be told to listen on several transports simultaneously
+    (e.g. ``srt,udt``).
+    """
+    schemes = [s.strip() for s in spec.split(",")]
+    schemes = [s for s in schemes if s]
+    if not schemes:
+        raise argparse.ArgumentTypeError(f"empty scheme spec: {spec!r}")
+    return schemes
+
+
 def _format_remote_url(port: int, path: str) -> str:
     # etc expects "proto://host[#port]:/path" for remote URLs; we always talk TCP
     clean_path = path if path.startswith("/") else f"/{path}"
@@ -93,9 +107,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--source-daemon", default=None, help="override etd binary for the source daemon")
     parser.add_argument("--dest-daemon", default=None, help="override etd binary for the destination daemon")
     parser.add_argument("--client", default=None, help="path to etc binary (default: repo src/etc)")
-    parser.add_argument("--data-scheme", default="tcp", help="data channel scheme for both daemons (default: %(default)s)")
-    parser.add_argument("--source-data-scheme", default=None, help="override data scheme for the source daemon")
-    parser.add_argument("--dest-data-scheme", default=None, help="override data scheme for the destination daemon")
+    parser.add_argument("--data-scheme", default="tcp",
+                        help="data channel scheme(s) for both daemons. Accepts a comma-separated "
+                             "list; each scheme gets its own --data port on the daemon. "
+                             "Default: %(default)s")
+    parser.add_argument("--source-data-scheme", default=None,
+                        help="override data scheme(s) for the source daemon (comma-separated)")
+    parser.add_argument("--dest-data-scheme", default=None,
+                        help="override data scheme(s) for the destination daemon (comma-separated)")
     parser.add_argument("--daemon-extra", action="append", default=[], help="additional flag(s) passed to both etd instances")
     parser.add_argument("--client-extra", action="append", default=[], help="additional flag(s) passed to etc")
     parser.add_argument("--timeout", type=float, default=None, help="abort the etc client run after this many seconds (no timeout by default)")
@@ -113,19 +132,28 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             raise FileNotFoundError(f"{tool} binary not found at {path}")
 
     source_cmd_port = _find_free_port()
-    source_data_port = _find_free_port()
     dest_cmd_port = _find_free_port()
-    dest_data_port = _find_free_port()
 
-    source_data_scheme = args.source_data_scheme or args.data_scheme
-    dest_data_scheme = args.dest_data_scheme or args.data_scheme
+    source_schemes = _split_schemes(args.source_data_scheme or args.data_scheme)
+    dest_schemes = _split_schemes(args.dest_data_scheme or args.data_scheme)
+
+    # One --data port per requested scheme so daemons can listen on multiple
+    # transports concurrently (matches the real-world setup that exposed the
+    # SRT-vs-pre-v3-source forwarding bug).
+    source_data_ports = [_find_free_port() for _ in source_schemes]
+    dest_data_ports = [_find_free_port() for _ in dest_schemes]
+
+    def _data_flags(schemes: Sequence[str], ports: Sequence[int]) -> list[str]:
+        flags: list[str] = []
+        for scheme, port in zip(schemes, ports):
+            flags.extend(["--data", _format_data_addr(scheme, port)])
+        return flags
 
     source_cmd = [
         str(source_etd_path),
         "--command",
         _format_data_addr("tcp", source_cmd_port),
-        "--data",
-        _format_data_addr(source_data_scheme, source_data_port),
+        *_data_flags(source_schemes, source_data_ports),
         "-f",
         "-m",
         "4",
@@ -136,8 +164,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         str(dest_etd_path),
         "--command",
         _format_data_addr("tcp", dest_cmd_port),
-        "--data",
-        _format_data_addr(dest_data_scheme, dest_data_port),
+        *_data_flags(dest_schemes, dest_data_ports),
         "-f",
         "-m",
         "4",
