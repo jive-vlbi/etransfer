@@ -407,7 +407,8 @@ namespace etdc {
     }
 
     xfer_result ETDServer::sendFile(uuid_type const& srcUUID, uuid_type const& dstUUID, 
-                             off_t todo, dataaddrlist_type const& dataAddrs) {
+                             off_t todo, dataaddrlist_type const& dataAddrs,
+                             progress_fn const& progress) {
         // 1a. Verify that the srcUUID is our UUID
         ETDCASSERT(srcUUID==__m_uuid, "The srcUUID '" << srcUUID << "' is not our UUID");
 
@@ -548,6 +549,23 @@ namespace etdc {
             std::string         reason;
             const std::string   msg( msg_buf.str() );
             auto const          start_tm = std::chrono::high_resolution_clock::now();
+            // Progress reporting throttle: at most once per 100ms (plus a
+            // final/completion tick). Callback exceptions are swallowed so a
+            // misbehaving renderer cannot corrupt the transfer result.
+            auto                last_report_tm = start_tm;
+            auto const          report_interval = std::chrono::milliseconds(100);
+            auto                report_progress = [&](bool force) {
+                if( !progress )
+                    return;
+                auto const now = std::chrono::high_resolution_clock::now();
+                if( !force && (now - last_report_tm) < report_interval )
+                    return;
+                last_report_tm = now;
+                double const elapsed = std::chrono::duration<double>(now - start_tm).count();
+                try { progress(nTodo - todo, nTodo, elapsed); } catch(...) { /* swallow */ }
+            };
+            // Initial 0-byte tick so the UI can render a baseline immediately.
+            report_progress(true);
             transfer.data_fd->write(transfer.data_fd->__m_fd, msg.data(), msg.size());
 
             while( todo>0 && !(cancelled = isCancelled()) ) {
@@ -579,9 +597,13 @@ namespace etdc {
                 if( nWritten<nRead )
                     break;
                 todo -= (off_t)nWritten;
+                report_progress(false);
                 if( (cancelled = isCancelled()) )
                     break;
             }
+            // Final progress tick so the UI sees the terminal byte count
+            // before the OK/ERR reply is emitted further up the stack.
+            report_progress(true);
             // if we make it out of the loop, todo should be <= 0 and terminate the outer loop
             // wait here until the recipient has acknowledged receipt of all bytes
             // But that only makes sense if the destination is still alive!
@@ -601,7 +623,8 @@ namespace etdc {
     }
 
     xfer_result ETDServer::getFile(uuid_type const& srcUUID, uuid_type const& dstUUID, 
-                            off_t todo, dataaddrlist_type const& dataAddrs) {
+                            off_t todo, dataaddrlist_type const& dataAddrs,
+                            progress_fn const& progress) {
         // 1a. Verify that the dstUUID is our UUID
         ETDCASSERT(dstUUID==__m_uuid, "The dstUUID '" << dstUUID << "' is not our UUID");
 
@@ -744,6 +767,20 @@ namespace etdc {
             std::string       reason;
             std::string const msg( msg_buf.str() );
             auto const        start_tm = std::chrono::high_resolution_clock::now();
+            // Progress reporting throttle, see ETDServer::sendFile for rationale.
+            auto              last_report_tm = start_tm;
+            auto const        report_interval = std::chrono::milliseconds(100);
+            auto              report_progress = [&](bool force) {
+                if( !progress )
+                    return;
+                auto const now = std::chrono::high_resolution_clock::now();
+                if( !force && (now - last_report_tm) < report_interval )
+                    return;
+                last_report_tm = now;
+                double const elapsed = std::chrono::duration<double>(now - start_tm).count();
+                try { progress(nTodo - todo, nTodo, elapsed); } catch(...) { /* swallow */ }
+            };
+            report_progress(true);
             transfer.data_fd->write(transfer.data_fd->__m_fd, msg.data(), msg.size());
 
             while( todo>0 && !(cancelled = isCancelled()) ) {
@@ -770,9 +807,12 @@ namespace etdc {
                 if( nWritten<nRead )
                     break;
                 todo -= (off_t)nWritten;
+                report_progress(false);
                 if( (cancelled = isCancelled()) )
                     break;
             }
+            // Final progress tick so the UI sees the terminal byte count.
+            report_progress(true);
             // if we make it out of the loop, todo should be <= 0 and terminate the outer loop
             // Send ACK but only if it makes sense
             if( remoteOK && !cancelled ) {
@@ -858,6 +898,13 @@ namespace etdc {
     //     If those fields are missing
     static const std::regex            rxXferResultReply("^(OK|ERR)(,([0-9]+),([-0-9\\.\\+eE]+))?(\\s+\\S.*)?$", etdc_rxFlags);
     //                                     submatches:     1       2 3        4                  5
+    //
+    // In-band PROGRESS line emitted (only) by daemons speaking
+    // protocolVersion>=4 while a send-file/get-file transfer is in flight.
+    // Format: "PROG,<bytes_so_far>,<elapsed_seconds>\n". Older daemons never
+    // emit these lines, so the wire stays backward-compatible.
+    static const std::regex            rxProgressReply("^PROG,([0-9]+),([-0-9\\.\\+eE]+)$", etdc_rxFlags);
+    //                                     submatches:        1        2
 
     template <typename InputIter, typename OutputIter,
               typename RegexIter  = std::regex_iterator<InputIter>,
@@ -1202,7 +1249,8 @@ namespace etdc {
         return previous;
     }
 
-    xfer_result ETDProxy::sendFile(uuid_type const& srcUUID, uuid_type const& dstUUID, off_t todo, dataaddrlist_type const& dataaddrs) {
+    xfer_result ETDProxy::sendFile(uuid_type const& srcUUID, uuid_type const& dstUUID, off_t todo, dataaddrlist_type const& dataaddrs,
+                                   progress_fn const& progress) {
         sockname2string_fn       f{ sockname2str( __m_protocolVersion ) };
         std::ostringstream       msgBuf;
 
@@ -1244,49 +1292,83 @@ namespace etdc {
         std::string                reason{};
 
         // And await the reply. Update Jun 2018: accept more elaborate reply
-        // if we allow ~2kB for the <msg> that's quite generous I'd say
+        // if we allow ~2kB for the <msg> that's quite generous I'd say.
+        //
+        // Update for protocolVersion>=4: the remote source daemon may
+        // emit zero or more in-band "PROG,<bytes>,<seconds>\n" lines while
+        // the transfer is running, followed by exactly one terminal
+        // OK/ERR line that carries the final result. We must keep reading
+        // and consuming PROG lines (invoking the progress callback) until
+        // that terminal line arrives. Because that stream is unbounded we
+        // also compact the buffer between reads so we don't run out of
+        // headroom over the course of a long transfer.
         size_t                     curPos{ 0 };
         const size_t               bufSz( 2048 );
         std::unique_ptr<char[]>    buffer(new char[bufSz]);
+        bool                       done{ false };
 
-        while( curPos<bufSz ) {
+        while( !done ) {
+            ETDCASSERT(curPos < bufSz, "send-file reply line longer than " << bufSz << " bytes - protocol error");
             const ssize_t n = __m_connection->read(__m_connection->__m_fd, &buffer[curPos], bufSz-curPos);
 
             // did we read anything?
             ETDCASSERT(n>0, "Failed to read data from remote end");
             curPos += n;
 
-            std::vector<std::string>  lines;
-            std::smatch               fields;
+            std::vector<std::string>           lines;
+            typename std::smatch::size_type    endpos =
+                getReplies(&buffer[0], &buffer[curPos], std::back_inserter(lines));
 
-            // Discard the return value from getReplies - we don't need to remember where we end in the buffer
-            (void)getReplies(&buffer[0], &buffer[curPos], std::back_inserter(lines));
+            for(auto const& line : lines) {
+                std::smatch fields;
 
-            // If no line(s) yet, read more bytes
-            if( lines.empty() )
-                continue;
+                // PROG line? Decode and dispatch to the user's callback.
+                if( std::regex_match(line, fields, rxProgressReply) ) {
+                    if( progress ) {
+                        off_t  bytes_so_far{ 0 };
+                        string2off_t(fields[1].str(), bytes_so_far);
+                        double const elapsed = std::stod(fields[2].str());
+                        // Total bytes for this transfer is the original
+                        // 'todo' the caller asked us to push -- the wire
+                        // line only carries bytes-so-far + elapsed seconds.
+                        try { progress(bytes_so_far, todo, elapsed); } catch(...) { /* swallow */ }
+                    }
+                    continue;
+                }
+                // Otherwise it has to be the terminal OK/ERR reply.
+                ETDCASSERT(std::regex_match(line, fields, rxXferResultReply),
+                           "The remote sent a non-conforming send-file reply: '" << line << "'");
+                //    "^(OK|ERR)(,([0-9]+),([-0-9\\.\\+eE]+))?(\\s+\\S.*)?$"
+                //      1       2 3        4                  5
+                // Field 1 always exists
+                success = (fields[1].str()=="OK");
 
-            // If we get >1 line, the client's messin' wiv de heads - we only allow 1 (one) line of reply
-            ETDCASSERT(lines.size()==1, "The client sent wrong number of responses - this is likely a protocol error");
-            // And that line should match our expectations
-            ETDCASSERT(std::regex_match(*lines.begin(), fields, rxXferResultReply), "The client sent a non-conforming response");
-            //    "^(OK|ERR)(,([0-9]+),([-0-9\\.\\+eE]+))?(\\s+\\S.*)?$"
-            //      1       2 3        4                  5
-            // Field 1 always exists
-            success = (fields[1].str()=="OK");
-
-            // Check optional fields
-            std::string     tmp;
-            if( (tmp = fields[3].str()).empty()==false ) {
-                // have new-style reply!
-                string2off_t(tmp, nbyte_transferred);
-                // then we also *know* we have field 4!
-                delta_t = std::stod(fields[4].str());
+                // Check optional fields
+                std::string     tmp;
+                if( (tmp = fields[3].str()).empty()==false ) {
+                    // have new-style reply!
+                    string2off_t(tmp, nbyte_transferred);
+                    // then we also *know* we have field 4!
+                    delta_t = std::stod(fields[4].str());
+                }
+                // Was there a reason?
+                reason = fields[5].str();
+                done = true;
+                break;
             }
-            // Was there a reason?
-            reason = fields[5].str();
-            // Otherwise we're done
-            break;
+
+            // Compact the buffer: move any unparsed trailing partial line
+            // (the bytes past the last complete \n we saw) to the front so
+            // subsequent reads don't run us out of headroom.
+            if( !done ) {
+                if( endpos > 0 && endpos < curPos ) {
+                    std::memmove(&buffer[0], &buffer[endpos], curPos - endpos);
+                    curPos -= endpos;
+                } else if( endpos == curPos ) {
+                    curPos = 0;
+                }
+                // If endpos==0 there were no complete lines yet; keep reading.
+            }
         }
         return xfer_result(success, nbyte_transferred, reason, xfer_result::duration_type(delta_t));
     }
@@ -1492,12 +1574,38 @@ namespace etdc {
                                         std::sregex_iterator(), std::back_inserter(dataAddrs), 
                                         [](std::smatch const& sm) { return decode_data_addr(sm.str()); });
 
+                        // Snapshot the negotiated peer protocol version at
+                        // dispatch time. We only emit in-band PROG lines if
+                        // the peer explicitly advertised protocolVersion>=4
+                        // in the preceding negotiation; older peers do not
+                        // recognise PROG and would treat it as a protocol
+                        // error and abort.
+                        const protocolversion_type peer_v = __m_clientProtocolVersion;
+                        const bool                 emit_progress =
+                            (peer_v != ETDServerInterface::unknownProtocolVersion) && (peer_v >= 4);
+
                         // Execute the sendFile in a separate thread to free up this handler
                         std::thread( [=]() {
                                 ETDCDEBUG(4, "ETDServerWrapper: thread " << std::this_thread::get_id() << "/executing sendFile() [src_uuid=" << src_uuid << "] [dst_uuid=" << dst_uuid << "]" << std::endl);
+
+                                // Build the progress callback. It serialises
+                                // with any other writer on the control socket
+                                // (the wrapper's main read-loop and other
+                                // sendFile workers) via __m_writeMutex.
+                                progress_fn  progress;
+                                if( emit_progress ) {
+                                    progress = [this](off_t bytes_so_far, off_t /*total*/, double elapsed) {
+                                        std::ostringstream line_s;
+                                        line_s << "PROG," << bytes_so_far << ',' << elapsed << '\n';
+                                        const std::string  line{ line_s.str() };
+                                        std::lock_guard<std::mutex> lk( __m_writeMutex );
+                                        __m_connection->write(__m_connection->__m_fd, line.data(), line.size());
+                                    };
+                                }
+
                                 std::ostringstream reply_s;
                                 try {
-                                    const xfer_result  rv = __m_etdserver.sendFile(src_uuid, dst_uuid, todo, dataAddrs);
+                                    const xfer_result  rv = __m_etdserver.sendFile(src_uuid, dst_uuid, todo, dataAddrs, progress);
                                     reply_s << (rv.__m_Finished ? "OK" : "ERR")
                                             << ',' << rv.__m_BytesTransferred
                                             // make sure we have seconds as units of duration
@@ -1514,7 +1622,10 @@ namespace etdc {
                                 }
                                 std::string const reply{ reply_s.str() };
                                 ETDCDEBUG(4, "ETDServerWrapper: thread " << std::this_thread::get_id() << "/sending sendFile() reply '" << reply << "' [src_uuid=" << src_uuid << "] [dst_uuid=" << dst_uuid << "]" << std::endl);
-                                __m_connection->write(__m_connection->__m_fd, reply.data(), reply.size());
+                                {
+                                    std::lock_guard<std::mutex> lk( __m_writeMutex );
+                                    __m_connection->write(__m_connection->__m_fd, reply.data(), reply.size());
+                                }
                             } ).detach();
                         //replies.emplace_back( rv ? "OK" : "ERR Failed to send file" );
                     } else if( std::regex_match(*line, fields, rxDataChannelAddr) ) {
@@ -1634,11 +1745,16 @@ namespace etdc {
                     replies.emplace_back( "ERR Unknown exception" );
                 }
 
-                // Now send back the replies
-                for(auto const& r: replies) {
-                    ETDCDEBUG(4, "ETDServerWrapper: sending reply '" << r << "'" << std::endl);
-                    __m_connection->write(__m_connection->__m_fd, r.data(), r.size());
-                    __m_connection->write(__m_connection->__m_fd, "\n", 1);
+                // Now send back the replies. Hold __m_writeMutex so we do
+                // not interleave with PROG/OK/ERR lines that a detached
+                // sendFile worker may be emitting concurrently.
+                {
+                    std::lock_guard<std::mutex> lk( __m_writeMutex );
+                    for(auto const& r: replies) {
+                        ETDCDEBUG(4, "ETDServerWrapper: sending reply '" << r << "'" << std::endl);
+                        __m_connection->write(__m_connection->__m_fd, r.data(), r.size());
+                        __m_connection->write(__m_connection->__m_fd, "\n", 1);
+                    }
                 }
             } 
             ETDCASSERT(line==lines.end(), "There were unprocessed lines of input from the client. This is likely a logical error in this server");

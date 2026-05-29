@@ -33,10 +33,16 @@
 #include <thread>
 #include <string>
 #include <vector>
+#include <iomanip>
 #include <iterator>
 #include <iostream>
+#include <algorithm>
 #include <functional>
 #include <memory>
+
+// For isatty() so the progress renderer can stay quiet when stderr is
+// not a terminal (e.g. redirected to a logfile).
+#include <unistd.h>
 
 using namespace std;
 namespace AP = argparse;
@@ -581,11 +587,12 @@ int main(int argc, char const*const*const argv) {
         update_sockname(*ptr, etdc::host_type(std::regex_replace(get_host(*ptr), rxWildCard, dstHost)));
 
     // Before processing all file(s) we already know if we're going to push or pull
-    std::function<etdc::xfer_result(etdc::uuid_type const&, etdc::uuid_type&, off_t, etdc::dataaddrlist_type const&)> fn;
+    std::function<etdc::xfer_result(etdc::uuid_type const&, etdc::uuid_type&, off_t, etdc::dataaddrlist_type const&,
+                                    etdc::progress_fn const&)> fn;
     namespace ph = std::placeholders;
     fn = (push ?
-          std::bind(&etdc::ETDServerInterface::sendFile, servers[0].get(), ph::_1, ph::_2, ph::_3, ph::_4) :
-          std::bind(&etdc::ETDServerInterface::getFile,  servers[1].get(), ph::_1, ph::_2, ph::_3, ph::_4));
+          std::bind(&etdc::ETDServerInterface::sendFile, servers[0].get(), ph::_1, ph::_2, ph::_3, ph::_4, ph::_5) :
+          std::bind(&etdc::ETDServerInterface::getFile,  servers[1].get(), ph::_1, ph::_2, ph::_3, ph::_4, ph::_5));
 
     // Loop over all files to do ...
     auto        fmtByte = (display == continental ? 
@@ -601,6 +608,78 @@ int main(int argc, char const*const*const argv) {
                             etdc::mk_formatter<double>("s", std::setprecision(4), etdc::continental):
                             etdc::mk_formatter<double>("s", std::setprecision(4), etdc::imperial) );
     const int 	lvl( verbose ? -1 : 9 );
+
+    // -----------------------------------------------------------------
+    // On-screen progress renderer.
+    //
+    // The renderer is fed by either ETDServer (local pseudo-daemon) or
+    // ETDProxy (decoded "PROG,bytes,seconds" lines from the wire). It
+    // draws an in-place updating line on stderr using a carriage return,
+    // and is therefore suppressed when stderr is not a TTY so logfiles
+    // stay free of escape gunk. The state is reset at the start of each
+    // retry attempt and a trailing newline is emitted after each call to
+    // fn() so the summary line below starts on a fresh row.
+    // -----------------------------------------------------------------
+    const bool       stderr_tty{ ::isatty(STDERR_FILENO) != 0 };
+    bool             progress_drawn{ false };
+
+    auto reset_progress = [&]() {
+        progress_drawn = false;
+    };
+    auto finalize_progress = [&]() {
+        if( progress_drawn ) {
+            std::cerr << std::endl;
+            progress_drawn = false;
+        }
+    };
+    // Width (in characters) of the hash-bar drawn between square brackets.
+    // Picked so the resulting line stays comfortably under 80 columns when
+    // combined with the fixed-width numeric columns below.
+    static constexpr size_t kBarWidth = 30;
+
+    auto render_progress = [&](off_t bytes_so_far, off_t total, double elapsed) {
+        if( !stderr_tty )
+            return;
+        progress_drawn = true;
+
+        // Clamp pct/filled into [0, 100]/[0, kBarWidth] so a (mis)reported
+        // bytes_so_far > total can't blow out the bar formatting.
+        double const pct_raw = (total > 0)
+                               ? (100.0 * (double)bytes_so_far / (double)total)
+                               : 0.0;
+        double const pct     = std::min(100.0, std::max(0.0, pct_raw));
+        size_t       filled  = (total > 0)
+                               ? (size_t)(kBarWidth * (double)bytes_so_far / (double)total)
+                               : 0;
+        if( filled > kBarWidth ) filled = kBarWidth;
+
+        std::string  bar(kBarWidth, ' ');
+        std::fill(bar.begin(), bar.begin() + (std::string::difference_type)filled, '#');
+
+        // All variable-width pieces are wrapped in std::setw() so the line
+        // length is constant for typical inputs. The trailing "\033[K"
+        // erases from the cursor to end-of-line, which guarantees that an
+        // occasional outlier (e.g. very long elapsed-time string) still
+        // leaves the next redraw clean.
+        double const rate = (elapsed > 0.0)
+                            ? ((double)bytes_so_far / elapsed)
+                            : 0.0;
+
+        std::ostringstream oss;
+        oss << '\r'
+            << '[' << bar << "] "
+            << std::fixed << std::setprecision(1) << std::setw(5) << pct << "%  "
+            << std::setw(11) << std::right << fmt1000((double)bytes_so_far)
+            << " / "
+            << std::setw(11) << std::left  << fmt1000((double)total)
+            << "  ["
+            << std::setw(14) << std::right << fmtRate(rate)
+            << "]  "
+            << std::setw(9)  << std::right << fmtTime(elapsed)
+            << "\033[K";
+        auto const s = oss.str();
+        std::cerr << s << std::flush;
+    };
 
     // Enable killing by signal ^C
     unique_result      results[2];
@@ -633,6 +712,11 @@ int main(int argc, char const*const*const argv) {
                 std::this_thread::sleep_for( retryDelay );
             }
 
+            // Each attempt gets a fresh progress baseline so the renderer
+            // doesn't carry over byte counts/elapsed-time from a previous
+            // (failed) attempt.
+            reset_progress();
+
             try {
                 auto const outputFN = mkOutputPath(file);
                 ETDCDEBUG(lvl, (push ? "PUSH" : "PULL" ) << " " << mode << " " << file << " -> " << outputFN << std::endl);
@@ -652,7 +736,10 @@ int main(int argc, char const*const*const argv) {
                     auto nByteToGo = etdc::get_filepos( *results[0] );
 
                     if( nByteToGo>0 ) {
-                        etdc::xfer_result result( fn(etdc::get_uuid(*results[0]), etdc::get_uuid(*results[1]), nByteToGo, dataChannels) );
+                        etdc::xfer_result result( fn(etdc::get_uuid(*results[0]), etdc::get_uuid(*results[1]), nByteToGo, dataChannels, render_progress) );
+                        // Terminate the in-place progress line (if any) so
+                        // the upcoming summary starts on a fresh row.
+                        finalize_progress();
                         auto const        dt = result.__m_DeltaT.count();
                         std::cout << (result.__m_Finished && std::atomic_load(&localState.cancelled)==false ? "" : "Un") << "finished; successfully transferred "
                                   << fmt1000(result.__m_BytesTransferred)
@@ -670,10 +757,12 @@ int main(int argc, char const*const*const argv) {
                 }
             }
             catch( std::exception const& e ) {
+                finalize_progress();
                 ETDCDEBUG(3, "Got exception: " << e.what() << std::endl);
                 eptr = std::current_exception();
             }
             catch( etdc::detail::ThrowOnExistThatShouldNotExist const& ) {
+                finalize_progress();
                 eptr = std::current_exception();
                 // This one signifies that the file existed on the remote
                 // end and the file-write mode was not any of OverWrite, Resume or SkipExisting
@@ -684,6 +773,7 @@ int main(int argc, char const*const*const argv) {
                 nFileRetry = maxFileRetry;
             }
             catch( ... ) {
+                finalize_progress();
                 eptr = std::current_exception();
                 ETDCDEBUG(3, "Got unknown exception" << std::endl);
             } 
