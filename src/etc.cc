@@ -695,8 +695,8 @@ int main(int argc, char const*const*const argv) {
             << "]  "
             << fmtProgTime(elapsed)
             << "\033[K";
-        auto const s = oss.str();
-        std::cerr << s << std::flush;
+        auto const line = oss.str();
+        std::cerr << line << std::flush;
     };
 
     // Enable killing by signal ^C
