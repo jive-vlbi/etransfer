@@ -1595,11 +1595,11 @@ namespace etdc {
                                 progress_fn  progress;
                                 if( emit_progress ) {
                                     progress = [this](off_t bytes_so_far, off_t /*total*/, double elapsed) {
-                                        std::ostringstream line_s;
-                                        line_s << "PROG," << bytes_so_far << ',' << elapsed << '\n';
-                                        const std::string  line{ line_s.str() };
+                                        std::ostringstream prog_s;
+                                        prog_s << "PROG," << bytes_so_far << ',' << elapsed << '\n';
+                                        const std::string  prog_line{ prog_s.str() };
                                         std::lock_guard<std::mutex> lk( __m_writeMutex );
-                                        __m_connection->write(__m_connection->__m_fd, line.data(), line.size());
+                                        __m_connection->write(__m_connection->__m_fd, prog_line.data(), prog_line.size());
                                     };
                                 }
 
