@@ -637,6 +637,47 @@ int main(int argc, char const*const*const argv) {
     // combined with the fixed-width numeric columns below.
     static constexpr size_t kBarWidth = 30;
 
+    // Inline sciprint()-based number formatters used *only* by the
+    // renderer. We can't reuse the pre-built fmt1000/fmtRate/fmtTime
+    // formatters here because:
+    //   1. fmt1000/fmtTime are missing std::fixed, so std::setprecision(N)
+    //      is treated as N significant digits and values in the 100..999
+    //      bucket get rendered in scientific notation
+    //      ("8.4e+02 MiB / 8.4e+02 MiB") which is unreadable.
+    //   2. mk_formatter() applies std::setw() only once (setw is "sticky
+    //      for the next insertion") so a setw passed at construction time
+    //      would only affect the very first invocation.
+    // Calling sciprint() inline each redraw rebuilds the formatting state
+    // from scratch, so std::setw on the numeric portion takes effect on
+    // every call -- which is what keeps the columns from juggling.
+    auto fmtProgBytes = [display](off_t v) -> std::string {
+        return (display == continental)
+             ? etdc::sciprint((double)v, "iB",
+                              std::fixed, std::setprecision(2),
+                              etdc::continental, std::setw(7))
+             : etdc::sciprint((double)v, "iB",
+                              std::fixed, std::setprecision(2),
+                              etdc::imperial,    std::setw(7));
+    };
+    auto fmtProgRate = [display](double v) -> std::string {
+        return (display == continental)
+             ? etdc::sciprint(v, "Bps", etdc::thousand(1024),
+                              std::fixed, std::setprecision(2),
+                              etdc::continental, std::setw(7))
+             : etdc::sciprint(v, "Bps", etdc::thousand(1024),
+                              std::fixed, std::setprecision(2),
+                              etdc::imperial,    std::setw(7));
+    };
+    auto fmtProgTime = [display](double v) -> std::string {
+        return (display == continental)
+             ? etdc::sciprint(v, "s",
+                              std::fixed, std::setprecision(2),
+                              etdc::continental, std::setw(6))
+             : etdc::sciprint(v, "s",
+                              std::fixed, std::setprecision(2),
+                              etdc::imperial,    std::setw(6));
+    };
+
     auto render_progress = [&](off_t bytes_so_far, off_t total, double elapsed) {
         if( !stderr_tty )
             return;
@@ -656,26 +697,28 @@ int main(int argc, char const*const*const argv) {
         std::string  bar(kBarWidth, ' ');
         std::fill(bar.begin(), bar.begin() + (std::string::difference_type)filled, '#');
 
-        // All variable-width pieces are wrapped in std::setw() so the line
-        // length is constant for typical inputs. The trailing "\033[K"
-        // erases from the cursor to end-of-line, which guarantees that an
-        // occasional outlier (e.g. very long elapsed-time string) still
-        // leaves the next redraw clean.
         double const rate = (elapsed > 0.0)
                             ? ((double)bytes_so_far / elapsed)
                             : 0.0;
 
+        // The numeric columns are stable-width thanks to the std::setw()
+        // baked into the inline sciprint() calls above; we still wrap
+        // each column in an outer std::setw() one wider than the inner
+        // width to absorb the +1 char that an empty SI prefix adds (e.g.
+        // " 12.34 iB" vs "12.34 MiB"). The trailing "\033[K" then erases
+        // any leftover characters from a previous longer redraw, so the
+        // line is always visually clean.
         std::ostringstream oss;
         oss << '\r'
             << '[' << bar << "] "
             << std::fixed << std::setprecision(1) << std::setw(5) << pct << "%  "
-            << std::setw(11) << std::right << fmt1000((double)bytes_so_far)
+            << std::setw(11) << std::right << fmtProgBytes(bytes_so_far)
             << " / "
-            << std::setw(11) << std::left  << fmt1000((double)total)
+            << std::setw(11) << std::left  << fmtProgBytes(total)
             << "  ["
-            << std::setw(14) << std::right << fmtRate(rate)
+            << std::setw(12) << std::right << fmtProgRate(rate)
             << "]  "
-            << std::setw(9)  << std::right << fmtTime(elapsed)
+            << std::setw(9)  << std::right << fmtProgTime(elapsed)
             << "\033[K";
         auto const s = oss.str();
         std::cerr << s << std::flush;
