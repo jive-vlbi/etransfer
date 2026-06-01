@@ -393,6 +393,26 @@ namespace etdc {
 
     // Handy: make formatting function
     // You get to specify the type of the value because we can't infer that
+    //
+    // -------------------------------------------------------------------
+    // Note on format-state preservation across calls:
+    //
+    // std::ostringstream::str(std::string{}) swaps only the *buffer*;
+    // it leaves all stream format state alone. So sticky iomanips like
+    // std::fixed, std::setprecision(), std::setfill(), the imbued
+    // locale, etc. naturally survive between invocations of the
+    // returned lambda.
+    //
+    // The one exception is std::setw(): operator<< consumes width()
+    // on every formatted output and resets it to 0 immediately
+    // afterwards. To make std::setw() (and any future "consumed-once"
+    // iomanip) behave consistently across invocations, we snapshot the
+    // *fully configured* format state into a sibling ostringstream
+    // immediately after update_sp_tuple() finishes. The lambda then
+    // copyfmt()'s that snapshot back onto the working stream before
+    // every formatted insertion, restoring width() (and everything
+    // else) to exactly what the user asked for.
+    // -------------------------------------------------------------------
     template <typename T, typename... Args>
     auto mk_formatter(std::string const& unit, Args&&... args) -> std::function<std::string(T const&)> {
         // Start from a default setting based on primary input
@@ -401,6 +421,12 @@ namespace etdc {
 
         // And allow customization
         detail::update_sp_tuple(*settings, std::forward<Args>(args)...);
+
+        // Snapshot the configured format state (width, precision,
+        // fmtflags, fill, locale, ...). Held by shared_ptr so the
+        // returned std::function stays cheaply copyable.
+        auto fmt_snapshot = std::make_shared<std::ostringstream>();
+        fmt_snapshot->copyfmt( std::get<2>(*settings) );
 
         // Now that we've got the basic settings, we can generate the lambda
         // that does the formattin' of any value according to our likin'
@@ -413,6 +439,10 @@ namespace etdc {
             // Get reference to the ostringstream
             auto&                                    strm = std::get<2>(*settings);
             strm.str( std::string() );
+            // Restore the configured format state -- in particular,
+            // width() which would otherwise have been consumed by the
+            // previous insertion.
+            strm.copyfmt( *fmt_snapshot );
             // Output raw value w/ unit or reduced value w/ prefix and unit
             if( pfx==detail::prefixes().end() )
                 strm << value << " " << std::get<1>(*settings);
@@ -428,10 +458,16 @@ namespace etdc {
         auto    settings = detail::mk_default_ptr(T{}, std::string());
         // And allow customization
         detail::update_sp_tuple(*settings, std::forward<Args>(args)...);
+        // See note in mk_formatter() above: snapshot the configured
+        // format state so consumed-once iomanips (notably std::setw())
+        // can be replayed via copyfmt() on every invocation.
+        auto fmt_snapshot = std::make_shared<std::ostringstream>();
+        fmt_snapshot->copyfmt( std::get<2>(*settings) );
         return [=](T const& value) {
             auto&  strm = std::get<2>(*settings);
             // Do them formattin'
             strm.str( std::string() );
+            strm.copyfmt( *fmt_snapshot );
             strm << value;
             return strm.str();
         };
