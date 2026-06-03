@@ -81,7 +81,7 @@ mkobjs=$(foreach O, $(patsubst %.c, %.co, $(patsubst %.cc, %.cco, $(patsubst %.S
 # etransfer daemon
 etd_SRC=src/etd.cc src/reentrant.cc src/etdc_fd.cc src/etdc_etdserver.cc src/etdc_debug.cc src/etd_acl.cc
 etd_VERSION=$(shell ./get_version)
-etd_RELEASE=dev
+etd_RELEASE=prod
 etd_OBJS=$(call mkobjs,etd)
 
 # targets that etd depends upon
@@ -92,7 +92,7 @@ etd_DEPS=libudt5ab libsrt5ab fkyaml pthread
 # etransfer client
 etc_SRC=src/etc.cc src/reentrant.cc src/etdc_fd.cc src/etdc_etdserver.cc src/etdc_debug.cc src/etd_acl.cc
 etc_VERSION=$(shell ./get_version)
-etc_RELEASE=dev
+etc_RELEASE=prod
 etc_OBJS=$(call mkobjs,etc)
 
 # targets that etc depends upon
