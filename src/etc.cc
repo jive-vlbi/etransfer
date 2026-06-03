@@ -33,9 +33,16 @@
 #include <thread>
 #include <string>
 #include <vector>
+#include <iomanip>
 #include <iterator>
 #include <iostream>
+#include <algorithm>
 #include <functional>
+#include <memory>
+
+// For isatty() so the progress renderer can stay quiet when stderr is
+// not a terminal (e.g. redirected to a logfile).
+#include <unistd.h>
 
 using namespace std;
 namespace AP = argparse;
@@ -43,14 +50,14 @@ namespace AP = argparse;
 // The client may support local URLs by just using "/path/to/file"
 //
 // Better shtick to what ppl understand:
-//  [[(tcp|udt)6?://][user@]host[#port]/]path
+//  [[(tcp|udt|srt)6?://][user@]host[#port]/]path
 //
 static const std::regex rxURL{
     /* remote prefix is optional! */
     "("
 //   1
     /* protocol */
-    "(((tcp|udt)6?):\\/\\/)?"
+    "(((tcp|udt|srt)6?):\\/\\/)?"
 //   234 
     /* optional user@ prefix */
     "(([a-z0-9]+)@)?" 
@@ -296,12 +303,23 @@ namespace etc {
             rv->protocolVersion();
         }
         catch( ... ) {
-            // Oh crap ... reconnect and set the protocol version manually to 0
+            // Maybe it was a daemon that only understands the legacy
+            // protocol-version command. Attempt once more without the
+            // extended probe before falling back to version 0 semantics.
             rv = ::mk_etdproxy( std::forward<Args>(args)... );
-            // And we should make sure that we only set it once - i.e. that
-            // the previous "supported protocol version" is not yet set
-            ETDCASSERT( rv->set_protocolVersion( 0 ) == etdc::ETDServerInterface::unknownProtocolVersion,
-                        "The proxy had its protocol version already set?!" );
+            if( auto proxy = std::dynamic_pointer_cast<etdc::ETDProxy>(rv) )
+                proxy->preferExtendedProbe(false);
+            try {
+                rv->protocolVersion();
+            }
+            catch( ... ) {
+                // Oh crap ... reconnect and set the protocol version manually to 0
+                rv = ::mk_etdproxy( std::forward<Args>(args)... );
+                // And we should make sure that we only set it once - i.e. that
+                // the previous "supported protocol version" is not yet set
+                ETDCASSERT( rv->set_protocolVersion( 0 ) == etdc::ETDServerInterface::unknownProtocolVersion,
+                            "The proxy had its protocol version already set?!" );
+            }
         }
         return rv;
     }
@@ -341,7 +359,7 @@ int main(int argc, char const*const*const argv) {
                                               "high speed file/directory transfers or it can be used "
                                               "to list the contents of a remote directory, if the remote "
                                               "etransfer daemon allows your credentials to do so."),
-                                AP::docstring("Remote URLs are formatted as\n\t[[tcp|udt][6]://][user@]host[#port]:/path\n"
+                                AP::docstring("Remote URLs are formatted as\n\t[[tcp|udt|srt][6]://][user@]host[#port]:/path\n"
                                               "Paths on the local machine are specified just as /<path> (i.e. absolute path)"),
                                 AP::docstring("The syntax on the remote URLs is slightly more complicated than e.g. scp(1) but that is "
                                               "because this client can trigger remote daemon => remote daemon transfers."),
@@ -467,6 +485,20 @@ int main(int argc, char const*const*const argv) {
              AP::constrain([](etdc::max_bw_type const& v) { return untag(v)==-1 || untag(v)>0; }, "-1 (Inf) or > 0 for set rate"),
              AP::docstring("Set UDT maximum bandwidth. Without suffix the number is interpreted as bytes per second. A suffix of 'kMG[Bb]i?ps' is supported: Bps = bytes per second, bps = bits per second; i[Bb]ps is base-1024, [Bb]ps is base-1000. Bits per second will be recomputed and rounded to nearest integer bytes per second lower than the value. Not honoured if data channel is TCP or doing remote-to-remote transfers. Default: unlimited.") );
 
+    // SRT parameters
+    cmd.add( AP::store_into(localState.srtMSS), AP::long_name("srt-mss"), AP::at_most(1),
+             AP::minimum_value( etdc::mss_type{64} ), AP::maximum_value( etdc::mss_type{64*1024} ),
+             AP::convert([](std::string const& s) { return mss(s); }),
+             AP::docstring("Set SRT maximum segment size in bytes. Falls back to --udt-mss if unset. Default: 1500") );
+
+    cmd.add( AP::store_into(localState.srtMaxBW), AP::long_name("srt-bw"), AP::at_most(1),
+             AP::convert([](std::string const& s) { return max_bw(s); }),
+             AP::constrain([](etdc::max_bw_type const& v) { return untag(v)==-1 || untag(v)>0; }, "-1 (Inf) or > 0 for set rate"),
+             AP::docstring("Set SRT maximum bandwidth. Inherits --udt-bw when not specified. Defaults to unlimited.") );
+
+    cmd.add( AP::store_into(localState.srtBufSize), AP::long_name("srt-buffer"), AP::at_most(1),
+             AP::docstring("Set SRT send/receive buffer size in bytes (SRTO_SNDBUF/SRTO_RCVBUF). No kMG suffix supported. Falls back to --buffer when not provided.") );
+
     cmd.add( AP::store_into(localState.bufSize), AP::long_name("buffer"),
              AP::docstring(std::string("Set send/receive buffer size in bytes. No kMG suffix supported. Default ")+etdc::repr(localState.bufSize)) );
 
@@ -555,11 +587,12 @@ int main(int argc, char const*const*const argv) {
         update_sockname(*ptr, etdc::host_type(std::regex_replace(get_host(*ptr), rxWildCard, dstHost)));
 
     // Before processing all file(s) we already know if we're going to push or pull
-    std::function<etdc::xfer_result(etdc::uuid_type const&, etdc::uuid_type&, off_t, etdc::dataaddrlist_type const&)> fn;
+    std::function<etdc::xfer_result(etdc::uuid_type const&, etdc::uuid_type&, off_t, etdc::dataaddrlist_type const&,
+                                    etdc::progress_fn const&)> fn;
     namespace ph = std::placeholders;
     fn = (push ?
-          std::bind(&etdc::ETDServerInterface::sendFile, servers[0].get(), ph::_1, ph::_2, ph::_3, ph::_4) :
-          std::bind(&etdc::ETDServerInterface::getFile,  servers[1].get(), ph::_1, ph::_2, ph::_3, ph::_4));
+          std::bind(&etdc::ETDServerInterface::sendFile, servers[0].get(), ph::_1, ph::_2, ph::_3, ph::_4, ph::_5) :
+          std::bind(&etdc::ETDServerInterface::getFile,  servers[1].get(), ph::_1, ph::_2, ph::_3, ph::_4, ph::_5));
 
     // Loop over all files to do ...
     auto        fmtByte = (display == continental ? 
@@ -575,6 +608,96 @@ int main(int argc, char const*const*const argv) {
                             etdc::mk_formatter<double>("s", std::setprecision(4), etdc::continental):
                             etdc::mk_formatter<double>("s", std::setprecision(4), etdc::imperial) );
     const int 	lvl( verbose ? -1 : 9 );
+
+    // -----------------------------------------------------------------
+    // On-screen progress renderer.
+    //
+    // The renderer is fed by either ETDServer (local pseudo-daemon) or
+    // ETDProxy (decoded "PROG,bytes,seconds" lines from the wire). It
+    // draws an in-place updating line on stderr using a carriage return,
+    // and is therefore suppressed when stderr is not a TTY so logfiles
+    // stay free of escape gunk. The state is reset at the start of each
+    // retry attempt and a trailing newline is emitted after each call to
+    // fn() so the summary line below starts on a fresh row.
+    // -----------------------------------------------------------------
+    const bool       stderr_tty{ ::isatty(STDERR_FILENO) != 0 };
+    bool             progress_drawn{ false };
+
+    auto reset_progress = [&]() {
+        progress_drawn = false;
+    };
+    auto finalize_progress = [&]() {
+        if( progress_drawn ) {
+            std::cerr << std::endl;
+            progress_drawn = false;
+        }
+    };
+    // Width (in characters) of the hash-bar drawn between square brackets.
+    // Picked so the resulting line stays comfortably under 80 columns when
+    // combined with the fixed-width numeric columns below.
+    static constexpr size_t kBarWidth = 30;
+
+    // Stable-width formatters dedicated to the renderer. These differ
+    // from the summary formatters above by:
+    //   * always passing std::fixed (the summary fmt1000/fmtTime omit it,
+    //     which lets std::setprecision(N) fall back to N significant
+    //     digits and emit scientific notation in the 100..999 bucket);
+    //   * baking a std::setw() into the configured format state so the
+    //     numeric portion is right-padded to a fixed column. Thanks to
+    //     mk_formatter's copyfmt-snapshot fix the width is restored
+    //     before every insertion (std::setw is otherwise consumed-once).
+    auto        fmtProgBytes = (display == continental ?
+                                etdc::mk_formatter<double>("iB", std::fixed, etdc::continental, std::setprecision(2), std::setw(7)) :
+                                etdc::mk_formatter<double>("iB", std::fixed, etdc::imperial,    std::setprecision(2), std::setw(7)));
+    auto        fmtProgRate  = (display == continental ?
+                                etdc::mk_formatter<double>("Bps", etdc::thousand(1024), std::fixed, etdc::continental, std::setprecision(2), std::setw(7)) :
+                                etdc::mk_formatter<double>("Bps", etdc::thousand(1024), std::fixed, etdc::imperial,    std::setprecision(2), std::setw(7)));
+    auto        fmtProgTime  = (display == continental ?
+                                etdc::mk_formatter<double>("s",   std::fixed, etdc::continental, std::setprecision(2), std::setw(6)) :
+                                etdc::mk_formatter<double>("s",   std::fixed, etdc::imperial,    std::setprecision(2), std::setw(6)));
+
+    auto render_progress = [&](off_t bytes_so_far, off_t total, double elapsed) {
+        if( !stderr_tty )
+            return;
+        progress_drawn = true;
+
+        // Clamp pct/filled into [0, 100]/[0, kBarWidth] so a (mis)reported
+        // bytes_so_far > total can't blow out the bar formatting.
+        double const pct_raw = (total > 0)
+                               ? (100.0 * (double)bytes_so_far / (double)total)
+                               : 0.0;
+        double const pct     = std::min(100.0, std::max(0.0, pct_raw));
+        size_t       filled  = (total > 0)
+                               ? (size_t)(kBarWidth * (double)bytes_so_far / (double)total)
+                               : 0;
+        if( filled > kBarWidth ) filled = kBarWidth;
+
+        std::string  bar(kBarWidth, ' ');
+        std::fill(bar.begin(), bar.begin() + (std::string::difference_type)filled, '#');
+
+        double const rate = (elapsed > 0.0)
+                            ? ((double)bytes_so_far / elapsed)
+                            : 0.0;
+
+        // Numeric columns are stable-width thanks to std::setw baked
+        // into the formatters; the trailing "\033[K" erases any
+        // leftover characters from a previous longer redraw so the
+        // line stays visually clean even on outliers.
+        std::ostringstream oss;
+        oss << '\r'
+            << '[' << bar << "] "
+            << std::fixed << std::setprecision(1) << std::setw(5) << pct << "%  "
+            << fmtProgBytes((double)bytes_so_far)
+            << " / "
+            << fmtProgBytes((double)total)
+            << "  ["
+            << fmtProgRate(rate)
+            << "]  "
+            << fmtProgTime(elapsed)
+            << "\033[K";
+        auto const line = oss.str();
+        std::cerr << line << std::flush;
+    };
 
     // Enable killing by signal ^C
     unique_result      results[2];
@@ -607,6 +730,11 @@ int main(int argc, char const*const*const argv) {
                 std::this_thread::sleep_for( retryDelay );
             }
 
+            // Each attempt gets a fresh progress baseline so the renderer
+            // doesn't carry over byte counts/elapsed-time from a previous
+            // (failed) attempt.
+            reset_progress();
+
             try {
                 auto const outputFN = mkOutputPath(file);
                 ETDCDEBUG(lvl, (push ? "PUSH" : "PULL" ) << " " << mode << " " << file << " -> " << outputFN << std::endl);
@@ -626,7 +754,10 @@ int main(int argc, char const*const*const argv) {
                     auto nByteToGo = etdc::get_filepos( *results[0] );
 
                     if( nByteToGo>0 ) {
-                        etdc::xfer_result result( fn(etdc::get_uuid(*results[0]), etdc::get_uuid(*results[1]), nByteToGo, dataChannels) );
+                        etdc::xfer_result result( fn(etdc::get_uuid(*results[0]), etdc::get_uuid(*results[1]), nByteToGo, dataChannels, render_progress) );
+                        // Terminate the in-place progress line (if any) so
+                        // the upcoming summary starts on a fresh row.
+                        finalize_progress();
                         auto const        dt = result.__m_DeltaT.count();
                         std::cout << (result.__m_Finished && std::atomic_load(&localState.cancelled)==false ? "" : "Un") << "finished; successfully transferred "
                                   << fmt1000(result.__m_BytesTransferred)
@@ -644,10 +775,12 @@ int main(int argc, char const*const*const argv) {
                 }
             }
             catch( std::exception const& e ) {
+                finalize_progress();
                 ETDCDEBUG(3, "Got exception: " << e.what() << std::endl);
                 eptr = std::current_exception();
             }
             catch( etdc::detail::ThrowOnExistThatShouldNotExist const& ) {
+                finalize_progress();
                 eptr = std::current_exception();
                 // This one signifies that the file existed on the remote
                 // end and the file-write mode was not any of OverWrite, Resume or SkipExisting
@@ -658,6 +791,7 @@ int main(int argc, char const*const*const argv) {
                 nFileRetry = maxFileRetry;
             }
             catch( ... ) {
+                finalize_progress();
                 eptr = std::current_exception();
                 ETDCDEBUG(3, "Got unknown exception" << std::endl);
             } 

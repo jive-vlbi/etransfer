@@ -381,6 +381,90 @@ namespace etdc {
             }
             return (udt_rv==UDT::ERROR);
         }
+
+        static int srt_mss_fn(int s) {
+            etdc::srt_mss mss;
+            etdc::getsockopt(s, mss);
+            return etdc::untag(mss);
+        }
+
+        static int64_t srt_maxbw_fn(int s) {
+            etdc::srt_max_bw maxbw;
+            etdc::getsockopt(s, maxbw);
+            return etdc::untag(maxbw);
+        }
+
+        ssize_t srt_recv(int s, void* b, size_t n, int f) {
+            int r = srt::UDT::recv((SRTSOCKET)s, static_cast<char*>(b), static_cast<int>(n), f);
+
+            if( r!=SRT_ERROR )
+                return static_cast<ssize_t>(r);
+
+            int native_errno = 0;
+            const int srt_errno = srt_getlasterror(&native_errno);
+            etdc::srt_rcvsyn rcvsyn;
+            etdc::getsockopt(s, rcvsyn);
+            const bool blocking = etdc::untag(rcvsyn);
+
+            ETDCSYSCALL( (blocking && ((srt_errno==SRT_ECONNLOST)||(srt_errno==SRT_ETIMEOUT))) ||
+                         (!blocking && srt_errno==SRT_EASYNCRCV),
+                         "srt_recv(" << s << ", .., n=" << n << " ..)/" << detail::format_srt_error_details(srt_errno, native_errno, srt_getlasterror_str()) );
+
+            return static_cast<ssize_t>((srt_errno==SRT_ECONNLOST) ? 0 : (errno=EAGAIN, -1));
+        }
+
+        ssize_t srt_send(int s, const void* b, size_t n, int f) {
+            int r = srt::UDT::send((SRTSOCKET)s, static_cast<const char*>(b), static_cast<int>(n), f);
+
+            if( r==SRT_ERROR ) {
+                int native_errno = 0;
+                const int srt_errno = srt_getlasterror(&native_errno);
+                if( srt_errno!=SRT_EASYNCSND ) {
+                    std::ostringstream oss;
+                    oss << "srt_send(" << s << ", .., n=" << n << " ..)/"
+                        << detail::format_srt_error_details(srt_errno, native_errno, srt_getlasterror_str());
+                    throw std::runtime_error( oss.str() );
+                }
+                r = 0;
+            }
+            return static_cast<ssize_t>(r);
+        }
+
+        static const std::map<int, int> sockname_srt2libc{ {SRT_ENOCONN,   ENOTCONN},
+                                                           {SRT_EINVPARAM, EINVAL},
+                                                           {SRT_EINVSOCK,  ENOTSOCK} };
+
+        int srt_sockname(int fd, struct sockaddr* addr, socklen_t* sl) {
+            static_assert(sizeof(socklen_t)==sizeof(int), "SRT parameter int not compatible with socklen_t");
+
+            const int srt_rv = srt::UDT::getsockname(fd, addr, sl);
+            if( srt_rv==SRT_ERROR ) {
+                int native_errno = 0;
+                const int srt_errno = srt_getlasterror(&native_errno);
+                auto const pErr = sockname_srt2libc.find(srt_errno);
+
+                ETDCASSERT(pErr!=sockname_srt2libc.end(),
+                           "srt::UDT::getsockname() returned unrecognized error code " << srt_errno << " - " << detail::format_srt_error_details(srt_errno, native_errno, srt_getlasterror_str()));
+                errno = pErr->second;
+            }
+            return (srt_rv==SRT_ERROR);
+        }
+
+        int srt_peername(int fd, struct sockaddr* addr, socklen_t* sl) {
+            static_assert(sizeof(socklen_t)==sizeof(int), "SRT parameter int not compatible with socklen_t");
+
+            const int srt_rv = srt::UDT::getpeername(fd, addr, sl);
+            if( srt_rv==SRT_ERROR ) {
+                int native_errno = 0;
+                const int srt_errno = srt_getlasterror(&native_errno);
+                auto const pErr = sockname_srt2libc.find(srt_errno);
+
+                ETDCASSERT(pErr!=sockname_srt2libc.end(),
+                           "srt::UDT::getpeername() returned unrecognized error code " << srt_errno << " - " << detail::format_srt_error_details(srt_errno, native_errno, srt_getlasterror_str()));
+                errno = pErr->second;
+            }
+            return (srt_rv==SRT_ERROR);
+        }
     }
 
     // UDT over IPv4
@@ -448,6 +532,82 @@ namespace etdc {
     }
 
     etdc_udt6::~etdc_udt6() {}
+
+
+    ////////////////////////////////////////////////////////////////////////
+    //                        SRT sockets
+    ////////////////////////////////////////////////////////////////////////
+    etdc_srt::etdc_srt() {
+        auto proto = etdc::getprotobyname("tcp");
+        SRTSOCKET sock = srt::UDT::socket(PF_INET, SOCK_STREAM, proto.p_proto);
+        if( sock==srt::UDT::INVALID_SOCK )
+        {
+            int        native_errno = 0;
+            const int  err_code     = srt_getlasterror(&native_errno);
+            const char* err_msg     = srt_getlasterror_str();
+            throw std::runtime_error(std::string("etdc_srt: ") +
+                                     detail::format_srt_error_details(err_code, native_errno, err_msg));
+        }
+
+        __m_fd = static_cast<int>(sock);
+        setup_basic_fns();
+    }
+
+    etdc_srt::etdc_srt(int fd) {
+        ETDCASSERT(fd>=0, "constructing SRT file descriptor from invalid fd#" << fd);
+        __m_fd = fd;
+        setup_basic_fns();
+    }
+
+    void etdc_srt::setup_basic_fns( void ) {
+        etdc::update_fd(*this,
+                        read_fn(std::bind(&detail::srt_recv, _1, _2, _3, 0)),
+                        write_fn(std::bind(&detail::srt_send, _1, _2, _3, 0)),
+                        close_fn(&srt::UDT::close),
+                        getsockname_fn( [](int fd) {
+                            return detail::ipv4_sockname<detail::srt_sockname, detail::srt_mss_fn, detail::srt_maxbw_fn>(fd, "srt", "getsockname"); } ),
+                        getpeername_fn( [](int fd) {
+                            return detail::ipv4_sockname<detail::srt_peername>(fd, "srt", "getpeername"); } ),
+                        setblocking_fn( [](int fd, bool blocking) {
+                            etdc::setsockopt(fd, etdc::srt_sndsyn{blocking}, etdc::srt_rcvsyn{blocking});
+                        }) );
+    }
+
+    etdc_srt::~etdc_srt() {}
+
+    etdc_srt6::etdc_srt6() {
+        auto proto = etdc::getprotobyname("tcp");
+        SRTSOCKET sock = srt::UDT::socket(PF_INET6, SOCK_STREAM, proto.p_proto);
+        if( sock==srt::UDT::INVALID_SOCK )
+        {
+            int        native_errno = 0;
+            const int  err_code     = srt_getlasterror(&native_errno);
+            const char* err_msg     = srt_getlasterror_str();
+            throw std::runtime_error(std::string("etdc_srt6: ") +
+                                     detail::format_srt_error_details(err_code, native_errno, err_msg));
+        }
+
+        __m_fd = static_cast<int>(sock);
+        setup_basic_fns();
+    }
+
+    etdc_srt6::etdc_srt6(int fd) {
+        ETDCASSERT(fd>=0, "constructing SRT6 file descriptor from invalid fd#" << fd);
+        __m_fd = fd;
+        setup_basic_fns();
+    }
+
+    void etdc_srt6::setup_basic_fns( void ) {
+        this->etdc_srt::setup_basic_fns();
+
+        etdc::update_fd(*this,
+                        getsockname_fn( [](int fd) {
+                            return detail::ipv6_sockname<detail::srt_sockname, detail::srt_mss_fn, detail::srt_maxbw_fn>(fd, "srt6", "getsockname"); } ),
+                        getpeername_fn( [](int fd) {
+                            return detail::ipv6_sockname<detail::srt_peername>(fd, "srt6", "getpeername"); } ) );
+    }
+
+    etdc_srt6::~etdc_srt6() {}
 
 
     namespace detail {

@@ -1,0 +1,11 @@
+#!/bin/sh
+
+V=`git describe --tags --exact-match 2> /dev/null`
+if [ -z "$V" ]; then
+    V="`git symbolic-ref -q --short HEAD`@`git rev-parse --short HEAD`"
+fi
+D=`git status -sb -uno | sed 1d`
+if [ -n "$D" ]; then
+    D="*"
+fi
+echo ${V}${D}

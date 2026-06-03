@@ -5,9 +5,9 @@
 data does not flow through the client's machine and/or network.
 
 - The system natively supports remote wildcards; it is possible to transfer
-multiple files irrespective of wether they are remote or local.
+multiple files irrespective of wether they are remote or local. Since Jun 2026 (v2.0), the daemon also [supports access control lists (ACLs)](#access-control-lists) to restrict read and/or write access to specific files or directories.
 
-- The etransfer tools support TCP and [UDT](https://github.com/netvirt/udt4) over both IPv4 and IPv6. The UDT protocol is orders of magnitude faster on long, fat, network connections.
+- The etransfer tools support TCP, [UDT](https://github.com/netvirt/udt4), and [SRT](https://www.srtalliance.org/) over both IPv4 and IPv6. The UDT and SRT protocols are orders of magnitude faster on long, fat, network connections; SRT adds more stability on top of similar congestion-control behaviour. (See also [UDT or SRT?](#transport-protocols-udt-or-srt))
 
 - Single e-transfer daemon command and data channels are sufficient to support multiple parallel clients. The daemon allows specifiying multiple command and/or data channels for the purpose of offering the service over multiple protocols or to fine-tune support of specific protocol(s) on specific interfaces, see [Example](#Example).
 
@@ -21,6 +21,8 @@ multiple files irrespective of wether they are remote or local.
 
 <!--- line breaking in Markdown according to
       https://stackoverflow.com/a/36600196  -->
+[`Version 2.0`](https://github.com/jive-vlbi/etransfer/releases/tag/v2.0) was tagged on Jun 03 2026; introduces TCP-keepalive, idle-transfer-timeout, Access Control Lists in the daemon (etd); adds per-file progress-reporting to the client (etc); compiles actual git version info into the binaries (--version is now useful); command-line constraint violation error message more human friendly; adds SRT as another fast UDP-based data transport protocol; fixes: a hang-on-^C, compile issues on Debian (and possible other) Linux systems, some POSIX/strictness violations, log output lines are tagged with the transfer UUID for disentanglement, generated formatters now retain all iomanips (even the transient ones like std::setw)<br/><br/>
+[`Version 1.2`](https://github.com/jive-vlbi/etransfer/issues/30) introduces optional [SRT](https://www.srtalliance.org/) data channels alongside TCP and UDT.<br/>
 [`Version 1.1`](https://github.com/jive-vlbi/etransfer/releases/tag/v1.1) was tagged on Feb 10 2022; log into file-in-directory, compile issues, NFS workaround, fix bug in UUID generator and SIGSEGV in fmtTime<br/>
 [`Version 1.0.1`](https://github.com/jive-vlbi/etransfer/releases/tag/v1.0.1) was tagged on Jun 02 2021; bug in v1.0 found after release: superfluous comma in regex for multiple data channel "parsing"<br/>
 [`Version 1.0`](https://github.com/jive-vlbi/etransfer/releases/tag/v1.0) was tagged on May 25 2021<br/><br/>
@@ -34,7 +36,10 @@ suitable, C++11 compliant compiler is necessary.
 ```bash
     $ git clone https://github.com/jive-vlbi/etransfer.git
     $ cd etransfer
-    $ make
+    # -j <number> is optional
+    #    it makes the compilation go faster on multicore systems
+    #    keeping <number> <= N_cores is a good setting probably
+    $ make [-j <number>]
     <time passes, no errors should happen ...>
     $
 ```
@@ -47,36 +52,10 @@ compile the same source tree on different systems with or without debug
 information.
 
 ## GCC[10|12] / Debian[11|12] "Bullseye"/"Bookworm" build problems
+**NOTE: this is fixed in v2.0**
+In the git repo select an older README.md version to find the original error and fix.
+Still thanks to @AarónG for reporting this first!
 
-On Debian[11|12] w/ gcc[10|12] (and maybe others) the build will likely fail with this curious error:
-
-	In file included from /usr/include/c++/12/mutex:43
-	                 from /home/verkout/src/etransfer/src/etdc_debug.h:23,
-	                 from /home/verkout/src/etransfer/src/etdc_fd.h:29,
-	                 from src/etc.cc:21:
-	/usr/include/c++/12/bits/std\_mutex.h: In member function 'void std::__condvar::wait_until(std::mutex&, clockid_t, timespec&)':
-	/usr/include/c++/12/bits/std\_mutex.h:169:7: error: 'pthread_cond_clockwait' was not declared in this scope; did you mean 'pthread_cond_wait'?
-	  169 |       pthread_cond_clockwait(&_M_cond, __m.native_handle(), __clock,
-	      |       ^~~~~~~~~~~~~~~~~~~~~~
-	      |       pthread_cond_wait
-	/usr/include/c++/12/mutex: In member function 'bool std::timed_mutex::_M_clocklock(clockid_t, const __gthread_time_t&)':
-	/usr/include/c++/12/mutex:272:17: error: 'pthread_mutex_clocklock' was not declared in this scope; did you mean 'pthread_mutex_unlock'?
-	  272 |       { return !pthread_mutex_clocklock(&_M_mutex, clockid, &__ts); }
-	      |                 ^~~~~~~~~~~~~~~~~~~~~~~
-	      |                 pthread_mutex_unlock
-	/usr/include/c++/12/mutex: In member function 'bool std::recursive_timed_mutex::_M_clocklock(clockid_t, const __gthread_time_t&)':
-	/usr/include/c++/12/mutex:338:17: error: 'pthread_mutex_clocklock' was not declared in this scope; did you mean 'pthread_mutex_unlock'?
-	  338 |       { return !pthread_mutex_clocklock(&_M_mutex, clockid, &__ts); }
-	      |                 ^~~~~~~~~~~~~~~~~~~~~~~
-	      |                 pthread_mutex_unlock
-
-This seems to be caused by part of the (system)headers still thinking we're compiling `_GNU_SOURCE` and another part not, because that's explicitly disabled on the command line.  The `-DPOSIX_C_SOURCE=200809L -D_GNU_SOURCE -U_GNU_SOURCE` sequence in the [Makefile](./Makefile) is (one of) the ways to force the compiler into using POSIX interfaces and disallow any of the GNU extension nonsense ;-)
-
-See for example [this Stackoverflow Q+A](https://stackoverflow.com/questions/11670581/why-is-gnu-source-defined-by-default-and-how-to-turn-it-off) for some background.
-
-To quickly fix your build simply remove the `-D_GNU_SOURCE -U_GNU_SOURCE` from the `BASEOPT=` list of compilation options in the `Makefile`.
-
-Thanks to @Aar�nG for reporting this.
 
 ## GCC9 / CentOS7 build problems
 
@@ -135,7 +114,7 @@ Note: it is important to prevent the shell from expanding the wildcard pattern!
 Remote source and/or destination paths are specified a little more complex
 than e.g. in simple `scp(1)`:
 ```bash
-   [[tcp|udt][6]://][user@]host[#port]:/path 
+   [[tcp|udt|srt][6]://][user@]host[#port]:/path 
 ```
 So `host:/path` is the absolute minimum which needs to be specified for a
 remote URL and is shorthand for `tcp://host#4004:/path`.
@@ -149,6 +128,70 @@ over UDT/IPv6:46227.
 
 
 Both the e-transfer daemon and client support the "--help" command line option explain all options.
+
+## Daemon features
+
+### Access control lists
+
+The daemon can optionally read an access control list via the `--acl <file>` option. The file must be readable by the daemon and contains a YAML document describing per-section allow/deny glob patterns. Patterns follow the rules of `fnmatch(3)` with the `FNM_PATHNAME` flag; slashes must be matched explicitly, and a trailing `**` enables recursive matching beneath the given prefix. A bare `"**"` applies to all paths.
+
+```yaml
+read:
+  default:
+    allow: "**"
+  deny:
+    - "/restricted/**"
+
+write:
+  default:
+    deny: "**"
+  allow:
+    - "/data/projects/**"
+    - "/scratch/*/uploads"
+```
+
+Both top-level sections (`read` and `write`) are required; the daemon refuses to
+start if either mapping is missing. Inside a section:
+
+- `default` is a single rule that specifies whether matching paths should be allowed or denied when no other rule matches. The `allow`/`deny` key inside the default rule holds a glob pattern; if the path matches the pattern the decision is applied, otherwise the request is rejected. To apply the default to every path use "**".
+- `allow` and `deny` are optional lists of glob patterns evaluated in the order shown above. The first matching rule decides the outcome.
+
+Additional globbing notes:
+
+- Patterns use `fnmatch(3)` with `FNM_PATHNAME`, so `/foo/*` matches only immediate children of `/foo`.
+- A pattern ending in `**` (e.g. `/data/**`) matches the named directory and everything deeper beneath it.
+- `**` is only allowed as the final token in a pattern (with an optional `/` before it).
+
+
+### TCP keepalive controls
+
+Motivation: long-lived TCP command connections can be silently dropped by stateful firewalls and load-balancers when they sit idle, e.g. during a long/slow data transfer when no commands/replies flow between the client and daemon. The daemon now supports explicit TCP keepalive management (see note below the options though) instead of relying on per-host defaults.
+
+New options:
+
+- `--tcp-keepalive=true|false` – toggle `SO_KEEPALIVE` on accepted command
+  sockets. The default stays `false`; pass `true` to enable probing.
+- `--tcp-keepcount <n>` – (if supported by the platform) send at most `<n>`
+  probes before giving up. Minimum value is 1.
+- `--tcp-keepinterval <seconds>` – (if supported) number of seconds between
+  individual probes once keepalive is enabled.
+- `--tcp-keepidle <seconds>` – (if supported) idle time before the first
+  keepalive probe fires.
+
+The tuning flags are automatically exposed if the underlying OS indicate support. The tuning settings only take effect when keepalive is switched on. Unsupported parameters are ignored without failing the daemon startup.
+
+For background on Linux-specific keepalive defaults and sysctls, see the
+[Linux TCP keepalive tuning guide](https://www.man7.org/linux/man-pages/man7/tcp.7.html#TCP_KEEPALIVE).
+
+### Idle transfer timeout / automatic cleanup
+
+Motivation: previously, when clients would disappear mid-transfer (e.g. crashes, network splits, aborted processes), the daemon would keep their session state around, keeping a lock on the destination file, preventing starting a new transfer until the daemon was restarted. This can now be mitigated by setting an idle timeout, after which a transfer gets automatically removed from the daemon's state and retransfer can be attempted.
+
+New option:
+
+- `--inactive-timeout <seconds>` – if set to a positive value, the daemon spawns a watchdog thread that cancels transfers which have seen no progress for the specified number of seconds. The default is “disabled” (timeout ≤ 0).
+
+When a timeout triggers, the daemon force-closes the transfer’s command and data connections and removes the lock on the destination path in question, freeing it for a new attempt. Clients may want to use the `--resume` file copy mode to pick up where the stalled transfer left off.
 
 
 ## File copy modes
@@ -251,3 +294,12 @@ In case of problems with this (same port number on different address spaces)
 it should be easy enough to run the different protocols on different ports -
 it's transparent to the client, modulo firewall configuration(s) blocking
 those port(s) at either end of the transfer.
+
+## Transport protocols: UDT or SRT?
+
+The daemon can advertise several data-channel protocols; the client will try them in order until one connects. In practice you will usually choose between:
+
+- **UDT (UDP-based Data Transfer)** – a high-performance protocol that shines on dedicated, high-latency, or high-bandwidth links. It is extremely efficient for bulk-data moves when you control both ends of the network path and do not need encryption.
+- **SRT (Secure Reliable Transport)** – built on UDT’s ideas but a more stable implementation. Should add more robust NAT/firewall traversal. Definitely try to advertise an SRT data channel when traversing less predictable networks.
+
+**Note:** It is recommended to put SRT before UDT as clients will try to connect in order of daemon command line order. Older clients that do not support SRT do not get offered the SRT data channel - it will be filtered out, so to be ultimately compatible configure both SRT and UDT channels. Newer clients that do support SRT will prefer that over UDT in such a configuration.

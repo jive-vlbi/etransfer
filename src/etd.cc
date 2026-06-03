@@ -104,18 +104,42 @@ dbgMap = {
                                                                                 << endl);
                                                              }},
     {"tcp", [](etdc::etdc_fdptr pSok, std::string const& s) {
-                                                                etdc::so_rcvbuf  rcv;
-                                                                etdc::so_sndbuf  snd;
-                                                                etdc::getsockopt(pSok->__m_fd, rcv, snd);
-                                                                ETDCDEBUG(1, s << "/TCP rcvbuf = " << rcv << " sndbuf = " << snd << endl);
+                                                                etdc::so_rcvbuf    rcv;
+                                                                etdc::so_sndbuf    snd;
+                                                                etdc::so_keepalive ka;
+                                                                etdc::getsockopt(pSok->__m_fd, rcv, snd, ka);
+                                                                ETDCDEBUG(1, s << "/TCP rcvbuf = " << rcv << " sndbuf = " << snd << " keepalive = " << ka << endl);
                                                             }},
     {"tcp6", [](etdc::etdc_fdptr pSok, std::string const& s) {
-                                                                 etdc::so_rcvbuf  rcv;
-                                                                 etdc::so_sndbuf  snd;
-                                                                 etdc::ipv6_only  ipv6;
-                                                                 etdc::getsockopt(pSok->__m_fd, rcv, ipv6, snd);
-                                                                 ETDCDEBUG(1, s << "/TCP6 rcvbuf = " << rcv << " sndbuf = " << snd << ", ipv6 only = " << ipv6 << endl);
-                                                             }}
+                                                                 etdc::so_rcvbuf    rcv;
+                                                                 etdc::so_sndbuf    snd;
+                                                                 etdc::ipv6_only    ipv6;
+                                                                 etdc::so_keepalive ka;
+                                                                 etdc::getsockopt(pSok->__m_fd, rcv, ipv6, snd, ka);
+                                                                 ETDCDEBUG(1, s << "/TCP6 rcvbuf = " << rcv << " sndbuf = " << snd << ", ipv6 only = " << ipv6 << " keepalive = " << ka << endl);
+                                                             }},
+    {"srt", [](etdc::etdc_fdptr pSok, std::string const& s) {
+                                etdc::srt_mss     mss;
+                                etdc::srt_max_bw  maxbw;
+                                etdc::srt_sndsyn  sndsyn;
+                                etdc::srt_rcvsyn  rcvsyn;
+                                etdc::getsockopt(pSok->__m_fd, sndsyn, rcvsyn, mss, maxbw);
+                                ETDCDEBUG(1, s << "/SRT rcvsyn = " << rcvsyn << " sndsyn = " << sndsyn
+                                               << " mss=" << untag(mss)
+                                               << " max_bw=" << (untag(maxbw)<0 ? "Inf" : etdc::sciprint(untag(maxbw), "Bps"))
+                                               << endl);
+                             }},
+    {"srt6", [](etdc::etdc_fdptr pSok, std::string const& s) {
+                                 etdc::srt_mss     mss;
+                                 etdc::srt_max_bw  maxbw;
+                                 etdc::srt_sndsyn  sndsyn;
+                                 etdc::srt_rcvsyn  rcvsyn;
+                                 etdc::getsockopt(pSok->__m_fd, sndsyn, rcvsyn, mss, maxbw);
+                                 ETDCDEBUG(1, s << "/SRT6 rcvsyn = " << rcvsyn << " sndsyn = " << sndsyn
+                                                << " mss=" << untag(mss)
+                                                << " max_bw=" << (untag(maxbw)<0 ? "Inf" : etdc::sciprint(untag(maxbw), "Bps"))
+                                                << endl);
+                             }}
 };
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -129,21 +153,30 @@ dbgMap = {
 HUMANREADABLE(etdc::etdc_fdptr,  "address")
 HUMANREADABLE(etdc::mss_type,    "int (bytes)")
 HUMANREADABLE(etdc::max_bw_type, "int (bytes per second)")
+HUMANREADABLE(etdc::so_keepalive, "true|false")
+
+#ifdef ETDC_HAVE_TCP_KEEPALIVE
+HUMANREADABLE(etdc::tcp_keepcnt, "int")
+HUMANREADABLE(etdc::tcp_keepintvl, "int")
+HUMANREADABLE(etdc::tcp_keepidle, "int")
+#endif
+
+HUMANREADABLE(etdc::ACLptr,      "file")
 
 // Let's make the URL syntax at least somewhat similar to that of the client:
-//     protocol://[local address][:port]
+//     protocol://[local address][[:#]port]
 //
 // In the string below the digits under the '(' are the submatch indices of that group.
 static const std::regex rxURL{
     /* protocol */
-    "((tcp|udt)6?)://"
+    "((tcp|udt|srt)6?)://"
 //   12 
     /* optional host name or IPv6 'coloned hex' (with optional interface suffix) in literal []'s*/
     "([-a-z0-9\\.]+|\\[[:0-9a-f]+(/[0-9]{1,3})?(%[a-z0-9\\.]+)?\\])?" 
 //   3                           4             5
     /* port number - maybe default? */
-    "(:([0-9]+))?"
-//   6 7
+    "(?:[:#]([0-9]+))?"
+//             6
     , std::regex_constants::ECMAScript | std::regex_constants::icase
 };
 
@@ -159,12 +192,15 @@ static std::string unbracket(std::string const& h) {
 struct socketoptions_type {
 
     socketoptions_type():
-        bufSize{ 32*1024*1024 }, udtMSS{ 0 }, udtBW{ 0 }
+        bufSize{ 32*1024*1024 }, udtMSS{ 0 }, udtBW{ 0 }, srtMSS{ 0 }, srtBW{ 0 }, srtBufSize{ 0 }
     {}
 
     size_t            bufSize;
     etdc::mss_type    udtMSS;
     etdc::max_bw_type udtBW;
+    etdc::mss_type    srtMSS;
+    etdc::max_bw_type srtBW;
+    size_t            srtBufSize;
 };
 
 
@@ -190,7 +226,7 @@ struct string2socket_type_m {
 
         // Merge our settings with the default client settings
         etdc::detail::update_srv( srvr, etdc::host_type(unbracket(m[3])),
-                (m[7].length() ? port(m[7]) :  __m_default_port),
+                (m[6].length() ? port(m[6]) :  __m_default_port),
                 etdc::so_rcvbuf{ __m_sockopts.bufSize }, etdc::so_sndbuf{ __m_sockopts.bufSize },
                 etdc::udt_rcvbuf{ 32*1024*1024 },
                 etdc::blocking_type{ true });
@@ -201,6 +237,17 @@ struct string2socket_type_m {
 
         if( untag(__m_sockopts.udtBW) )
             etdc::detail::update_srv( srvr, etdc::udt_max_bw{ untag(__m_sockopts.udtBW) } );
+
+        if( untag(__m_sockopts.srtMSS) )
+            etdc::detail::update_srv( srvr, etdc::srt_mss{ untag(__m_sockopts.srtMSS) } );
+
+        if( untag(__m_sockopts.srtBW) )
+            etdc::detail::update_srv( srvr, etdc::srt_max_bw{ untag(__m_sockopts.srtBW) } );
+
+        if( __m_sockopts.srtBufSize )
+            etdc::detail::update_srv( srvr,
+                                      etdc::srt_rcvbuf{ static_cast<int>(__m_sockopts.srtBufSize) },
+                                      etdc::srt_sndbuf{ static_cast<int>(__m_sockopts.srtBufSize) } );
 
         fd = mk_server( untag(proto), srvr );
 
@@ -251,21 +298,88 @@ void signal_thread(signallist_type const& sigs, std::promise<int>& promise) {
     promise.set_value( received );
 }
 
+// Monitor the transfer list, and force-terminate/delete transfers that have
+// been inactive for a specified time. This prevents locking up the
+// resource(s) - e.g. addressing "path already in use" after the client has
+// been interrupted or the network connection has gone away without us
+// knowing about it.
+void transfer_monitor_thread(etdc::etd_state& serverState, float /*etdc::transfer_clock::duration*/ to) {
+    const auto timeout = std::chrono::duration_cast<etdc::transfer_clock::duration>(std::chrono::duration<float>(to));
+    while( true ) {
+        std::unique_lock<std::mutex>                 lk( serverState.lock );
+        if( serverState.condition.wait_for(lk, timeout, [&serverState]() { return atomic_load(&serverState.cancelled); }) )
+            break;
+        ETDCDEBUG(0, "transfer_monitor_thread: waking up!" << std::endl);
+        std::vector<etdc::uuid_type>                 timed_out_ids;
+        etdc::transfer_clock::time_point const       now( etdc::transfer_clock::now() );
+
+        for(etdc::transfermap_type::iterator xfer = serverState.transfers.begin(); xfer!=serverState.transfers.end(); xfer++) {
+            auto const last_update = xfer->second->lastUpdate.load();
+            if( (now - last_update) >= timeout ) {
+                // First attempt to transition cancelled -> true so we only
+                // kick the worker thread once.
+                bool expected = false;
+                if( xfer->second->cancelled.compare_exchange_strong(expected, true) ) {
+                    // The timeout_function should have been filled in by the
+                    // thread doing the actual transfer, so it knows the fd's
+                    // as well as its own thread-id
+                    xfer->second->timeout_function();
+                }
+
+                timed_out_ids.push_back( xfer->first );
+                ETDCDEBUG(0, "transfer_monitor_thread: transfer " << xfer->second->path << " [om=" <<
+                             xfer->second->openMode << "] [uuid=" << xfer->first << "] timed out" << std::endl);
+            }
+        }
+        lk.unlock();
+
+        for(auto const& uuid : timed_out_ids) {
+            bool removed = false;
+            while( !removed && !atomic_load(&serverState.cancelled) ) {
+                std::unique_lock<std::mutex> state_lock( serverState.lock );
+                auto it = serverState.transfers.find( uuid );
+                if( it==serverState.transfers.end() ) {
+                    removed = true;
+                    break;
+                }
+
+                std::unique_lock<std::mutex> transfer_guard( it->second->xfer_lock, std::try_to_lock );
+                if( !transfer_guard.owns_lock() ) {
+                    state_lock.unlock();
+                    std::this_thread::sleep_for( std::chrono::milliseconds(10) );
+                    continue;
+                }
+
+                serverState.transfers.erase( it );
+                serverState.condition.notify_all();
+                removed = true;
+            }
+        }
+    }
+    return;
+}
+
 
 int main(int argc, char const*const*const argv) {
     // First things first: block ALL signals
     etdc::BlockAll      ba;
     // Let's set up the command line parsing
     int                 message_level = 0;
+    float               timeOut{ -1.0 };
     std::string         logDirectory{}; // Used if daemonizing: empty = use syslog, otherwise create file in dir
+    etdc::etd_state     serverState;
     socketoptions_type  sockopts{};
+
     AP::ArgumentParser  cmd( AP::version( buildinfo() ),
                              AP::docstring("'ftp' like etransfer server daemon, to be used with etransfer client for "
                                            "high speed file/directory transfers."),
-                             AP::docstring("addresses are given like (tcp|udt)[6]://[local address][:port]\n"
+                             AP::docstring("addresses are given like (tcp|udt|srt)[6]://[local address][[:#]port]\n"
                                            "where:\n"
                                            "    [local address] defaults to all interfaces\n"
-                                           "    [port]          defaults to 4004 (command) or 8008 (data)\n"),
+                                           "    [port]          defaults to 4004 (command) or 8008 (data)\n\n"),
+                             AP::docstring("Special fake data source and/or sinks are available:\n"
+                                           "\t/dev/zero:<size>\tmemory data source of <size> bytes, supports [kMG][i]B suffix\n"
+                                           "\t/dev/null\tmemory data sink\n\n"),
                              AP::docstring("IPv6 coloned-hex format is supported for [local address] by "
                                            "enclosing the IPv6 address in square brackets: [fe80::1/64%enp4]") );
 
@@ -315,16 +429,88 @@ int main(int argc, char const*const*const argv) {
              AP::convert([](std::string const& s) { return mss(s); }),
              AP::docstring(std::string("Set UDT maximum segment size in bytes. Not honoured if data channel is TCP. Default: 1500")) );
 
+    // TCP KeepAlive and friends, if we have'm
+    cmd.add( AP::store_into(serverState.tcpKeepAlive), AP::long_name("tcp-keepalive"), AP::at_most(1),
+             AP::docstring("=true Enable, =false disable SO_KEEPALIVE"), AP::match("(true|false)"),
+             AP::convert([&serverState](std::string const& keepalive) {
+                     serverState.tcpKeepAliveSet = true;
+                     return etdc::so_keepalive{ keepalive=="true" };
+                    })
+            );
+
+#ifdef ETDC_HAVE_TCP_KEEPALIVE
+    // Allow specification of the TCP keepalive tunings
+    cmd.add( AP::store_into(serverState.tcpKeepCnt), AP::long_name("tcp-keepcount"), AP::at_most(1),
+             AP::minimum_value( etdc::tcp_keepcnt{1} ), // can't set to zero or negative value would be weird!
+             AP::docstring("Number of times keepalive probes should be sent, if keep alive is enabled"), 
+             AP::convert([](std::string const& keepcnt) { 
+                     int v;
+                     AP::detail::std_conversion_t()(v, keepcnt);
+                     return etdc::tcp_keepcnt{ v };
+                    } )
+            );
+
+    cmd.add( AP::store_into(serverState.tcpKeepIntvl), AP::long_name("tcp-keepinterval"), AP::at_most(1),
+             AP::minimum_value( etdc::tcp_keepintvl{1} ), // can't set to zero or negative value would be weird!
+             AP::docstring("Number of seconds between keepalive probes, if enabled"), 
+             AP::convert([](std::string const& keepintvl) { 
+                     int v;
+                     AP::detail::std_conversion_t()(v, keepintvl);
+                     return etdc::tcp_keepintvl{ v };
+                    } )
+            );
+
+    cmd.add( AP::store_into(serverState.tcpKeepIdle), AP::long_name("tcp-keepidle"), AP::at_most(1),
+             AP::minimum_value( etdc::tcp_keepidle{1} ), // can't set to zero or negative value would be weird!
+             AP::docstring("Number of seconds connection must be idle before keepalive probes are sent"), 
+             AP::convert([](std::string const& keepidle) { 
+                     int v;
+                     AP::detail::std_conversion_t()(v, keepidle);
+                     return etdc::tcp_keepidle{ v };
+                    } )
+            );
+#endif
+             
+
+
     // Allow server admin to limit bandwidth on data channels
     cmd.add( AP::store_into(sockopts.udtBW), AP::long_name("udt-bw"), AP::at_most(1),
              AP::convert([](std::string const& s) { return max_bw(s); }),
              AP::docstring("Set UDT maximum bandwidth. Without suffix the number is interpreted as bytes per second. A suffix of 'kMG[Bb]i?ps' is supported: Bps = bytes per second, bps = bits per second; i[Bb]ps is base-1024, [Bb]ps is base-1000. Bits per second will be recomputed and rounded to nearest integer bytes per second lower than the value. Not honoured if data channel is TCP or doing remote-to-remote transfers. Default: unlimited.") );
 
+    cmd.add( AP::store_into(sockopts.srtMSS), AP::long_name("srt-mss"), AP::at_most(1),
+             AP::minimum_value( etdc::mss_type{64} ), AP::maximum_value( etdc::mss_type{65536} ),
+             AP::convert([](std::string const& s) { return mss(s); }),
+             AP::docstring("Set SRT maximum segment size in bytes. Falls back to --udt-mss when omitted. Default: 1500") );
+
+    cmd.add( AP::store_into(sockopts.srtBW), AP::long_name("srt-bw"), AP::at_most(1),
+             AP::convert([](std::string const& s) { return max_bw(s); }),
+             AP::docstring("Set SRT maximum bandwidth. Inherits --udt-bw when not specified. Default: unlimited."),
+             AP::constrain([](etdc::max_bw_type const& v) { return untag(v)==-1 || untag(v)>0; }, "-1 (Inf) or > 0 for set rate") );
+
+    cmd.add( AP::store_into(sockopts.srtBufSize), AP::long_name("srt-buffer"), AP::at_most(1),
+             AP::docstring("Set SRT send/receive buffer size in bytes (SRTO_SNDBUF/SRTO_RCVBUF). No kMG suffix supported. Falls back to --buffer when not provided." ) );
 
     cmd.add( AP::store_into(sockopts.bufSize), AP::long_name("buffer"), AP::at_most(1),
              AP::docstring(std::string("Set send/receive buffer size. Default ")+etdc::repr(sockopts.bufSize)) );
 
     // command servers; we require at least one of 'm
+    cmd.add( AP::store_into(serverState.acl), AP::long_name("acl"), AP::at_most(1),
+             AP::docstring("Read YAML access control configuration from this file.\n\n"
+                          "\t brief YAML format summary:\n"
+                          "\t\tread|write:\n"
+                          "\t\t  default: {allow|deny}: <glob pattern>\n"
+                          "\t\t  allow|deny:\n"
+                          "\t\t    - \"<glob pattern>\"\n"
+                          "\t\t    - ...\n\n"
+                          "\t Patterns honour fnmatch(3) with FNM_PATHNAME.\n"
+                          "\t A pattern ending in \"**\" matches recursively under its prefix.\n"
+                          "\t \"**\" may only appear at the end (e.g. /data/**)."),
+             AP::convert([](std::string const& p) {
+                 ETDCSYSCALL(::access(p.c_str(), R_OK)==0, "ACL file '" << p << "' must exist and be readable");
+                 return std::make_shared<etdc::ACL>( etdc::ACL::readFromFile(p) );
+             }) );
+
     cmd.add( AP::collect<std::string>(), AP::long_name("command"),
              // Constraints on the number + form of the argument
              AP::at_least(1), AP::match(rxURL),
@@ -360,6 +546,10 @@ int main(int argc, char const*const*const argv) {
                                         (sb.st_mode & (S_IXOTH|S_IWOTH))==(S_IXOTH|S_IWOTH)
                                     );
                                 }, "Must be directory writable by the effective user/group" ) );
+
+    // Support a timeout period: any transfers inactive for this period will be deleted
+    cmd.add( AP::store_into(timeOut), AP::long_name("inactive-timeout"),
+             AP::docstring("Automatically remove transfers that are inactive for this amount of seconds (Default: never)") );
 
     // OK Let's check that mother
     cmd.parse(argc, argv);
@@ -403,7 +593,6 @@ int main(int argc, char const*const*const argv) {
     etdc::thread(signal_thread, signallist_type{{SIGHUP, SIGINT, SIGTERM, SIGSEGV}}, std::ref(killSigPromise)).detach();
 
     // Start threads for the command+data servers
-    etdc::etd_state            serverState;
     const string2socket_type_m mk_cmd ( port(4004), sockopts );
     const string2socket_type_m mk_data( port(8008), sockopts );
 
@@ -413,6 +602,12 @@ int main(int argc, char const*const*const argv) {
         serverState.udtMSS = sockopts.udtMSS;
     if( untag(sockopts.udtBW)>0 )
         serverState.udtMaxBW = untag(sockopts.udtBW);
+    if( sockopts.srtBufSize )
+        serverState.srtBufSize = sockopts.srtBufSize;
+    if( sockopts.srtMSS )
+        serverState.srtMSS = sockopts.srtMSS;
+    if( untag(sockopts.srtBW)>0 || untag(sockopts.srtBW)==-1 )
+        serverState.srtMaxBW = untag(sockopts.srtBW);
 
     // data servers first such that the command servers know which data ports are available
     for(auto&& datasrv: cmd.get<std::list<std::string>>("data")) {
@@ -425,6 +620,11 @@ int main(int argc, char const*const*const argv) {
     for(auto&& cmdsrv: cmd.get<std::list<std::string>>("command"))
         serverState.add_thread(&command_server_thread<SIGUSR1>, mk_cmd(cmdsrv), std::ref(serverState));
 
+    // And add a transfer-monitoring-thread when timeouts are requested
+    // timeOut <= 0 means "disabled"
+    if( timeOut>0.0f )
+        serverState.add_thread(&transfer_monitor_thread, std::ref(serverState), timeOut);
+
     // Now just wait ..
     killSigFuture.wait();
     try {
@@ -435,11 +635,24 @@ int main(int argc, char const*const*const argv) {
     }
     // Before starting to process cancellations, set the cancel flag
     std::atomic_store(&serverState.cancelled, true);
+    serverState.condition.notify_all();
 
     for(auto& cancel: serverState.cancellations)
         cancel();
 
-    // Now wait for all of them to finish?
+    // Proactively mark transfers cancelled so monitor can unwind immediately
+    {
+        etdc::scoped_lock lk(serverState.lock);
+        for(auto& entry : serverState.transfers)
+            entry.second->cancelled.store(true);
+        serverState.condition.notify_all();
+    }
+
+    // Now wait for all worker threads to finish before exiting main
+    {
+        std::unique_lock<std::mutex> lk(serverState.lock);
+        serverState.condition.wait(lk, [&serverState]() { return serverState.n_threads==0; });
+    }
     ETDCDEBUG(1, "main: terminating." << endl);
     return 0;
 }
@@ -513,8 +726,35 @@ void command_server_thread(etdc::etdc_fdptr pServer, etdc::etd_state& shared_sta
 
         // Command sockets typically do small messages so we set tcp_nodelay
         // (if the protocol is TCP-like that is!)
-        if( get_protocol(peernm).find("tcp")!=std::string::npos )
+        if( get_protocol(peernm).find("tcp")!=std::string::npos ) {
             etdc::setsockopt(pClient->__m_fd, etdc::tcp_nodelay{true});
+
+            // The TCP Keepalive options
+            // tcpKeepAliveSet will be set to true if a tcpKeepAlive
+            // setting is requested from the command line
+            if( shared_state.tcpKeepAliveSet )
+                etdc::setsockopt( pClient->__m_fd, shared_state.tcpKeepAlive );
+        
+#ifdef ETDC_HAVE_TCP_KEEPALIVE
+            // Only set TCP keepalive tunings if enabled on the socket
+            if( shared_state.tcpKeepAlive ) {
+                // Only override the values that have been changed from their
+                // default of 0 (the command line only allows values >=1 for these parameters)
+                if( untag(shared_state.tcpKeepCnt) ) {
+                    ETDCDEBUG(4, "Setting client connection TCP_KEEPCNT to " << shared_state.tcpKeepCnt << std::endl);
+                    etdc::setsockopt( pClient->__m_fd, shared_state.tcpKeepCnt );
+                }
+                if( untag(shared_state.tcpKeepIntvl) ) {
+                    ETDCDEBUG(4, "Setting client connection TCP_KEEPINTVL to " << shared_state.tcpKeepIntvl << std::endl);
+                    etdc::setsockopt( pClient->__m_fd, shared_state.tcpKeepIntvl );
+                }
+                if( untag(shared_state.tcpKeepIdle) ) {
+                    ETDCDEBUG(4, "Setting client connection TCP_KEEPIDLE to " << shared_state.tcpKeepIdle << std::endl);
+                    etdc::setsockopt( pClient->__m_fd, shared_state.tcpKeepIdle );
+                }
+            }
+#endif
+        }
 
         dbgMap[get_protocol(peernm)](pClient, "client"); 
 
@@ -666,7 +906,11 @@ void do_daemonize( void ) {
         // 2) still no known limit
         // either way, we still don't know how many file descriptors to
         // close ...
-        rl.rlim_max = (scopenmax==-1) ? 1024 : scopenmax;
+        // Both ternary branches forced to rlim_t (the destination's
+        // unsigned type) so the ?:-expression has a single signedness
+        // and -Wsign-conversion doesn't fire. The ==-1 test already
+        // guarantees scopenmax is non-negative on the taken branch.
+        rl.rlim_max = (scopenmax==-1) ? rlim_t{1024} : static_cast<rlim_t>(scopenmax);
     }
     // do not close stderr - we've redirected that to syslog
     for(decltype(rl.rlim_max) i = 0; i<rl.rlim_max; i++)

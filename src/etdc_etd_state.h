@@ -22,10 +22,12 @@
 
 // Own headers
 #include <etdc_fd.h>
+#include <etd_acl.h>
 #include <etdc_uuid.h>
 #include <etdc_thread.h>
 #include <utilities.h>
 #include <etdc_stringutil.h>
+#include <etdc_setsockopt.h>
 
 // Standard C++ headers
 #include <map>
@@ -84,20 +86,30 @@ namespace etdc {
     }
 
 
+    using transfer_clock     = std::chrono::steady_clock;
+    using lastupdate_type    = std::atomic<transfer_clock::time_point>;
+    using transfer_timeout_f = std::function<void(void)>;
+
     // We keep per-transfer properties in here
     struct transferprops_type {
-        std::string                 path;
-        etdc::etdc_fdptr            fd, data_fd;
-        const openmode_type         openMode;
-        std::mutex                  xfer_lock;
-        std::atomic<bool>           cancelled;
+        std::string           path;
+        etdc::etdc_fdptr      fd, data_fd;
+        const openmode_type   openMode;
+        std::mutex            xfer_lock;
+        std::atomic<bool>     cancelled;
+        lastupdate_type       lastUpdate;
+        transfer_timeout_f    timeout_function;
 
         // we cannot be copied or default constructed! (because of our unique_ptr)
-        transferprops_type()                          = delete;
+        transferprops_type()                           = delete;
+        transferprops_type( transferprops_type const&) = delete;
 
         transferprops_type(etdc::etdc_fdptr efd, std::string const& p, openmode_type om):
-            path(p), fd(efd), openMode(om)
-        { cancelled.store( false ); }
+            path(p), fd(efd), openMode(om), timeout_function( []{} )
+        {
+            cancelled.store( false );
+            lastUpdate.store( transfer_clock::now() );
+        }
     }; 
 
     using cancel_fn         = std::function<void(void)>;
@@ -110,17 +122,35 @@ namespace etdc {
     // Keep global server state
     struct etd_state {
         size_t                  bufSize{ 32*1024*1024 };
+        size_t                  srtBufSize{ 0 };
         std::mutex              lock;
         unsigned int            n_threads;
+        etdc::ACLptr            acl;
         etdc::mss_type          udtMSS{ 0/*1500*/ };
+        etdc::mss_type          srtMSS{ 0 };
         etdc::max_bw_type       udtMaxBW{ 0/*-1*/ };
+        etdc::max_bw_type       srtMaxBW{ 0 };
         cancellist_type         cancellations;
         transfermap_type        transfers;
         std::atomic<bool>       cancelled;
         dataaddrlist_type       dataaddrs;
         std::condition_variable condition;
 
+        etdc::so_keepalive      tcpKeepAlive;
+        bool                    tcpKeepAliveSet;
+#ifdef ETDC_HAVE_TCP_KEEPALIVE
+        etdc::tcp_keepcnt       tcpKeepCnt;
+        etdc::tcp_keepintvl     tcpKeepIntvl;
+        etdc::tcp_keepidle      tcpKeepIdle;
+#endif
+
         etd_state() : n_threads{ 0 }, cancelled{ false }
+                     , tcpKeepAlive{ false }, tcpKeepAliveSet{ false }
+#ifdef ETDC_HAVE_TCP_KEEPALIVE
+                     , tcpKeepCnt{0}
+                     , tcpKeepIntvl{0}
+                     , tcpKeepIdle{0}
+#endif
         {}
 
 
@@ -142,7 +172,7 @@ namespace etdc {
             ETDCDEBUG(4, "~etd_state/need to wait for " << n_threads << " threads" << std::endl);
             std::unique_lock<std::mutex>  lk( lock );
             // Wait for n_threads to reach 0
-            condition.wait(lk, [this](){ return n_threads==0; } );
+            condition.wait(lk, [this](){ return this->n_threads==0; } );
         }
 
         private:

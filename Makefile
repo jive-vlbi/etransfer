@@ -8,10 +8,14 @@ BINDIR=/usr/local/bin
 BUILDINFO=$(shell hostname; echo ":"; date '+%d-%b-%Y : %Hh%Mm%Ss' )
 DATE=$(shell date '+%d-%b-%Y %Hh%Mm%Ss')
 
-# on some compilers of the gcc.4.3.<small digit> the "-Wconversion" flag
-# is broken - it produces warning for perfectly legitimate code.
-# All files that could be fixed are fixed, however atomic.h can't be 
-BASEOPT=-fPIC $(OPT) -Wall -W -Werror -Wextra -pedantic -DB2B=$(B2B) -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -D_GNU_SOURCE -U_GNU_SOURCE -D__STDC_FORMAT_MACROS -Wcast-qual -Wwrite-strings -Wredundant-decls -Wfloat-equal -Wshadow -D_FILE_OFFSET_BITS=64
+# NOTE: -Wconversion is intentionally *not* enabled. It produces a flood
+# of -Wsign-conversion noise at every POSIX I/O boundary (read/write
+# returning ssize_t, fed into size_t buffers) where the typical "fix"
+# is a static_cast<size_t>() that hides nothing and catches nothing.
+# See docs/checked-conversions-plan.md for a sketch of how we'd revisit
+# this with throwing checked conversions (etdc::narrow) if we ever want
+# real bounds-checking at those boundaries.
+BASEOPT=-fPIC $(OPT) -Wall -W -Werror -Wextra -pedantic -pedantic-errors -DB2B=$(B2B) -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -D__STDC_FORMAT_MACROS -Wcast-qual -Wwrite-strings -Wredundant-decls -Wfloat-equal -Wshadow -Wundef -D_FILE_OFFSET_BITS=64
 
 CCOPT=$(BASEOPT) -Wbad-function-cast -Wstrict-prototypes
 CXXOPT=$(BASEOPT) -std=c++11 
@@ -75,26 +79,26 @@ mkobjs=$(foreach O, $(patsubst %.c, %.co, $(patsubst %.cc, %.cco, $(patsubst %.S
 #         only set this variable if you actually need it
 
 # etransfer daemon
-etd_SRC=src/etd.cc src/reentrant.cc src/etdc_fd.cc src/etdc_etdserver.cc src/etdc_debug.cc
-etd_VERSION=1.2
+etd_SRC=src/etd.cc src/reentrant.cc src/etdc_fd.cc src/etdc_etdserver.cc src/etdc_debug.cc src/etd_acl.cc
+etd_VERSION=$(shell ./get_version)
 etd_RELEASE=dev
 etd_OBJS=$(call mkobjs,etd)
 
 # targets that etd depends upon
-# Link in support for UDT  
+# Link in support for UDT and SRT
 #etd_DEPS=libudt4hv pthread
-etd_DEPS=libudt5ab pthread
+etd_DEPS=libudt5ab libsrt5ab fkyaml pthread
 
 # etransfer client
-etc_SRC=src/etc.cc src/reentrant.cc src/etdc_fd.cc src/etdc_etdserver.cc src/etdc_debug.cc
-etc_VERSION=1.2
+etc_SRC=src/etc.cc src/reentrant.cc src/etdc_fd.cc src/etdc_etdserver.cc src/etdc_debug.cc src/etd_acl.cc
+etc_VERSION=$(shell ./get_version)
 etc_RELEASE=dev
 etc_OBJS=$(call mkobjs,etc)
 
-# targets that etd depends upon
-# Link in support for UDT  
+# targets that etc depends upon
+# Link in support for UDT and SRT
 #etc_DEPS=libudt4hv pthread
-etc_DEPS=libudt5ab pthread
+etc_DEPS=libudt5ab libsrt5ab pthread
 
 
 t3_SRC=src/t3.cc
@@ -120,6 +124,11 @@ ttls_VERSION=0
 ttls_OBJS=$(call mkobjs,ttls)
 ttls_DEPS=pthread
 
+tACL_SRC=src/tACL.cc src/etd_acl.cc
+tACL_VERSION=0
+tACL_OBJS=$(call mkobjs,tACL)
+tACL_DEPS=fkyaml
+
 # Process make command line targets and filter out the ones that we should build
 # This is only to be able to include the correct dependency files
 TODO=$(strip $(filter-out install, $(filter-out Repos%, $(filter-out chown, $(filter-out Makefile, $(filter-out clean, $(filter-out info, $(filter-out all, $(MAKECMDGOALS)))))))))
@@ -127,22 +136,31 @@ ifeq ($(TODO),)
 	TODO=etc etd
 endif
 
-# If any of the targets need libutd4, add that include path
+# If any of the targets need libudt, add that include path
 ifneq ($(strip $(findstring libudt, $(foreach P, $(TODO), $($(P)_DEPS)))),)
 	INCD+=-I$(shell pwd)/libudt5ab
 	PLATFORMLIBS+=-L./$(repos)/libudt5ab -ludt5ab
 	#INCD+=-I$(shell pwd)/libudt4hv
 	#PLATFORMLIBS+=-L./$(repos)/libudt4hv -ludt4hv
 endif
+# If any of the targets need libsrt, add that include path
+ifneq ($(strip $(findstring libsrt, $(foreach P, $(TODO), $($(P)_DEPS)))),)
+	INCD+=-I$(shell pwd)/libsrt5ab/srtcore
+	PLATFORMLIBS+=-L./$(repos)/libsrt5ab -lsrt5ab
+endif
 # If any of the targets need pthread, add that library
 ifneq ($(strip $(findstring pthread, $(foreach P, $(TODO), $($(P)_DEPS)))),)
 	BASEOPT+=-pthread -D_REENTRANT -D_POSIX_PTHREAD_SEMANTICS 
 	PLATFORMLIBS+=-lpthread
 endif
+# If any of the targets need the YAML parser, add that library
+ifneq ($(strip $(findstring fkyaml, $(foreach P, $(TODO), $($(P)_DEPS)))),)
+	INCD+=-I$(shell pwd)/fkyaml
+endif
 
 
 # Hints to gmake 
-.PHONY: info clean %.depend %.version %.target libudt4hv libudt5ab pthread %.dep
+.PHONY: info clean %.depend %.version %.target libudt4hv libudt5ab libsrt5ab pthread %.dep
 .PRECIOUS: $(repos)/src/%_version.cco $(repos)/%.d
 
 
@@ -155,15 +173,21 @@ all: $(foreach P, $(DEFAULTTARGETS), $(addsuffix .target, $(P)))
 info:
 	@echo "info: TODO=$(TODO)"; echo "repos=$(repos)"; echo "OBJS: $(foreach T, $(TODO), $($(T)_OBJS))"
 	@echo "INCD=$(INCD)"; echo "D=$(D)"; echo "PLATFORMLIBS=$(PLATFORMLIBS)"
+	@$(MAKE) -C libudt5ab -f Makefile B2B="$(B2B)" CPP="$(CXX)" REPOS="$(repos)" BUILD="$(BUILD)" info
+	@$(MAKE) -C libsrt5ab -f Makefile B2B="$(B2B)" CPP="$(CXX)" REPOS="$(repos)" BUILD="$(BUILD)" info
 
 clean: $(foreach P, $(DEFAULTTARGETS), $(addsuffix .clean, $(P)))
 	-$(MAKE) -C libudt4hv -f Makefile B2B="$(B2B)" REPOS="$(repos)" clean
+	-$(MAKE) -C libudt5ab -f Makefile B2B="$(B2B)" CPP="$(CXX)" REPOS="$(repos)" BUILD="$(BUILD)" clean
+	-$(MAKE) -C libsrt5ab -f Makefile B2B="$(B2B)" CPP="$(CXX)" REPOS="$(repos)" BUILD="$(BUILD)" clean
 	@echo "cleaned: $(DEFAULTTARGETS)"
 
 libudt4hv: 
 	@$(MAKE) -C libudt4hv -f Makefile B2B="$(B2B)" CPP="$(CXX)" REPOS="$(repos)" BUILD="$(BUILD)"
 libudt5ab: 
 	@$(MAKE) -C libudt5ab -f Makefile B2B="$(B2B)" CPP="$(CXX)" REPOS="$(repos)" BUILD="$(BUILD)"
+libsrt5ab:
+	@$(MAKE) -C libsrt5ab -f Makefile B2B="$(B2B)" CPP="$(CXX)" REPOS="$(repos)" BUILD="$(BUILD)"
 
 %.target: %.version %.depend %.dep
 	$(LD) -o $* $($*_OBJS) $(repos)/src/$*_version.cco $(LIBD) $(PLATFORMLIBS) $($*F_LIBS)
@@ -181,7 +205,7 @@ libudt5ab:
 # Let g++ generate deps for the source files. Then we manually add the
 # dependencies listed in the per program specification and also write
 # a specific target rule
-$(repos)/%.d: 
+$(repos)/%.d: Makefile
 	@ mkdir -p $(repos)
 	@ $(CXX) -MM $(CXXOPT) $(INCD) $($(*F)_SRC) | sed -e 's@^\(.*\)\.o:@$(repos)/src/\1.cco:@;' > $@
 	@ export TMP="`cat $@ | sed -n '/^[^:]*:/{ s/^[^:]*: *//;p; }' | tr ' ' '\n' | sort | uniq | tr '\n' ' ' | sed 's#\\\\##g'`"; printf "$(repos)/$*.d $(repos)/src/$*_version.cco: src/version.h $${TMP}\n" >> $@;
@@ -193,7 +217,7 @@ $(repos)/src/%_version.cco:
 	@ mkdir -p $(repos)
 	@ export TMP=`dirname $@`; if [ ! -d "$${TMP}" ]; then mkdir -p "$${TMP}"; fi;
 	@ if [ ! -f ".$*.seq" ]; then echo 0 > .$*.seq; fi;
-	@ export SEQ=`cat .$*.seq`; sed 's/@@PROG@@/$(*F)/;s/@@PROG_VERSION@@/$($(*F)_VERSION)-$($(*F)_RELEASE)-$(BUILD)/;s/@@B2B@@/$(B2B)/;s/@@RELEASE@@/$($(*F)_RELEASE)/;s/@@BUILD@@/$(BUILD)/;s/@@BUILDINFO@@/$(BUILDINFO)/;s/@@DATE@@/$(DATE)/;' src/version.in | $(CXX) -DSEQNR=\"$${SEQ}\" $(CXXOPT) $(INCD) -c -o $@ -pipe -x c++ -; echo `expr $${SEQ} + 1` > .$*.seq
+	@ export SEQ=`cat .$*.seq`; sed 's/@@PROG@@/$(*F)/;s/@@PROG_VERSION@@/$($(*F)_VERSION)/;s/@@B2B@@/$(B2B)/;s/@@RELEASE@@/$($(*F)_RELEASE)/;s/@@BUILD@@/$(BUILD)/;s/@@BUILDINFO@@/$(BUILDINFO)/;s/@@DATE@@/$(DATE)/;' src/version.in | $(CXX) -DSEQNR=\"$${SEQ}\" $(CXXOPT) $(INCD) -c -o $@ -pipe -x c++ -; echo `expr $${SEQ} + 1` > .$*.seq
 
 #@echo "[compile] $< into $@"
 $(repos)/%.cco: %.cc

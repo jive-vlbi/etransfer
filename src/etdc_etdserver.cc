@@ -31,14 +31,57 @@
 #include <glob.h>
 #include <string.h>
 
+// Make sure our zignal handlert has C-linkage
+extern "C" {
+    void dummy_timeout_signal_handler(int) { }
+}
+
 namespace etdc {
 
     sockname2string_fn sockname2str( etdc::protocolversion_type v) {
         if( v==0 || v== ETDServerInterface::unknownProtocolVersion )
             return sockname2str_v0;
-        if( v==1 )
+        if( v>=1 )
             return sockname2str_v1;
         throw std::runtime_error("sockname2str/request for unsupported protocolversion " + etdc::repr(v));
+    }
+
+    // Filter a list of data-channel addresses, removing any whose scheme is
+    // not understood by a peer that speaks the given protocol version.
+    //
+    // This is the single source of truth for the (data-channel scheme) <->
+    // (protocol version) mapping shared between:
+    //   * the daemon's `data-channel-addr[-ext]` reply handler, which filters
+    //     what it advertises to a less-capable direct peer;
+    //   * `ETDProxy::sendFile`, which filters the addresses it forwards to a
+    //     less-capable source daemon when orchestrating a daemon-to-daemon
+    //     transfer (the source daemon will dial these on the client's behalf).
+    //
+    // Schemes introduced at each protocol version:
+    //   v0+: tcp, tcp6, udt, udt6
+    //   v3+: srt, srt6
+    //
+    // When extending the protocol with new data-channel schemes, add the
+    // version gate below; both call-sites pick the change up automatically.
+    static void filter_dataaddrs_for_protocol(dataaddrlist_type& addrs,
+                                              protocolversion_type peerVersion) {
+        // Constraint: peers at version <= 1 only know the original family
+        // (tcp, tcp6, udt, udt6). Drop anything else.
+        if( peerVersion<=1 ) {
+            addrs.remove_if([](sockname_type const& sn) {
+                auto const& proto = get_protocol(sn);
+                return !(proto=="tcp" || proto=="tcp6" || proto=="udt" || proto=="udt6");
+            });
+        }
+        // Constraint: SRT was introduced at version 3. Drop SRT for older
+        // peers (covers the v0 / v1 cases above redundantly, and the v2 case
+        // explicitly).
+        if( peerVersion<3 ) {
+            addrs.remove_if([](sockname_type const& sn) {
+                auto const& proto = get_protocol(sn);
+                return (proto=="srt" || proto=="srt6");
+            });
+        }
     }
 
     // Two specializations of reading off_t from std::string
@@ -122,8 +165,22 @@ namespace etdc {
         // and (2) does not get globbed for it is just one file
         const bool              isDevZero( std::regex_match(path, etdc::rxDevZero) );
 
-        if( isDevZero ) 
+        etdc::ACLptr const      acl = __m_shared_state.get().acl;
+        std::function<bool(std::string const&)> aclAllows = [](std::string const&) { return true; };
+
+        if( acl ) {
+            aclAllows = [acl](std::string const& candidate) {
+                std::string normalized( detail::normalize_path(candidate) );
+                if( normalized.size()>1 && normalized.back()=='/' )
+                    normalized.erase( normalized.size()-1 );
+                return acl->allowRead( normalized );
+            };
+        }
+
+        if( isDevZero ) {
+            ETDCASSERT(aclAllows(path), "listPath(" << path << ") denied by ACL");
             return filelist_type{ path };
+        }
 
         // glob() is MT unsafe so we had better make sure only one thread executes this
         //static std::mutex       globMutex;
@@ -155,8 +212,18 @@ namespace etdc {
         //    std::lock_guard<std::mutex> scopedlock(globMutex);
         //}
         
-        // Now that we have the results, we can 
-        return filelist_type(&files->gl_pathv[0], &files->gl_pathv[files->gl_pathc]);
+        filelist_type results;
+
+        for(size_t idx = 0; idx<files->gl_pathc; ++idx) {
+            std::string entry( files->gl_pathv[idx] );
+
+            if( !aclAllows(entry) )
+                continue;
+
+            results.emplace_back( std::move(entry) );
+        }
+
+        return results;
     }
 
     //////////////////////////////////////////////////////////////////////////////////////
@@ -177,9 +244,12 @@ namespace etdc {
 
         // Before we allow doing anything at all we must make sure
         // that we're not already busy doing something else
-        ETDCASSERT(transfers.find(__m_uuid)==transfers.end(), "requestFileWrite: this server is already busy");
+        ETDCASSERT(transfers.find(__m_uuid)==transfers.end(), "requestFileWrite: this server is already busy [uuid=" << __m_uuid << "]");
 
         const std::string nPath( detail::normalize_path(path) );
+
+        if( shared_state.acl )
+            ETDCASSERT(shared_state.acl->allowWrite(nPath), "requestFileWrite(" << path << ") denied by ACL");
 
         // Attempt to open path new, write or append [reject read!]
         ETDCASSERT(allowedModes.find(mode)!=std::end(allowedModes),
@@ -195,7 +265,7 @@ namespace etdc {
                                     (std::find_if(std::begin(transfers), std::end(transfers),
                                                 [&](transfermap_type::value_type const& vt) { return vt.second->path==nPath; })
                                     == std::end(transfers)));
-        ETDCASSERT(pathPresent==false, "requestFileWrite(" << path << ") - the path is already in use");
+        ETDCASSERT(pathPresent==false, "requestFileWrite(" << path << ") - the path is already in use [uuid=" << __m_uuid << "]");
 
         // Transform to int argument to open(2) + append some flag(s) if necessary/available
         int  omode = static_cast<int>(mode);
@@ -204,8 +274,9 @@ namespace etdc {
         if( mode==openmode_type::SkipExisting )
             omode = ~omode;
 
-#if O_LARGEFILE
+#ifdef O_LARGEFILE
         // set large file if the current system has it
+        // (macOS doesn't define O_LARGEFILE -- offsets are 64-bit by default)
         omode |= O_LARGEFILE;
 #endif
 
@@ -218,7 +289,7 @@ namespace etdc {
         //const uuid_type uuid{ uuid_type::mk() };
 
         ETDCASSERT(transfers.emplace(__m_uuid, std::unique_ptr<transferprops_type>(new etdc::transferprops_type(fd, nPath, mode))).second,
-                   "Failed to insert new entry, request file write '" << path << "'");
+                   "Failed to insert new entry, request file write '" << path << "' [uuid=" << __m_uuid << "]");
         // and return the uuid + alreadyhave
         return result_type(__m_uuid, fsize);
     }
@@ -232,22 +303,26 @@ namespace etdc {
         auto&                       transfers( shared_state.transfers );
 
         // Check if we're not already busy
-        ETDCASSERT(transfers.find(__m_uuid)==transfers.end(), "requestFileRead: this server is already busy");
+        ETDCASSERT(transfers.find(__m_uuid)==transfers.end(), "requestFileRead: this server is already busy [uuid=" << __m_uuid << "]");
 
         // Before doing anything - see if this server already has an entry for this (normalized) path -
         // we can only honour this request if it's opened for reading [multiple readers = ok]
         const std::string nPath( detail::normalize_path(path) );
+
+        if( shared_state.acl )
+            ETDCASSERT(shared_state.acl->allowRead(nPath), "requestFileRead(" << path << ") denied by ACL");
         const auto  pathPtr = std::find_if(std::begin(transfers), std::end(transfers),
                                            std::bind([&](std::string const& p) { return p==nPath; },
                                                      std::bind(std::mem_fn(&transferprops_type::path), std::bind(etdc::snd_type(), std::placeholders::_1))));
         ETDCASSERT(pathPtr==std::end(transfers) || pathPtr->second->openMode==openmode_type::Read,
-                   "requestFileRead(" << path << ") - the path is already in use");
+                   "requestFileRead(" << path << ") - the path is already in use [uuid=" << __m_uuid << "]");
 
         // Transform to int argument to open(2) + append some flag(s) if necessary/available
         int  omode = static_cast<int>(etdc::openmode_type::Read);
 
-#if O_LARGEFILE
+#ifdef O_LARGEFILE
         // set large file if the current system has it
+        // (macOS doesn't define O_LARGEFILE -- offsets are 64-bit by default)
         omode |= O_LARGEFILE;
 #endif
 
@@ -260,10 +335,10 @@ namespace etdc {
 
         // Assert that we can seek to the requested position
         ETDCASSERT(fd->lseek(fd->__m_fd, alreadyhave, SEEK_SET)!=static_cast<off_t>(-1),
-                   "Cannot seek to position " << alreadyhave << " in file " << path << " - " << etdc::strerror(errno));
+                   "Cannot seek to position " << alreadyhave << " in file " << path << " - " << etdc::strerror(errno) << " [uuid=" << __m_uuid << "]");
 
         auto insres = transfers.emplace(__m_uuid, std::unique_ptr<transferprops_type>( new etdc::transferprops_type(fd, nPath, openmode_type::Read)));
-        ETDCASSERT(insres.second, "Failed to insert new entry, request file read '" << path << "'");
+        ETDCASSERT(insres.second, "Failed to insert new entry, request file read '" << path << "' [uuid=" << __m_uuid << "]");
         return result_type(__m_uuid, sz-alreadyhave);
     }
 
@@ -274,7 +349,7 @@ namespace etdc {
     }
 
     bool ETDServer::removeUUID(etdc::uuid_type const& uuid) {
-        ETDCASSERT(uuid==__m_uuid, "Cannot remove someone else's UUID!");
+        ETDCASSERT(uuid==__m_uuid, "Cannot remove someone else's UUID! [uuid=" << __m_uuid << "]");
 
         // We need to do some thinking about locking sequence because we need
         // a lock on the shared state *and* a lock on the transfer
@@ -334,7 +409,8 @@ namespace etdc {
     }
 
     xfer_result ETDServer::sendFile(uuid_type const& srcUUID, uuid_type const& dstUUID, 
-                             off_t todo, dataaddrlist_type const& dataAddrs) {
+                             off_t todo, dataaddrlist_type const& dataAddrs,
+                             progress_fn const& progress) {
         // 1a. Verify that the srcUUID is our UUID
         ETDCASSERT(srcUUID==__m_uuid, "The srcUUID '" << srcUUID << "' is not our UUID");
 
@@ -385,7 +461,7 @@ namespace etdc {
             etdc::detail::cancelfn_type isCancelled{ [&]( void ) { return shared_state.cancelled.load() || transfer.cancelled.load(); } };
 
             // Verify that indeed we are configured for file read
-            ETDCASSERT(transfer.openMode==openmode_type::Read, "This server was initialized, but not for reading a file");
+            ETDCASSERT(transfer.openMode==openmode_type::Read, "This server was initialized, but not for reading a file [uuid=" << __m_uuid << "]");
 
             // Great. Now we attempt to connect to the remote end
 
@@ -422,7 +498,7 @@ namespace etdc {
                     const auto mss_to_use = mss_map.find( key_type{oMSS>0, tMSS>0} )->second(oMSS, tMSS);
 
                     ETDCDEBUG(4, "ETDServer::sendFile/use MSS=" << untag(mss_to_use) << " [ours=" << oMSS << ", "
-                                                                << get_host(addr) << "=" << tMSS << "]" << std::endl);
+                                                                << get_host(addr) << "=" << tMSS << "] [uuid=" << __m_uuid << "]" << std::endl);
                     if( untag(mss_to_use) ) 
                         etdc::detail::update_clnt( clnt, mss_to_use );
 
@@ -443,12 +519,12 @@ namespace etdc {
                     const auto maxbw = maxbw_map.find( key_type{oBW>0, tBW>0} )->second(oBW, tBW);
 
                     ETDCDEBUG(4, "ETDServer::sendFile/use MaxBW=" << untag(maxbw) << " [ours=" << oBW << ", "
-                                                                << get_host(addr) << "=" << tBW << "]" << std::endl);
+                                                                << get_host(addr) << "=" << tBW << "] [uuid=" << __m_uuid << "]" << std::endl);
                         
                     etdc::detail::update_clnt( clnt, maxbw );
 
                     transfer.data_fd = mk_client( get_protocol(addr), clnt );
-                    ETDCDEBUG(2, "sendFile/connected to " << addr << std::endl);
+                    ETDCDEBUG(2, "sendFile/connected to " << addr << " [uuid=" << __m_uuid << "]" << std::endl);
                     break;
                 }
                 catch( std::exception const& e ) {
@@ -475,6 +551,23 @@ namespace etdc {
             std::string         reason;
             const std::string   msg( msg_buf.str() );
             auto const          start_tm = std::chrono::high_resolution_clock::now();
+            // Progress reporting throttle: at most once per 100ms (plus a
+            // final/completion tick). Callback exceptions are swallowed so a
+            // misbehaving renderer cannot corrupt the transfer result.
+            auto                last_report_tm = start_tm;
+            auto const          report_interval = std::chrono::milliseconds(100);
+            auto                report_progress = [&](bool force) {
+                if( !progress )
+                    return;
+                auto const now = std::chrono::high_resolution_clock::now();
+                if( !force && (now - last_report_tm) < report_interval )
+                    return;
+                last_report_tm = now;
+                double const elapsed = std::chrono::duration<double>(now - start_tm).count();
+                try { progress(nTodo - todo, nTodo, elapsed); } catch(...) { /* swallow */ }
+            };
+            // Initial 0-byte tick so the UI can render a baseline immediately.
+            report_progress(true);
             transfer.data_fd->write(transfer.data_fd->__m_fd, msg.data(), msg.size());
 
             while( todo>0 && !(cancelled = isCancelled()) ) {
@@ -492,18 +585,27 @@ namespace etdc {
                     ssize_t const thisWrite = transfer.data_fd->write(transfer.data_fd->__m_fd, &buffer[nWritten], nRead-nWritten);
 
                     if( thisWrite<=0 ) {
-                        reason   = ((thisWrite==-1) ? std::string(etdc::strerror(errno)) : std::string("write should never have returned 0"));
+                        reason   = ((thisWrite==-1) ? std::string(etdc::strerror(errno)) : std::string("remote server hung up connection"));
                         remoteOK = false;
                         break;
                     }
+//                    if( thisWrite<=0 ) {
+//                        reason   = ((thisWrite==-1) ? std::string(etdc::strerror(errno)) : std::string("write should never have returned 0"));
+//                        remoteOK = false;
+//                        break;
+//                    }
                     nWritten += thisWrite;
                 }
                 if( nWritten<nRead )
                     break;
                 todo -= (off_t)nWritten;
+                report_progress(false);
                 if( (cancelled = isCancelled()) )
                     break;
             }
+            // Final progress tick so the UI sees the terminal byte count
+            // before the OK/ERR reply is emitted further up the stack.
+            report_progress(true);
             // if we make it out of the loop, todo should be <= 0 and terminate the outer loop
             // wait here until the recipient has acknowledged receipt of all bytes
             // But that only makes sense if the destination is still alive!
@@ -511,9 +613,9 @@ namespace etdc {
             if( remoteOK && !cancelled ) {
                 char    ack;
 
-                ETDCDEBUG(4, "sendFile: waiting for remote ACK ..." << std::endl);
+                ETDCDEBUG(4, "sendFile: waiting for remote ACK ... [uuid=" << __m_uuid << "]" << std::endl);
                 transfer.data_fd->read(transfer.data_fd->__m_fd, &ack, 1);
-                ETDCDEBUG(4, "sendFile: ... got it" << std::endl);
+                ETDCDEBUG(4, "sendFile: ... got it [uuid=" << __m_uuid << "]" << std::endl);
             }
             auto const          end_tm = std::chrono::high_resolution_clock::now();
             return cancelled ? xfer_result(false, 0, "Cancelled", xfer_result::duration_type()) :
@@ -523,7 +625,8 @@ namespace etdc {
     }
 
     xfer_result ETDServer::getFile(uuid_type const& srcUUID, uuid_type const& dstUUID, 
-                            off_t todo, dataaddrlist_type const& dataAddrs) {
+                            off_t todo, dataaddrlist_type const& dataAddrs,
+                            progress_fn const& progress) {
         // 1a. Verify that the dstUUID is our UUID
         ETDCASSERT(dstUUID==__m_uuid, "The dstUUID '" << dstUUID << "' is not our UUID");
 
@@ -614,7 +717,7 @@ namespace etdc {
                     const auto mss_to_use = mss_map.find( key_type{oMSS>0, tMSS>0} )->second(oMSS, tMSS);
 
                     ETDCDEBUG(4, "ETDServer::getFile/use MSS=" << untag(mss_to_use) << " [ours=" << oMSS << ", "
-                                                               << get_host(addr) << "=" << tMSS << "]" << std::endl);
+                                                               << get_host(addr) << "=" << tMSS << "] [uuid=" << __m_uuid << "]" << std::endl);
                     if( untag(mss_to_use) ) 
                         etdc::detail::update_clnt( clnt, mss_to_use );
 
@@ -635,13 +738,13 @@ namespace etdc {
                     const auto maxbw = maxbw_map.find( key_type{oBW>0, tBW>0} )->second(oBW, tBW);
 
                     ETDCDEBUG(4, "ETDServer::getFile/use MaxBW=" << untag(maxbw) << " [ours=" << oBW << ", "
-                                                                 << get_host(addr) << "=" << tBW << "]" << std::endl);
+                                                                 << get_host(addr) << "=" << tBW << "] [uuid=" << __m_uuid << "]" << std::endl);
 
                     etdc::detail::update_clnt( clnt, maxbw );
 
 
                     transfer.data_fd = mk_client( get_protocol(addr), clnt );
-                    ETDCDEBUG(2, "getFile/connected to " << addr << std::endl);
+                    ETDCDEBUG(2, "getFile/connected to " << addr << " [uuid=" << __m_uuid << "]" << std::endl);
                     break;
                 }
                 catch( std::exception const& e ) {
@@ -666,6 +769,20 @@ namespace etdc {
             std::string       reason;
             std::string const msg( msg_buf.str() );
             auto const        start_tm = std::chrono::high_resolution_clock::now();
+            // Progress reporting throttle, see ETDServer::sendFile for rationale.
+            auto              last_report_tm = start_tm;
+            auto const        report_interval = std::chrono::milliseconds(100);
+            auto              report_progress = [&](bool force) {
+                if( !progress )
+                    return;
+                auto const now = std::chrono::high_resolution_clock::now();
+                if( !force && (now - last_report_tm) < report_interval )
+                    return;
+                last_report_tm = now;
+                double const elapsed = std::chrono::duration<double>(now - start_tm).count();
+                try { progress(nTodo - todo, nTodo, elapsed); } catch(...) { /* swallow */ }
+            };
+            report_progress(true);
             transfer.data_fd->write(transfer.data_fd->__m_fd, msg.data(), msg.size());
 
             while( todo>0 && !(cancelled = isCancelled()) ) {
@@ -683,7 +800,7 @@ namespace etdc {
                     ssize_t const thisWrite = transfer.fd->write(transfer.fd->__m_fd, &buffer[nWritten], nRead-nWritten);
 
                     if( thisWrite<=0 ) {
-                        reason   = ((thisWrite==-1) ? std::string(etdc::strerror(errno)) : std::string("write should never have returned 0"));
+                        reason   = ((thisWrite==-1) ? std::string(etdc::strerror(errno)) : std::string("write should never have returned 0 writing to local file"));
                         remoteOK = false;
                         break;
                     }
@@ -692,16 +809,19 @@ namespace etdc {
                 if( nWritten<nRead )
                     break;
                 todo -= (off_t)nWritten;
+                report_progress(false);
                 if( (cancelled = isCancelled()) )
                     break;
             }
+            // Final progress tick so the UI sees the terminal byte count.
+            report_progress(true);
             // if we make it out of the loop, todo should be <= 0 and terminate the outer loop
             // Send ACK but only if it makes sense
             if( remoteOK && !cancelled ) {
                 const char ack{ 'y' };
-                ETDCDEBUG(4, "ETDServer::getFile/got all bytes, sending ACK ..." << std::endl);
+                ETDCDEBUG(4, "ETDServer::getFile/got all bytes, sending ACK ... [uuid=" << __m_uuid << "]" << std::endl);
                 transfer.data_fd->write(transfer.data_fd->__m_fd, &ack, 1);
-                ETDCDEBUG(4, "ETDServer::getFile/... done." << std::endl);
+                ETDCDEBUG(4, "ETDServer::getFile/... done. [uuid=" << __m_uuid << "]" << std::endl);
             }
             auto const end_tm = std::chrono::high_resolution_clock::now();
             return cancelled ? xfer_result(false, 0, "Cancelled", xfer_result::duration_type()) :
@@ -712,7 +832,7 @@ namespace etdc {
 
     // Cancel any ongoing data transfer
     void ETDServer::cancel( etdc::uuid_type const& uuid ) {
-        ETDCASSERT(uuid==__m_uuid, "Cannot cancel someone else's UUID!");
+        ETDCASSERT(uuid==__m_uuid, "Cannot cancel someone else's UUID! [uuid=" << __m_uuid << "]");
 
         // We need to do some thinking about locking sequence because we need
         // a lock on the shared state *and* a lock on the transfer
@@ -780,6 +900,13 @@ namespace etdc {
     //     If those fields are missing
     static const std::regex            rxXferResultReply("^(OK|ERR)(,([0-9]+),([-0-9\\.\\+eE]+))?(\\s+\\S.*)?$", etdc_rxFlags);
     //                                     submatches:     1       2 3        4                  5
+    //
+    // In-band PROGRESS line emitted (only) by daemons speaking
+    // protocolVersion>=4 while a send-file/get-file transfer is in flight.
+    // Format: "PROG,<bytes_so_far>,<elapsed_seconds>\n". Older daemons never
+    // emit these lines, so the wire stays backward-compatible.
+    static const std::regex            rxProgressReply("^PROG,([0-9]+),([-0-9\\.\\+eE]+)$", etdc_rxFlags);
+    //                                     submatches:        1        2
 
     template <typename InputIter, typename OutputIter,
               typename RegexIter  = std::regex_iterator<InputIter>,
@@ -935,6 +1062,7 @@ namespace etdc {
         ETDCASSERT(status_s=="OK", "requestFileWrite(" << file << ") failed - " << (info.empty() ? "<unknown reason>" : info));
         // And we must have received both a UUID as well as an AlreadyHave
         ETDCASSERT(filePos && curUUID, "requestFileWrite: the server did NOT send all required fields");
+        ETDCDEBUG(4, "ETDProxy::requestFileWrite/received UUID " << *curUUID << " already_have=" << *filePos << " [uuid=" << *curUUID << "]" << std::endl);
         return result_type{*curUUID, *filePos};
     }
 
@@ -998,20 +1126,19 @@ namespace etdc {
             ::memmove(&buffer[0], &buffer[endpos], curPos - endpos);
             curPos -= endpos;
         }
-        // We must have consumed all output from the server
-        ETDCASSERT(curPos==0, "requestFileRead: there are " << curPos << " unconsumed server bytes left in the input. This is likely a protocol error.");
-        // We must have seen a success reply
+        ETDCASSERT(curPos==0, "requestFileRead: there are " << curPos << " unconsumed bytes left in the input. This is likely a protocol error.");
         ETDCASSERT(status_s=="OK", "requestFileRead(" << file << ") failed - " << (info.empty() ? "<unknown reason>" : info));
-        // And we must have received both a UUID as well as an AlreadyHave
+        // And we must have received both a UUID as well as a Remaining
         ETDCASSERT(remain && curUUID, "requestFileRead: the server did NOT send all required fields");
+        ETDCDEBUG(4, "ETDProxy::requestFileRead/received UUID " << *curUUID << " remain=" << *remain << " [uuid=" << *curUUID << "]" << std::endl);
         return result_type{*curUUID, *remain};
     }
 
     dataaddrlist_type ETDProxy::dataChannelAddr( void ) const {
-        // We are a proxy for a remote end and if we know that the remote end supports extended
         // data channel specification we ask for that
-        static const std::string msg{ (__m_protocolVersion == 0 || __m_protocolVersion == ETDServerInterface::unknownProtocolVersion) ?
-                                      "data-channel-addr\n" : "data-channel-addr-ext\n" };
+        const bool legacyCmd = (__m_protocolVersion == 0 || __m_protocolVersion == ETDServerInterface::unknownProtocolVersion);
+        const std::string msg = legacyCmd ? "data-channel-addr\n" : "data-channel-addr-ext\n";
+
         ETDCDEBUG(4, "ETDProxy::dataChannelAddr/sending message '" << msg << "'" << std::endl);
         ETDCASSERTX(__m_connection->write(__m_connection->__m_fd, msg.data(), msg.size())==(ssize_t)msg.size());
 
@@ -1077,7 +1204,7 @@ namespace etdc {
         msgBuf << "remove-uuid " << uuid << '\n';
         const std::string  msg( msgBuf.str() );
 
-        ETDCDEBUG(4, "ETDProxy::removeUUID/sending message '" << msg << "'" << " fd=" << __m_connection->__m_fd << std::endl);
+        ETDCDEBUG(4, "ETDProxy::removeUUID/sending message '" << msg << "'" << " fd=" << __m_connection->__m_fd << " [uuid=" << uuid << "]" << std::endl);
         ETDCASSERTX(__m_connection->write(__m_connection->__m_fd, msg.data(), msg.size())==(ssize_t)msg.size());
 
         // And await the reply. We only allow "OK" or "ERR <msg>"
@@ -1112,7 +1239,7 @@ namespace etdc {
             // Otherwise we're done
             break;
         }
-        ETDCDEBUG(4, "ETDProxy::removeUUID/uuid removed successfully" << std::endl);
+        ETDCDEBUG(4, "ETDProxy::removeUUID/uuid removed successfully [uuid=" << uuid << "]" << std::endl);
         return true;
     }
 
@@ -1124,17 +1251,40 @@ namespace etdc {
         return previous;
     }
 
-    xfer_result ETDProxy::sendFile(uuid_type const& srcUUID, uuid_type const& dstUUID, off_t todo, dataaddrlist_type const& dataaddrs) {
+    xfer_result ETDProxy::sendFile(uuid_type const& srcUUID, uuid_type const& dstUUID, off_t todo, dataaddrlist_type const& dataaddrs,
+                                   progress_fn const& progress) {
         sockname2string_fn       f{ sockname2str( __m_protocolVersion ) };
         std::ostringstream       msgBuf;
 
+        // We're about to ask the remote (source) daemon to dial back to the
+        // destination's data-channel addresses we collected on its behalf.
+        // The destination may have advertised schemes the source does not
+        // know about (e.g. SRT to a v1.1 source), in which case the source
+        // would silently pick the first address it parsed and hang inside
+        // mk_client(). Filter the list to schemes the source's negotiated
+        // protocol version is guaranteed to understand.
+        dataaddrlist_type        usable( dataaddrs );
+        filter_dataaddrs_for_protocol(usable, __m_protocolVersion);
+
+        if( usable.empty() ) {
+            std::ostringstream    err;
+            err << "sendFile: none of the " << dataaddrs.size()
+                << " data-channel address(es) the destination advertised "
+                << "are usable by the source daemon (protocol version "
+                << __m_protocolVersion << "). Schemes offered: ";
+            for(auto p = dataaddrs.begin(); p!=dataaddrs.end(); p++)
+                err << (p==dataaddrs.begin() ? "" : ",") << get_protocol(*p);
+            throw std::runtime_error(err.str());
+        }
+
         msgBuf << "send-file " << srcUUID << " " << dstUUID << " " << todo << " ";
-        for(auto p = dataaddrs.begin(); p!=dataaddrs.end(); p++)
-            msgBuf << ((p!=dataaddrs.begin()) ? "," : "") << f( *p );
+        for(auto p = usable.begin(); p!=usable.end(); p++)
+            msgBuf << ((p!=usable.begin()) ? "," : "") << f( *p );
         msgBuf << '\n';
         const std::string  msg( msgBuf.str() );
 
-        ETDCDEBUG(4, "ETDProxy::sendFile/sending message '" << msg << "'" << " fd=" << __m_connection->__m_fd << std::endl);
+        ETDCDEBUG(4, "ETDProxy::sendFile/sending message '" << msg << "'" << " fd=" << __m_connection->__m_fd
+                                                             << " [src_uuid=" << srcUUID << "] [dst_uuid=" << dstUUID << "]" << std::endl);
         ETDCASSERTX(__m_connection->write(__m_connection->__m_fd, msg.data(), msg.size())==(ssize_t)msg.size());
 
         // The values we need to parse from the reply
@@ -1144,49 +1294,83 @@ namespace etdc {
         std::string                reason{};
 
         // And await the reply. Update Jun 2018: accept more elaborate reply
-        // if we allow ~2kB for the <msg> that's quite generous I'd say
+        // if we allow ~2kB for the <msg> that's quite generous I'd say.
+        //
+        // Update for protocolVersion>=4: the remote source daemon may
+        // emit zero or more in-band "PROG,<bytes>,<seconds>\n" lines while
+        // the transfer is running, followed by exactly one terminal
+        // OK/ERR line that carries the final result. We must keep reading
+        // and consuming PROG lines (invoking the progress callback) until
+        // that terminal line arrives. Because that stream is unbounded we
+        // also compact the buffer between reads so we don't run out of
+        // headroom over the course of a long transfer.
         size_t                     curPos{ 0 };
         const size_t               bufSz( 2048 );
         std::unique_ptr<char[]>    buffer(new char[bufSz]);
+        bool                       done{ false };
 
-        while( curPos<bufSz ) {
+        while( !done ) {
+            ETDCASSERT(curPos < bufSz, "send-file reply line longer than " << bufSz << " bytes - protocol error");
             const ssize_t n = __m_connection->read(__m_connection->__m_fd, &buffer[curPos], bufSz-curPos);
 
             // did we read anything?
             ETDCASSERT(n>0, "Failed to read data from remote end");
             curPos += n;
 
-            std::vector<std::string>  lines;
-            std::smatch               fields;
+            std::vector<std::string>           lines;
+            typename std::smatch::size_type    endpos =
+                getReplies(&buffer[0], &buffer[curPos], std::back_inserter(lines));
 
-            // Discard the return value from getReplies - we don't need to remember where we end in the buffer
-            (void)getReplies(&buffer[0], &buffer[curPos], std::back_inserter(lines));
+            for(auto const& line : lines) {
+                std::smatch fields;
 
-            // If no line(s) yet, read more bytes
-            if( lines.empty() )
-                continue;
+                // PROG line? Decode and dispatch to the user's callback.
+                if( std::regex_match(line, fields, rxProgressReply) ) {
+                    if( progress ) {
+                        off_t  bytes_so_far{ 0 };
+                        string2off_t(fields[1].str(), bytes_so_far);
+                        double const elapsed = std::stod(fields[2].str());
+                        // Total bytes for this transfer is the original
+                        // 'todo' the caller asked us to push -- the wire
+                        // line only carries bytes-so-far + elapsed seconds.
+                        try { progress(bytes_so_far, todo, elapsed); } catch(...) { /* swallow */ }
+                    }
+                    continue;
+                }
+                // Otherwise it has to be the terminal OK/ERR reply.
+                ETDCASSERT(std::regex_match(line, fields, rxXferResultReply),
+                           "The remote sent a non-conforming send-file reply: '" << line << "'");
+                //    "^(OK|ERR)(,([0-9]+),([-0-9\\.\\+eE]+))?(\\s+\\S.*)?$"
+                //      1       2 3        4                  5
+                // Field 1 always exists
+                success = (fields[1].str()=="OK");
 
-            // If we get >1 line, the client's messin' wiv de heads - we only allow 1 (one) line of reply
-            ETDCASSERT(lines.size()==1, "The client sent wrong number of responses - this is likely a protocol error");
-            // And that line should match our expectations
-            ETDCASSERT(std::regex_match(*lines.begin(), fields, rxXferResultReply), "The client sent a non-conforming response");
-            //    "^(OK|ERR)(,([0-9]+),([-0-9\\.\\+eE]+))?(\\s+\\S.*)?$"
-            //      1       2 3        4                  5
-            // Field 1 always exists
-            success = (fields[1].str()=="OK");
-
-            // Check optional fields
-            std::string     tmp;
-            if( (tmp = fields[3].str()).empty()==false ) {
-                // have new-style reply!
-                string2off_t(tmp, nbyte_transferred);
-                // then we also *know* we have field 4!
-                delta_t = std::stod(fields[4].str());
+                // Check optional fields
+                std::string     tmp;
+                if( (tmp = fields[3].str()).empty()==false ) {
+                    // have new-style reply!
+                    string2off_t(tmp, nbyte_transferred);
+                    // then we also *know* we have field 4!
+                    delta_t = std::stod(fields[4].str());
+                }
+                // Was there a reason?
+                reason = fields[5].str();
+                done = true;
+                break;
             }
-            // Was there a reason?
-            reason = fields[5].str();
-            // Otherwise we're done
-            break;
+
+            // Compact the buffer: move any unparsed trailing partial line
+            // (the bytes past the last complete \n we saw) to the front so
+            // subsequent reads don't run us out of headroom.
+            if( !done ) {
+                if( endpos > 0 && endpos < curPos ) {
+                    std::memmove(&buffer[0], &buffer[endpos], curPos - endpos);
+                    curPos -= endpos;
+                } else if( endpos == curPos ) {
+                    curPos = 0;
+                }
+                // If endpos==0 there were no complete lines yet; keep reading.
+            }
         }
         return xfer_result(success, nbyte_transferred, reason, xfer_result::duration_type(delta_t));
     }
@@ -1195,7 +1379,7 @@ namespace etdc {
     void ETDProxy::cancel( etdc::uuid_type const& uuid ) {
         // remote end w/ protocol version 0 doesn't have cancel so try removeUUID()
         if( __m_protocolVersion==0 || __m_protocolVersion==ETDServerInterface::unknownProtocolVersion ) {
-            ETDCDEBUG(4, "ETDProxy::cancel(" << uuid << ") - remote end doesn't support it, trying removeUUID instead" << std::endl);
+            ETDCDEBUG(4, "ETDProxy::cancel(" << uuid << ") - remote end doesn't support it, trying removeUUID instead [uuid=" << uuid << "]" << std::endl);
             this->removeUUID( uuid );
             return;
         }
@@ -1204,7 +1388,7 @@ namespace etdc {
 
         msgBuf << "cancel " << uuid << '\n';
         const std::string  msg( msgBuf.str() );
-        ETDCDEBUG(4, "ETDProxy::cancel/sending message '" << msg << "'" << std::endl);
+        ETDCDEBUG(4, "ETDProxy::cancel/sending message '" << msg << "' [uuid=" << uuid << "]" << std::endl);
         ETDCASSERTX(__m_connection->write(__m_connection->__m_fd, msg.data(), msg.size())==(ssize_t)msg.size());
 
         // This one does NOT solicit a reply
@@ -1219,7 +1403,14 @@ namespace etdc {
             return __m_protocolVersion;
 
         // Hmmm don't know what's at the other end, better check
-        static const std::string msg{ "protocol-version\n" };
+        std::ostringstream msgBuf;
+        const bool         tryExtended = __m_attemptExtendedProbe && (ETDServerInterface::currentProtocolVersion>=3);
+
+        if( tryExtended )
+            msgBuf << "protocol-version " << ETDServerInterface::currentProtocolVersion << '\n';
+        else
+            msgBuf << "protocol-version\n";
+        const std::string  msg( msgBuf.str() );
         ETDCDEBUG(4, "ETDProxy::protocolVersion/sending message '" << msg << "'" << std::endl);
         ETDCASSERTX(__m_connection->write(__m_connection->__m_fd, msg.data(), msg.size())==(ssize_t)msg.size());
 
@@ -1227,8 +1418,9 @@ namespace etdc {
         const size_t            bufSz( 2048 );
         std::unique_ptr<char[]> buffer(new char[bufSz]);
 
-        size_t            curPos{ 0 };
-        std::string       state;
+        size_t                    curPos{ 0 };
+        std::string               state;
+        protocolversion_type      remoteVersion = ETDServerInterface::unknownProtocolVersion;
 
         while( curPos<bufSz ) {
             const ssize_t n = __m_connection->read(__m_connection->__m_fd, &buffer[curPos], bufSz-curPos);
@@ -1255,12 +1447,21 @@ namespace etdc {
             ETDCASSERT(fields[1].str()=="OK", "protocolVersion failed: " << fields[2].str());
 
             // The format should be "OK <number>"
-            __m_protocolVersion = std::stoul( fields[3].str() );
+            remoteVersion = std::stoul( fields[3].str() );
+            __m_protocolVersion = (remoteVersion<ETDServerInterface::currentProtocolVersion)
+                                  ? remoteVersion
+                                  : ETDServerInterface::currentProtocolVersion;
 
             // Otherwise we're done
             break;
         }
+        ETDCASSERT(remoteVersion!=ETDServerInterface::unknownProtocolVersion, "protocolVersion negotiation failed to determine remote version");
+        __m_attemptExtendedProbe = false;
         return __m_protocolVersion;
+    }
+
+    void ETDProxy::preferExtendedProbe(bool enable) {
+        __m_attemptExtendedProbe = enable;
     }
 
     //////////////////////////////////////////////////////////////////////
@@ -1317,7 +1518,7 @@ namespace etdc {
                 static const std::regex  rxRemoveUUID("^(remove-uuid|cancel)\\s+(\\S+)$", etdc_rxFlags);
                                                 //      1              2
                                                 //      what to do     UUID
-                static const std::regex  rxProtocolVersion("^protocol-version$", etdc_rxFlags);
+                static const std::regex  rxProtocolVersion("^protocol-version(?:\\s+([0-9]+))?$", etdc_rxFlags);
 
                 // Match it against the known commands
                 std::smatch              fields;
@@ -1375,12 +1576,38 @@ namespace etdc {
                                         std::sregex_iterator(), std::back_inserter(dataAddrs), 
                                         [](std::smatch const& sm) { return decode_data_addr(sm.str()); });
 
+                        // Snapshot the negotiated peer protocol version at
+                        // dispatch time. We only emit in-band PROG lines if
+                        // the peer explicitly advertised protocolVersion>=4
+                        // in the preceding negotiation; older peers do not
+                        // recognise PROG and would treat it as a protocol
+                        // error and abort.
+                        const protocolversion_type peer_v = __m_clientProtocolVersion;
+                        const bool                 emit_progress =
+                            (peer_v != ETDServerInterface::unknownProtocolVersion) && (peer_v >= 4);
+
                         // Execute the sendFile in a separate thread to free up this handler
                         std::thread( [=]() {
-                                ETDCDEBUG(4, "ETDServerWrapper: thread " << std::this_thread::get_id() << "/executing sendFile()" << std::endl);
+                                ETDCDEBUG(4, "ETDServerWrapper: thread " << std::this_thread::get_id() << "/executing sendFile() [src_uuid=" << src_uuid << "] [dst_uuid=" << dst_uuid << "]" << std::endl);
+
+                                // Build the progress callback. It serialises
+                                // with any other writer on the control socket
+                                // (the wrapper's main read-loop and other
+                                // sendFile workers) via __m_writeMutex.
+                                progress_fn  progress;
+                                if( emit_progress ) {
+                                    progress = [this](off_t bytes_so_far, off_t /*total*/, double elapsed) {
+                                        std::ostringstream prog_s;
+                                        prog_s << "PROG," << bytes_so_far << ',' << elapsed << '\n';
+                                        const std::string  prog_line{ prog_s.str() };
+                                        std::lock_guard<std::mutex> lk( __m_writeMutex );
+                                        __m_connection->write(__m_connection->__m_fd, prog_line.data(), prog_line.size());
+                                    };
+                                }
+
                                 std::ostringstream reply_s;
                                 try {
-                                    const xfer_result  rv = __m_etdserver.sendFile(src_uuid, dst_uuid, todo, dataAddrs);
+                                    const xfer_result  rv = __m_etdserver.sendFile(src_uuid, dst_uuid, todo, dataAddrs, progress);
                                     reply_s << (rv.__m_Finished ? "OK" : "ERR")
                                             << ',' << rv.__m_BytesTransferred
                                             // make sure we have seconds as units of duration
@@ -1396,37 +1623,109 @@ namespace etdc {
                                     reply_s << "ERR,0,0.00 Unknown exception in sendFile thread\n";
                                 }
                                 std::string const reply{ reply_s.str() };
-                                ETDCDEBUG(4, "ETDServerWrapper: thread " << std::this_thread::get_id() << "/sending sendFile() reply '" << reply << "'" << std::endl);
-                                __m_connection->write(__m_connection->__m_fd, reply.data(), reply.size());
+                                ETDCDEBUG(4, "ETDServerWrapper: thread " << std::this_thread::get_id() << "/sending sendFile() reply '" << reply << "' [src_uuid=" << src_uuid << "] [dst_uuid=" << dst_uuid << "]" << std::endl);
+                                {
+                                    std::lock_guard<std::mutex> lk( __m_writeMutex );
+                                    __m_connection->write(__m_connection->__m_fd, reply.data(), reply.size());
+                                }
                             } ).detach();
                         //replies.emplace_back( rv ? "OK" : "ERR Failed to send file" );
                     } else if( std::regex_match(*line, fields, rxDataChannelAddr) ) {
                         // Did client ask for data-channel-addr-ext?
                         // Note we do not use "sockname2str(protocolVersion)" here because this
                         // is _us_ answering a query from someone else, we are not the *proxy* for someone else
-                        auto       f       = (fields[1].str().empty() ? sockname2str_v0 : sockname2str_v1);
-                        const auto entries = __m_etdserver.dataChannelAddr();
+                        const bool legacyQuery = fields[1].str().empty();
+                        protocolversion_type peerVersion = __m_clientProtocolVersion;
 
-                        std::transform(std::begin(entries), std::end(entries), std::back_inserter(replies),
-                                       [&](sockname_type const& sn) { std::ostringstream oss; oss << "OK " << f(sn); return oss.str(); });
-                        // and add a final OK
-                        replies.emplace_back("OK");
+                        if( peerVersion==ETDServerInterface::unknownProtocolVersion )
+                            peerVersion = legacyQuery ? 0 : 1;
+
+                        auto       f       = sockname2str( peerVersion );
+                        auto       entries = __m_etdserver.dataChannelAddr();
+
+                        // Remember the configured schemes before version-
+                        // filtering so we can produce a helpful diagnostic if
+                        // the filter would otherwise leave nothing to
+                        // advertise (e.g. daemon listens on SRT only and a
+                        // pre-v3 peer is probing).
+                        std::vector<protocol_type> configuredSchemes;
+                        configuredSchemes.reserve(entries.size());
+                        for(auto const& sn: entries)
+                            configuredSchemes.push_back(get_protocol(sn));
+
+                        // Drop schemes the peer cannot understand, using the
+                        // shared filter helper (see top of this file).
+                        filter_dataaddrs_for_protocol(entries, peerVersion);
+
+                        if( entries.empty() && !configuredSchemes.empty() ) {
+                            // Symmetrical guard to the one in ETDProxy::sendFile:
+                            // if no advertised scheme is usable by this peer's
+                            // protocol version, fail fast with a clear ERR rather
+                            // than silently returning an empty list (which would
+                            // either cause a hang or a confusing downstream
+                            // failure on the peer).
+                            std::ostringstream    err;
+                            err << "ERR no data-channel address compatible with protocol version "
+                                << peerVersion << " (configured schemes: ";
+                            for(size_t i=0; i<configuredSchemes.size(); ++i)
+                                err << (i==0 ? "" : ",") << configuredSchemes[i];
+                            err << ")";
+                            replies.emplace_back(err.str());
+                        } else {
+                            std::transform(std::begin(entries), std::end(entries), std::back_inserter(replies),
+                                           [&](sockname_type const& sn) { std::ostringstream oss; oss << "OK " << f(sn); return oss.str(); });
+                            // and add a final OK
+                            replies.emplace_back("OK");
+                        }
                     } else if( std::regex_match(*line, fields, rxRemoveUUID) ) {
                         // Could be remove | cancel
                         etdc::uuid_type const  uuid{ fields[2].str() };
 
                         if( fields[1].str() == "cancel" ) {
-                            ETDCDEBUG(4, "ETDServerWrapper: canelling UUID " << uuid << std::endl);
+                            ETDCDEBUG(4, "ETDServerWrapper: canelling UUID " << uuid << " [uuid=" << uuid << "]" << std::endl);
                             __m_etdserver.cancel( uuid );
                             // note: this done does _not_ solicit a return
                         } else {
                             const bool removeResult = __m_etdserver.removeUUID( uuid );
-                            ETDCDEBUG(4, "ETDServerWrapper: removeUUID(" << uuid << " yields " << removeResult << std::endl);
+                            ETDCDEBUG(4, "ETDServerWrapper: removeUUID(" << uuid << " yields " << removeResult << " [uuid=" << uuid << "]" << std::endl);
                             replies.emplace_back( removeResult ? "OK" : "ERR Failed to remove UUID" );
                         }
                     } else if( std::regex_match(*line, fields, rxProtocolVersion) ) {
+                        // Two forms of "protocol-version" exist:
+                        //   * "protocol-version <N>"  (since issue-30 / SRT support):
+                        //       the client advertises its own maximum N. We pick
+                        //       min(N, ours) and reply that.
+                        //   * "protocol-version"      (legacy, v1.0 / v1.1):
+                        //       no negotiation possible. v1.0 / v1.1 clients only
+                        //       know how to handle protocol versions {0, 1}; their
+                        //       sockname2str() throws std::runtime_error on anything
+                        //       else, which terminates the program. Cap the reply at
+                        //       version 1 so old clients do not crash when talking
+                        //       to a daemon whose currentProtocolVersion has since
+                        //       been bumped past their understanding.
+                        protocolversion_type reply_v;
+                        if( fields[1].matched ) {
+                            const protocolversion_type requested = std::stoul(fields[1].str());
+                            reply_v = (__m_etdserver.protocolVersion()<requested)
+                                      ? __m_etdserver.protocolVersion()
+                                      : requested;
+                            __m_clientProtocolVersion = reply_v;
+                        } else {
+                            // Legacy probe. Cap at the highest version that pre-
+                            // extended-probe clients are known to handle (1), but
+                            // never exceed our own maximum.
+                            reply_v = (__m_etdserver.protocolVersion() < 1u)
+                                      ? __m_etdserver.protocolVersion()
+                                      : 1u;
+                            // Deliberately do NOT set __m_clientProtocolVersion here:
+                            // the data-channel-addr[-ext] handler distinguishes a
+                            // v1.0 client (legacy "data-channel-addr") from a v1.1
+                            // client (extended "data-channel-addr-ext") via its own
+                            // legacyQuery fallback when __m_clientProtocolVersion is
+                            // still unknownProtocolVersion.
+                        }
                         // and add a final OK
-                        replies.emplace_back("OK "+repr(__m_etdserver.protocolVersion()));
+                        replies.emplace_back("OK "+repr(reply_v));
                     } else {
                         ETDCDEBUG(4, "line '" << *line << "' did not match any regex" << std::endl);
                         __m_connection->close( __m_connection->__m_fd );
@@ -1448,11 +1747,16 @@ namespace etdc {
                     replies.emplace_back( "ERR Unknown exception" );
                 }
 
-                // Now send back the replies
-                for(auto const& r: replies) {
-                    ETDCDEBUG(4, "ETDServerWrapper: sending reply '" << r << "'" << std::endl);
-                    __m_connection->write(__m_connection->__m_fd, r.data(), r.size());
-                    __m_connection->write(__m_connection->__m_fd, "\n", 1);
+                // Now send back the replies. Hold __m_writeMutex so we do
+                // not interleave with PROG/OK/ERR lines that a detached
+                // sendFile worker may be emitting concurrently.
+                {
+                    std::lock_guard<std::mutex> lk( __m_writeMutex );
+                    for(auto const& r: replies) {
+                        ETDCDEBUG(4, "ETDServerWrapper: sending reply '" << r << "'" << std::endl);
+                        __m_connection->write(__m_connection->__m_fd, r.data(), r.size());
+                        __m_connection->write(__m_connection->__m_fd, "\n", 1);
+                    }
                 }
             } 
             ETDCASSERT(line==lines.end(), "There were unprocessed lines of input from the client. This is likely a logical error in this server");
@@ -1577,6 +1881,12 @@ namespace etdc {
             // The size must be an off_t value
             string2off_t(szptr->second, sz);
 
+            const etdc::uuid_type uuid(uuidptr->second);
+
+            ETDCDEBUG(4, "ETDDataServer: found " << kvpairs.size() << " key-value pairs inside [uuid=" << uuid << "]" << std::endl);
+            for(const auto& kv: kvpairs)
+                ETDCDEBUG(4, "   " << kv.first << ":" << kv.second << " [uuid=" << uuid << "]" << std::endl);
+
             // Verification = complete.
             // Now we must grab a lock on the transfer (if there is one)
             // and do our thang
@@ -1590,9 +1900,9 @@ namespace etdc {
                 // 2a. lock shared state
                 std::unique_lock<std::mutex>     lk( shared_state.lock );
                 // 2b. assert that there is an entry for the indicated uuid
-                xfer_ptr = shared_state.transfers.find(uuid_type(uuidptr->second));
+                xfer_ptr = shared_state.transfers.find(uuid);
 
-                ETDCASSERT(xfer_ptr!=shared_state.transfers.end(), "No transfer associated with the UUID");
+                ETDCASSERT(xfer_ptr!=shared_state.transfers.end(), "No transfer associated with the UUID [uuid=" << uuid << "]");
 
                 // Now we must do try_lock on the transfer - if that fails we sleep and start from the beginning
                 std::unique_lock<std::mutex>     sh( xfer_ptr->second->xfer_lock, std::try_to_lock );
@@ -1617,12 +1927,13 @@ namespace etdc {
                 // So now we test it once, after we've acquired the lock
                 ETDCASSERT( (push ? allowedReadModes.find(xfer_ptr->second->openMode)!=allowedReadModes.end() :
                                     allowedWriteModes.find(xfer_ptr->second->openMode)!=allowedWriteModes.end()),
-                            "The referred-to transfer's open mode (" << xfer_ptr->second->openMode << ") is not compatible with the current data request");
+                            "The referred-to transfer's open mode (" << xfer_ptr->second->openMode
+                            << ") is not compatible with the current data request [uuid=" << uuid << "]");
                 // move the transfer lock out of this loop;
                 // breaking out of the loop will unlock the shared state
                 transfer_lock = std::move( sh );
             }
-            ETDCDEBUG(5, "ETDDataServer/owning transfer lock, now sucking data!" << std::endl);
+            ETDCDEBUG(5, "ETDDataServer/owning transfer lock, now sucking data! [uuid=" << uuid << "]" << std::endl);
 
             // If we end up here we know that the transfer is locked and
             // that xfer_ptr is pointing at it and that all is good
@@ -1630,11 +1941,29 @@ namespace etdc {
             
             // We found a valid command in the buffer, there may be raw bytes left following that command.
             // Therefore we initialize our read position to the end of the command we found.
-            const size_t  rdPos( command.position() + command.length() ); 
-            if( push )
-                ETDDataServer::push_n(sz, xfer_ptr->second->fd, __m_connection, rdPos, curPos, bufSz, buffer);
-            else
-                ETDDataServer::pull_n(sz, __m_connection, xfer_ptr->second->fd, rdPos, curPos, bufSz, buffer);
+            const size_t  rdPos( command.position() + command.length() );
+            pthread_t     thisThread{ ::pthread_self() };
+            const int     kill_signal{ SIGUSR1 };
+            std::function<void(void)> update_function{ [=]() { xfer_ptr->second->lastUpdate.store( transfer_clock::now() ); } };
+
+            // Before installing the timeout handler, must unblock a killsignal such
+            // that the other thread can _actually_ signal us
+            etdc::install_handler(dummy_timeout_signal_handler, {kill_signal});
+            // Install callback fn that another thread can call to close our
+            // fd's and pthread_kill() us to get us out of a blocking syscall
+            xfer_ptr->second->timeout_function = [=]() {
+                __m_connection->close( __m_connection->__m_fd );
+                xfer_ptr->second->fd->close( xfer_ptr->second->fd->__m_fd );
+                ::pthread_kill( thisThread, kill_signal );
+            };
+            // pass the xfer_ptr->lastUpdate var
+            if( push ) {
+                ETDCDEBUG(4, "ETDDataServer: executing push of " << sz << " bytes [uuid=" << uuid << "]" << std::endl);
+                ETDDataServer::push_n(sz, xfer_ptr->second->fd, __m_connection, rdPos, curPos, bufSz, buffer, update_function, uuid);
+            } else {
+                ETDCDEBUG(4, "ETDDataServer: executing pull of " << sz << " bytes [uuid=" << uuid << "]" << std::endl);
+                ETDDataServer::pull_n(sz, __m_connection, xfer_ptr->second->fd, rdPos, curPos, bufSz, buffer, update_function, uuid);
+            }
             // This command has been served, ready to accept next
             curPos = 0;
         }
@@ -1647,16 +1976,19 @@ namespace etdc {
     // ignore any extra bytes sent by the client and overwrite everything in
     // the buffer
     void ETDDataServer::push_n(size_t n, etdc::etdc_fdptr src, etdc::etdc_fdptr dst,
-                               size_t /*rdPos*/, const size_t /*endPos*/, const size_t bufSz, std::unique_ptr<char[]>& buf) {
+                               size_t /*rdPos*/, const size_t /*endPos*/, const size_t bufSz, std::unique_ptr<char[]>& buf,
+                               std::function<void(void)>& update_f,
+                               etdc::uuid_type const& uuid) {
         while( n>0 ) {
             // Amount of bytes to process in this iteration
             const ssize_t nRead = std::min(n, bufSz);
             ssize_t       aRead, nWritten{ 0 };
 
-            ETDCDEBUG(5, "ETDDataServer::push_n/pushing " << n << " bytes" << std::endl);
+            ETDCDEBUG(5, "ETDDataServer::push_n/pushing " << n << " bytes [uuid=" << uuid << "]" << std::endl);
 
             ETDCASSERT((aRead=src->read(src->__m_fd, &buf[0], nRead))>0,
                        ((aRead==-1) ? std::string(etdc::strerror(errno)) : std::string("read() returned 0 - hung up?!")));
+            update_f();
 
             // Keep on writing untill all bytes that were read are actually written
             while( aRead>0 ) {
@@ -1665,21 +1997,24 @@ namespace etdc {
                            ((thisWrite==-1) ? std::string(etdc::strerror(errno)) : std::string("write should never have returned 0?!")) );
                 aRead    -= thisWrite;
                 nWritten += thisWrite;
+                update_f();
             }
             n -= (size_t)nWritten;
         }
         // Do a read from the destination such that we know it is finished
         char ack;
-        ETDCDEBUG(5, "ETDDataServer::push_n/waiting for ACK " << std::endl);
+        ETDCDEBUG(5, "ETDDataServer::push_n/waiting for ACK [uuid=" << uuid << "]" << std::endl);
         dst->read(dst->__m_fd, &ack, 1);
-        ETDCDEBUG(5, "ETDDataServer::push_n/done." << std::endl);
+        ETDCDEBUG(5, "ETDDataServer::push_n/done. [uuid=" << uuid << "]" << std::endl);
     }
     // PULL n bytes from rc to dst, using buffer of size bufSz
     // the bytes between endPos and rdPos are what was read from the client,
     // raw bytes immediately following the command. We flush those to the
     // file first and then we can use the whole buffer for reading bytes.
     void ETDDataServer::pull_n(size_t n, etdc::etdc_fdptr src, etdc::etdc_fdptr dst,
-                               size_t rdPos, const size_t endPos, const size_t bufSz, std::unique_ptr<char[]>& buf) {
+                               size_t rdPos, const size_t endPos, const size_t bufSz, std::unique_ptr<char[]>& buf,
+                               std::function<void(void)>& update_f,
+                               etdc::uuid_type const& uuid) {
         // rdPos:  current start of read area in buf
         // endPos: passed in from above; this is where the initial command
         //         reader left off
@@ -1694,12 +2029,13 @@ namespace etdc {
             ssize_t       aRead;
             const ssize_t nRead = std::min(n + rdPos - wrEnd, bufSz - wrEnd);
 
-            ETDCDEBUG(5, "ETDDataServer::pull_n/pulling " << n << " bytes" << std::endl);
+            ETDCDEBUG(5, "ETDDataServer::pull_n/pulling " << n << " bytes [uuid=" << uuid << "]" << std::endl);
         
             // Attempt to read bytes. <0 is an error
             ETDCASSERT((aRead = src->read(src->__m_fd, &buf[wrEnd], nRead))>=0, "Failed to read bytes from client - " << etdc::strerror(errno));
             // Now we can bump wrEnd by that amount [at this point aRead might still be zero]
             wrEnd += aRead;
+            update_f();
 
             // If there are no bytes to write to file that means that 0
             // bytes were read and no bytes still left in buffer == error
@@ -1708,15 +2044,16 @@ namespace etdc {
             // Now flush the amount of available bytes to the destination
             ETDCASSERTX(dst->write(dst->__m_fd, &buf[rdPos], wrEnd-rdPos)==ssize_t(wrEnd-rdPos));
             n -= (wrEnd - rdPos);
+            update_f();
 
             // Now we are sure we can use the whole buffer for reading bytes
             // from the client
             wrEnd = rdPos = 0;
         }
         const char ack{ 'y' };
-        ETDCDEBUG(5, "ETDDataServer::pull_n/got all bytes, sending ACK " << std::endl);
+        ETDCDEBUG(5, "ETDDataServer::pull_n/got all bytes, sending ACK [uuid=" << uuid << "]" << std::endl);
         src->write(src->__m_fd, &ack, 1);
-        ETDCDEBUG(5, "ETDDataServer::pull_n/done." << std::endl);
+        ETDCDEBUG(5, "ETDDataServer::pull_n/done. [uuid=" << uuid << "]" << std::endl);
     }
 
 } // namespace etdc

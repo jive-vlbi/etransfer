@@ -26,16 +26,45 @@
 // UDT includes
 #include <udt.h>
 #include <ccc.h>
+// SRT includes
+#include <srt_udt.h>
+#include <srt.h>
 
 #include <errno.h>
 #include <stdio.h>
 #include <sys/time.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+
+// On Mac OSX expose the TCP_KEEP* (and others)
+// from netinet/tcp.h (on MacOSX):
+//  #if !defined(_POSIX_C_SOURCE) || defined(_DARWIN_C_SOURCE)  
+//  ...
+//  #define TCP_KEEPINTVL           0x101   /* interval between keepalives */
+//  #define TCP_KEEPCNT             0x102   /* number of keepalives before close */
+//  ...
+#if defined(__APPLE__) && !defined(_DARWIN_C_SOURCE)
+#define ETDC_DEFINED_DARWIN_C_SOURCE
+#define _DARWIN_C_SOURCE
+#endif
+
 #include <netinet/tcp.h>
 
 #include <map>
+#include <string>
 #include <stdexcept>
+#include <type_traits>
+#include <cstdint>
+
+
+// Now decide if we have the TCP_KEEP* tunings.
+// It really only makes sense to have all three of the TCP keepalive
+// interval, count and idle time settings or none.
+// Take into account that on Mac OSX TCP_KEEPALIVE has the same use as
+// TCP_KEEPIDLE on e.g. Loonix
+#if defined(TCP_KEEPCNT) && defined(TCP_KEEPINTVL) && (defined(TCP_KEEPALIVE) || defined(TCP_KEEPIDLE))
+#define ETDC_HAVE_TCP_KEEPALIVE
+#endif
 
 namespace etdc {
 
@@ -49,6 +78,7 @@ namespace etdc {
         struct level         {}; // the tagged value is the level value of set/getsockopt(2)
         struct option_name   {}; //         ,,              option_name      ,,
         struct udt_option    {};
+        struct srt_option    {};
     }
 
     namespace detail {
@@ -85,6 +115,15 @@ namespace etdc {
 
         template <UDTOpt udtname> 
         using BooleanUDTOption   = SocketOption<bool, UDTName<udtname>, Level<-1>, tags::udt_option, tags::gettable, tags::settable>;
+
+        template <SRT_SOCKOPT srtname>
+        using SRTName = etdc::tagged<std::integral_constant<SRT_SOCKOPT, srtname>, tags::option_name>;
+
+        template <SRT_SOCKOPT srtname>
+        using SimpleSRTOption    = SocketOption<int, SRTName<srtname>, Level<0>, tags::srt_option, tags::gettable, tags::settable>;
+
+        template <SRT_SOCKOPT srtname>
+        using BooleanSRTOption   = SocketOption<bool, SRTName<srtname>, Level<0>, tags::srt_option, tags::gettable, tags::settable>;
     }
 
     // Helpers
@@ -105,6 +144,12 @@ namespace etdc {
 
     template <typename T, typename... Ts>
     struct is_udt_option<tagged<T, Ts...>>: etdc::has_type<tags::udt_option, Ts...> {};
+
+    template <typename T, typename...>
+    struct is_srt_option: std::false_type {};
+
+    template <typename T, typename... Ts>
+    struct is_srt_option<tagged<T, Ts...>>: etdc::has_type<tags::srt_option, Ts...> {};
 
     /////////////////////////////////////////////////////////////////////////////////////////
     //
@@ -148,7 +193,34 @@ namespace etdc {
     // The SO_REUSEPORT may or may not be available. 
 #ifdef SO_REUSEPORT
     using so_reuseport  = detail::BooleanSocketOption<SO_REUSEPORT>;
+#endif // !SO_REUSEPORT
+
+    // TCP Keepalive may suffer from similar probs
+    // SO_KEEPALIVE is in POSIX as socket option, but
+    // TCP_KEEP{CNT,IDLE,INTVL} may not be
+    using so_keepalive  = detail::BooleanSocketOption<SO_KEEPALIVE>;
+
+    // We have already tested for the existence of the TCP_KEEP* constants
+#ifdef ETDC_HAVE_TCP_KEEPALIVE
+    using tcp_keepcnt   = detail::SocketOption<int, detail::Name<TCP_KEEPCNT>, detail::Level<IPPROTO_TCP>,
+                                                    tags::gettable, tags::settable>;
+    using tcp_keepintvl = detail::SocketOption<int, detail::Name<TCP_KEEPINTVL>, detail::Level<IPPROTO_TCP>,
+                                                    tags::gettable, tags::settable>;
+// On MacOSX is called TCP_KEEPALIVE i.s.o. TCP_KEEPIDLE but according to 
+// man page serves same goal: 
+//     TCP_KEEPALIVE          The TCP_KEEPALIVE options enable to specify the amount of time, in seconds, that the connec
+//                            tion must be idle before keepalive probes (if enabled) are sent.  The default value is speci
+//                            fied by the MIB variable net.inet.tcp.keepidle.
+#ifdef TCP_KEEPALIVE
+    using tcp_keepidle  = detail::SocketOption<int, detail::Name<TCP_KEEPALIVE>, detail::Level<IPPROTO_TCP>,
+                                                    tags::gettable, tags::settable>;
 #endif
+// This is what it's called under Loonix
+#ifdef TCP_KEEPIDLE
+    using tcp_keepidle  = detail::SocketOption<int, detail::Name<TCP_KEEPIDLE>, detail::Level<IPPROTO_TCP>,
+                                                    tags::gettable, tags::settable>;
+#endif
+#endif // !ETDC_HAVE_TCP_KEEPALIVE
 
     using udt_fc        = detail::SimpleUDTOption<UDT_FC>;
     using udt_mss       = detail::SimpleUDTOption<UDT_MSS>;
@@ -166,6 +238,23 @@ namespace etdc {
     template <typename T>
     using udt_set_cc    = detail::SocketOption<CCCFactory<T>*, detail::UDTName<UDT_CC>, detail::Level<-1>, tags::udt_option, tags::settable>;
     using udt_get_cc    = detail::SocketOption<CCC*, detail::UDTName<UDT_CC>, detail::Level<-1>, tags::udt_option, tags::gettable>;
+
+    using srt_mss       = detail::SimpleSRTOption<SRTO_MSS>;
+    using srt_sndbuf    = detail::SimpleSRTOption<SRTO_SNDBUF>;
+    using srt_rcvbuf    = detail::SimpleSRTOption<SRTO_RCVBUF>;
+    using srt_fc        = detail::SimpleSRTOption<SRTO_FC>;
+    using srt_udp_sndbuf= detail::SimpleSRTOption<SRTO_UDP_SNDBUF>;
+    using srt_udp_rcvbuf= detail::SimpleSRTOption<SRTO_UDP_RCVBUF>;
+    using srt_max_bw    = detail::SocketOption<int64_t, detail::SRTName<SRTO_MAXBW>, tags::srt_option, detail::Level<0>, tags::settable, tags::gettable>;
+    using srt_inputbw   = detail::SocketOption<int64_t, detail::SRTName<SRTO_INPUTBW>, tags::srt_option, detail::Level<0>, tags::settable>;
+    using srt_mininputbw= detail::SocketOption<int64_t, detail::SRTName<SRTO_MININPUTBW>, tags::srt_option, detail::Level<0>, tags::settable>;
+    using srt_linger    = detail::SocketOption<struct linger, detail::SRTName<SRTO_LINGER>, tags::srt_option, detail::Level<0>, tags::settable, tags::gettable>;
+    using srt_reuseaddr = detail::BooleanSRTOption<SRTO_REUSEADDR>;
+    using srt_sndsyn    = detail::BooleanSRTOption<SRTO_SNDSYN>;
+    using srt_rcvsyn    = detail::BooleanSRTOption<SRTO_RCVSYN>;
+    using srt_messageapi= detail::BooleanSRTOption<SRTO_MESSAGEAPI>;
+    using srt_transtype = detail::SimpleSRTOption<SRTO_TRANSTYPE>;
+    using srt_ipv6only  = detail::BooleanSRTOption<SRTO_IPV6ONLY>;
 
 
     // Translation between system/low level option type/value and high level
@@ -226,6 +315,25 @@ namespace etdc {
             using native_sockopt<T>::from_native;
         };
 
+        template <typename T>
+        struct srt_native_sockopt: native_sockopt<T> {
+            using type = typename native_sockopt<T>::type;
+            using native_sockopt<T>::to_native;
+            using native_sockopt<T>::from_native;
+        };
+
+        template <>
+        struct srt_native_sockopt<bool> {
+            using type = std::uint8_t;
+
+            static type to_native(bool b) {
+                return static_cast<type>(b ? 1 : 0);
+            }
+            static bool from_native(type v) {
+                return v!=0;
+            }
+        };
+
         // "bool" it has to be translated to "int";
         // make sure that booleans are really really really only translated
         // between 0/1 and false/true
@@ -281,6 +389,16 @@ namespace etdc {
             i2n_udt_map_type::const_iterator p = i2n_udt_map.find(o);
             return ((p==i2n_udt_map.end()) ? (std::string("** unknown UDT socket option #")+etdc::repr(o)+" **") : p->second);
         }
+
+        using i2n_srt_map_type = std::map<SRT_SOCKOPT, std::string>;
+        static const i2n_srt_map_type i2n_srt_map{ OPTION(SRTO_MSS), OPTION(SRTO_SNDBUF), OPTION(SRTO_RCVBUF), OPTION(SRTO_LINGER),
+                                                   OPTION(SRTO_MAXBW), OPTION(SRTO_INPUTBW), OPTION(SRTO_MININPUTBW), OPTION(SRTO_FC), OPTION(SRTO_REUSEADDR),
+                                                   OPTION(SRTO_UDP_SNDBUF), OPTION(SRTO_UDP_RCVBUF), OPTION(SRTO_SNDSYN), OPTION(SRTO_RCVSYN), OPTION(SRTO_IPV6ONLY) };
+
+        inline std::string srt_option_str(SRT_SOCKOPT o) {
+            i2n_srt_map_type::const_iterator p = i2n_srt_map.find(o);
+            return ((p==i2n_srt_map.end()) ? (std::string("** unknown SRT socket option #")+etdc::repr(static_cast<int>(o))+" **") : p->second);
+        }
         #undef OPTION
     }
 
@@ -320,9 +438,30 @@ namespace etdc {
         return 1+setsockopt(s, std::forward<Rest>(rest)...);
     }
 
+    // SRT option
+    template <typename Option, typename... Rest>
+    typename std::enable_if<is_srt_option<Option>::value && etdc::has_tag<tags::settable, Option>::value, int>::type
+    setsockopt(int s, Option const& ov, Rest... rest) {
+        using native_type = detail::srt_native_sockopt<typename Option::type>;
+        const int                   level    = etdc::get_tag_p<has_level_tag, Option>::type::type::value;
+        const SRT_SOCKOPT           opt_name = etdc::get_tag_p<has_name_tag,  Option>::type::type::value;
+        typename native_type::type  opt_val  = native_type::to_native( untag(ov) );
+
+        if( srt::UDT::setsockopt(s, level, opt_name, &opt_val, int(sizeof(typename native_type::type)))==SRT_ERROR ) {
+            int  native_errno = 0;
+            int  err_code     = srt_getlasterror(&native_errno);
+            const char* err_msg = srt_getlasterror_str();
+            throw std::runtime_error("Failed to set SRT option " + detail::srt_option_str(opt_name) + ": " +
+                                     std::string(err_msg ? err_msg : "<unknown>") + " (code=" + etdc::repr(err_code) +
+                                     ", errno=" + etdc::repr(native_errno) + "/fd=" + etdc::repr(s) + ")");
+        }
+
+        return 1+setsockopt(s, std::forward<Rest>(rest)...);
+    }
+
     // non-UDT option
     template <typename Option, typename... Rest>
-    typename std::enable_if<!is_udt_option<Option>::value && etdc::has_tag<tags::settable, Option>::value, int>::type
+    typename std::enable_if<!is_udt_option<Option>::value && !is_srt_option<Option>::value && etdc::has_tag<tags::settable, Option>::value, int>::type
     setsockopt(int s, Option const& ov, Rest... rest) {
         using native_type = detail::sys_native_sockopt<typename Option::type>;
         // All socket options MUST have a level and a name
@@ -377,9 +516,37 @@ namespace etdc {
         return 1+getsockopt(s, std::forward<Rest&>(rest)...);
     }
 
+    // get SRT option
+    template <typename Option, typename... Rest>
+    typename std::enable_if<is_srt_option<Option>::value && etdc::has_tag<tags::gettable, Option>::value, int>::type
+    getsockopt(int s, Option& ov, Rest&... rest) {
+        using native_type = detail::srt_native_sockopt<typename Option::type>;
+        socklen_t                  opt_len{ static_cast<socklen_t>(sizeof(typename native_type::type)) };
+        const int                  level    = etdc::get_tag_p<has_level_tag, Option>::type::type::value;
+        const SRT_SOCKOPT          opt_name = etdc::get_tag_p<has_name_tag,  Option>::type::type::value;
+        typename native_type::type opt_val;
+
+        if( srt::UDT::getsockopt(s, level, opt_name, &opt_val, &opt_len)==SRT_ERROR ) {
+            int  native_errno = 0;
+            int  err_code     = srt_getlasterror(&native_errno);
+            const char* err_msg = srt_getlasterror_str();
+            throw std::runtime_error("Failed to get SRT option " + detail::srt_option_str(opt_name) + ": " +
+                                     std::string(err_msg ? err_msg : "<unknown>") + " (code=" + etdc::repr(err_code) +
+                                     ", errno=" + etdc::repr(native_errno) + "/fd=" + etdc::repr(s) + ")");
+        }
+        if( opt_len!=static_cast<socklen_t>(sizeof(typename native_type::type)) )
+            throw std::domain_error(std::string("getsockopt/srt: returned option_value size (")+etdc::repr(opt_len)+") "
+                                    "does not match native size ("+etdc::repr(sizeof(typename native_type::type))+")"
+                                    "/fd="+etdc::repr(s));
+
+        untag( ov ) = native_type::from_native( opt_val );
+
+        return 1+getsockopt(s, std::forward<Rest&>(rest)...);
+    }
+
     // get non-UDT option
     template <typename Option, typename... Rest>
-    typename std::enable_if<!is_udt_option<Option>::value && etdc::has_tag<tags::gettable, Option>::value, int>::type
+    typename std::enable_if<!is_udt_option<Option>::value && !is_srt_option<Option>::value && etdc::has_tag<tags::gettable, Option>::value, int>::type
     getsockopt(int s, Option& ov, Rest&... rest) {
         using native_type = detail::sys_native_sockopt<typename Option::type>;
         // All socket options MUST have a level and a name
@@ -404,4 +571,10 @@ namespace etdc {
     }
 }
 
-#endif
+// and remove the _DARWIN_C_SOURCE symbol if *we* did it
+// because we only needed to expose the symbolic constants of the O/S in this header
+#ifdef ETDC_DEFINED_DARWIN_C_SOURCE
+#undef _DARWIN_C_SOURCE
+#endif // !ETDC_HAVE_TCP_KEEPALIVE
+
+#endif // !ETDC_ETDC_SETSOCKOPT_H
