@@ -204,8 +204,9 @@ namespace etdc {
         if( mode==openmode_type::SkipExisting )
             omode = ~omode;
 
-#if O_LARGEFILE
+#ifdef O_LARGEFILE
         // set large file if the current system has it
+        // (macOS doesn't define O_LARGEFILE -- offsets are 64-bit by default)
         omode |= O_LARGEFILE;
 #endif
 
@@ -246,8 +247,9 @@ namespace etdc {
         // Transform to int argument to open(2) + append some flag(s) if necessary/available
         int  omode = static_cast<int>(etdc::openmode_type::Read);
 
-#if O_LARGEFILE
+#ifdef O_LARGEFILE
         // set large file if the current system has it
+        // (macOS doesn't define O_LARGEFILE -- offsets are 64-bit by default)
         omode |= O_LARGEFILE;
 #endif
 

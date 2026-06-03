@@ -391,13 +391,19 @@ namespace etdc {
                 ETDCASSERT(path=="/dev/null" || isDevZero,
                            std::string("Invalid path '") + path + "' [expect /dev/null or /dev/zero:<size>]");
 
-                // if isDevZero we must parse out the file size
+                // if isDevZero we must parse out the file size.
+                // Both ternary branches forced to std::size_t so the
+                // ?:-expression has a single (unsigned) type matching
+                // both the stoull() multiplicand and the __m_fSize
+                // destination (avoids -Wsign-conversion firing on the
+                // ipow() branch, which returns signed int64_t).
                 if( isDevZero )
                     __m_fSize = std::stoull(fields[1].str()) * /* size */
                                 (fields[2].str().empty() ?     /* any unit following? */
-                                  1 : /* nope */
-                                  detail::ipow( (fields[4].str().empty() ? 1024 : 1000), /* yes, base**exp */
-                                                etdc::get(exponents, fields[3].str(), 1) /*exponents[ fields[3].str() ]*/ /*exp*/)  );
+                                  std::size_t{1} : /* nope */
+                                  static_cast<std::size_t>(
+                                    detail::ipow( (fields[4].str().empty() ? 1024 : 1000), /* yes, base**exp */
+                                                  etdc::get(exponents, fields[3].str(), 1) /*exponents[ fields[3].str() ]*/ /*exp*/)) );
                 setup_basic_fns();
             }
         private:
@@ -1042,7 +1048,7 @@ namespace etdc {
                     }},
             {"udt", [](etdc_fdptr pSok, detail::client_settings const& clnt) {
                         // connect to ipport
-                        int                sl( sizeof(struct sockaddr_in) );
+                        socklen_t          sl( sizeof(struct sockaddr_in) );
                         struct sockaddr_in sa;
                         
                         // Need to resolve? For clients we assume empty host means not OK!
@@ -1079,7 +1085,7 @@ namespace etdc {
                     }},
             {"udt6", [](etdc_fdptr pSok, detail::client_settings const& clnt) {
                         // connect to ipport
-                        int                 sl( sizeof(struct sockaddr_in6) );
+                        socklen_t           sl( sizeof(struct sockaddr_in6) );
                         struct sockaddr_in6 sa;
                         
                         // Need to resolve? For clients we assume empty host means not OK!
