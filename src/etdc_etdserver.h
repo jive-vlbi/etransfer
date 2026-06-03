@@ -31,6 +31,7 @@
 #include <regex>
 #include <string>
 #include <memory>
+#include <functional>
 #include <type_traits>
 
 namespace etdc {
@@ -44,6 +45,23 @@ namespace etdc {
     using sockname2string_fn = auto (*)( sockname_type const& ) -> std::string;
 
     sockname2string_fn sockname2str( protocolversion_type v );
+
+    // Progress callback signature. Invoked (optionally) by sendFile/getFile
+    // implementations from inside the active byte-copy loop with:
+    //   bytes_so_far     -- bytes successfully transferred so far
+    //   total_bytes      -- total bytes expected for this transfer (the
+    //                       original `todo` argument)
+    //   elapsed_seconds  -- wall time since the byte-copy began
+    //
+    // The callback runs on whichever thread is driving the loop. For local
+    // transfers (ETDServer) that is the caller's thread; for proxied
+    // transfers (ETDProxy) it is the thread that called sendFile() on the
+    // proxy, dispatched from inside the wire-reply parser. In both cases the
+    // callback observes a consistent snapshot for a single transfer and must
+    // not throw -- implementations are expected to swallow exceptions.
+    using progress_fn = std::function<void(off_t /*bytes_so_far*/,
+                                           off_t /*total_bytes*/,
+                                           double /*elapsed_seconds*/)>;
 
     // The result of a transfer
     struct xfer_result {
@@ -109,13 +127,15 @@ namespace etdc {
             //      dstUUID == UUID of the requestFileWrite on the the destination
             //  Then we attempt to connect from here to 'remote' and push 
             virtual xfer_result   sendFile(uuid_type const& /*srcUUID*/, uuid_type const& /*dstUUID*/,
-                                           off_t /*todo*/, dataaddrlist_type const& /*remote*/) = 0;
+                                           off_t /*todo*/, dataaddrlist_type const& /*remote*/,
+                                           progress_fn const& /*progress*/ = {}) = 0;
             // In the getFile canned sequence, we are the remote end, thus:
             //      srcUUID == remote UUID [assume: requestFileRead() was issued to that instance]
             //      dstUUID == own UUID of the requestFileWrite
             //  Then we attempt to connect from here to 'remote' and ask them to push
             virtual xfer_result   getFile (uuid_type const& /*srcUUID*/, uuid_type const& /*dstUUID*/,
-                                           off_t /*todo*/, dataaddrlist_type const& /*remote*/) = 0;
+                                           off_t /*todo*/, dataaddrlist_type const& /*remote*/,
+                                           progress_fn const& /*progress*/ = {}) = 0;
 
             virtual bool          removeUUID(etdc::uuid_type const&) = 0;
             virtual std::string   status( void ) const = 0;
@@ -127,8 +147,12 @@ namespace etdc {
             virtual protocolversion_type  protocolVersion( void ) const = 0;
             virtual protocolversion_type  set_protocolVersion( protocolversion_type ) = 0;
 
-            // The version of the protocol this code understands
-            static const protocolversion_type currentProtocolVersion = 3;
+            // The version of the protocol this code understands.
+            //   v0  legacy unversioned
+            //   v1  versioned, data-channel-addr-ext, etc
+            //   v3  + SRT data-channel scheme
+            //   v4  + in-band PROGRESS lines during sendFile/getFile
+            static const protocolversion_type currentProtocolVersion = 4;
             static const protocolversion_type unknownProtocolVersion = ~((protocolversion_type)0);
 
             virtual ~ETDServerInterface() {}
@@ -157,9 +181,11 @@ namespace etdc {
 
             // Canned sequence?
             virtual xfer_result   sendFile(uuid_type const& /*srcUUID*/, uuid_type const& /*dstUUID*/,
-                                           off_t /*todo*/, dataaddrlist_type const& /*remote*/);
+                                           off_t /*todo*/, dataaddrlist_type const& /*remote*/,
+                                           progress_fn const& /*progress*/ = {});
             virtual xfer_result   getFile (uuid_type const& /*srcUUID*/, uuid_type const& /*dstUUID*/,
-                                           off_t /*todo*/, dataaddrlist_type const& /*remote*/);
+                                           off_t /*todo*/, dataaddrlist_type const& /*remote*/,
+                                           progress_fn const& /*progress*/ = {});
 
             virtual bool          removeUUID(etdc::uuid_type const&);
             virtual std::string   status( void ) const NOTIMPLEMENTED;
@@ -198,9 +224,11 @@ namespace etdc {
 
             // Canned sequence?
             virtual xfer_result   sendFile(uuid_type const& /*srcUUID*/, uuid_type const& /*dstUUID*/,
-                                           off_t /*todo*/, dataaddrlist_type const& /*remote*/);
+                                           off_t /*todo*/, dataaddrlist_type const& /*remote*/,
+                                           progress_fn const& /*progress*/ = {});
             virtual xfer_result   getFile (uuid_type const& /*srcUUID*/, uuid_type const& /*dstUUID*/,
-                                          off_t /*todo*/, dataaddrlist_type const& /*remote*/) NOTIMPLEMENTED;
+                                          off_t /*todo*/, dataaddrlist_type const& /*remote*/,
+                                          progress_fn const& /*progress*/ = {}) NOTIMPLEMENTED;
 
             virtual bool          removeUUID(etdc::uuid_type const&);
             virtual std::string   status( void ) const NOTIMPLEMENTED;
@@ -255,6 +283,11 @@ namespace etdc {
             ETDServer           __m_etdserver;
             etdc::etdc_fdptr    __m_connection;
             protocolversion_type __m_clientProtocolVersion;
+            // Serialises writes to __m_connection across the wrapper's main
+            // read-loop thread and any detached worker threads it may have
+            // spawned (currently sendFile workers, which also emit in-band
+            // PROGRESS lines during the transfer).
+            std::mutex          __m_writeMutex;
 
             // Sucks the connection empty for commands
             void handle( void );
