@@ -80,7 +80,7 @@ mkobjs=$(foreach O, $(patsubst %.c, %.co, $(patsubst %.cc, %.cco, $(patsubst %.S
 
 # etransfer daemon
 etd_SRC=src/etd.cc src/reentrant.cc src/etdc_fd.cc src/etdc_etdserver.cc src/etdc_debug.cc src/etd_acl.cc
-etd_VERSION=1.2
+etd_VERSION=$(shell ./get_version)
 etd_RELEASE=dev
 etd_OBJS=$(call mkobjs,etd)
 
@@ -91,7 +91,7 @@ etd_DEPS=libudt5ab libsrt5ab fkyaml pthread
 
 # etransfer client
 etc_SRC=src/etc.cc src/reentrant.cc src/etdc_fd.cc src/etdc_etdserver.cc src/etdc_debug.cc src/etd_acl.cc
-etc_VERSION=1.2
+etc_VERSION=$(shell ./get_version)
 etc_RELEASE=dev
 etc_OBJS=$(call mkobjs,etc)
 
@@ -217,7 +217,7 @@ $(repos)/src/%_version.cco:
 	@ mkdir -p $(repos)
 	@ export TMP=`dirname $@`; if [ ! -d "$${TMP}" ]; then mkdir -p "$${TMP}"; fi;
 	@ if [ ! -f ".$*.seq" ]; then echo 0 > .$*.seq; fi;
-	@ export SEQ=`cat .$*.seq`; sed 's/@@PROG@@/$(*F)/;s/@@PROG_VERSION@@/$($(*F)_VERSION)-$($(*F)_RELEASE)-$(BUILD)/;s/@@B2B@@/$(B2B)/;s/@@RELEASE@@/$($(*F)_RELEASE)/;s/@@BUILD@@/$(BUILD)/;s/@@BUILDINFO@@/$(BUILDINFO)/;s/@@DATE@@/$(DATE)/;' src/version.in | $(CXX) -DSEQNR=\"$${SEQ}\" $(CXXOPT) $(INCD) -c -o $@ -pipe -x c++ -; echo `expr $${SEQ} + 1` > .$*.seq
+	@ export SEQ=`cat .$*.seq`; sed 's/@@PROG@@/$(*F)/;s/@@PROG_VERSION@@/$($(*F)_VERSION)/;s/@@B2B@@/$(B2B)/;s/@@RELEASE@@/$($(*F)_RELEASE)/;s/@@BUILD@@/$(BUILD)/;s/@@BUILDINFO@@/$(BUILDINFO)/;s/@@DATE@@/$(DATE)/;' src/version.in | $(CXX) -DSEQNR=\"$${SEQ}\" $(CXXOPT) $(INCD) -c -o $@ -pipe -x c++ -; echo `expr $${SEQ} + 1` > .$*.seq
 
 #@echo "[compile] $< into $@"
 $(repos)/%.cco: %.cc
