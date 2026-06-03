@@ -5,7 +5,7 @@
 data does not flow through the client's machine and/or network.
 
 - The system natively supports remote wildcards; it is possible to transfer
-multiple files irrespective of wether they are remote or local. Since Apr 2026 (v1.2), the daemon also [supports access control lists (ACLs)](#access-control-lists) to restrict read and/or write access to specific files or directories.
+multiple files irrespective of wether they are remote or local. Since Jun 2026 (v2.0), the daemon also [supports access control lists (ACLs)](#access-control-lists) to restrict read and/or write access to specific files or directories.
 
 - The etransfer tools support TCP, [UDT](https://github.com/netvirt/udt4), and [SRT](https://www.srtalliance.org/) over both IPv4 and IPv6. The UDT and SRT protocols are orders of magnitude faster on long, fat, network connections; SRT adds more stability on top of similar congestion-control behaviour. (See also [UDT or SRT?](#transport-protocols-udt-or-srt))
 
@@ -21,6 +21,7 @@ multiple files irrespective of wether they are remote or local. Since Apr 2026 (
 
 <!--- line breaking in Markdown according to
       https://stackoverflow.com/a/36600196  -->
+[`Version 2.0`](https://github.com/jive-vlbi/etransfer/releases/tag/v2.0) was tagged on Jun 03 2026; introduces TCP-keepalive, idle-transfer-timeout, Access Control Lists in the daemon (etd); adds per-file progress-reporting to the client (etc); compiles actual git version info into the binaries (--version is now useful); command-line constraint violation error message more human friendly; adds SRT as another fast UDP-based data transport protocol; fixes: a hang-on-^C, compile issues on Debian (and possible other) Linux systems, some POSIX/strictness violations, log output lines are tagged with the transfer UUID for disentanglement, generated formatters now retain all iomanips (even the transient ones like std::setw)<br/><br/>
 [`Version 1.2`](https://github.com/jive-vlbi/etransfer/issues/30) introduces optional [SRT](https://www.srtalliance.org/) data channels alongside TCP and UDT.<br/>
 [`Version 1.1`](https://github.com/jive-vlbi/etransfer/releases/tag/v1.1) was tagged on Feb 10 2022; log into file-in-directory, compile issues, NFS workaround, fix bug in UUID generator and SIGSEGV in fmtTime<br/>
 [`Version 1.0.1`](https://github.com/jive-vlbi/etransfer/releases/tag/v1.0.1) was tagged on Jun 02 2021; bug in v1.0 found after release: superfluous comma in regex for multiple data channel "parsing"<br/>
@@ -35,7 +36,10 @@ suitable, C++11 compliant compiler is necessary.
 ```bash
     $ git clone https://github.com/jive-vlbi/etransfer.git
     $ cd etransfer
-    $ make
+    # -j <number> is optional
+    #    it makes the compilation go faster on multicore systems
+    #    keeping <number> <= N_cores is a good setting probably
+    $ make [-j <number>]
     <time passes, no errors should happen ...>
     $
 ```
@@ -48,36 +52,10 @@ compile the same source tree on different systems with or without debug
 information.
 
 ## GCC[10|12] / Debian[11|12] "Bullseye"/"Bookworm" build problems
+**NOTE: this is fixed in v2.0**
+In the git repo select an older README.md version to find the original error and fix.
+Still thanks to @AarónG for reporting this first!
 
-On Debian[11|12] w/ gcc[10|12] (and maybe others) the build will likely fail with this curious error:
-
-	In file included from /usr/include/c++/12/mutex:43
-	                 from /home/verkout/src/etransfer/src/etdc_debug.h:23,
-	                 from /home/verkout/src/etransfer/src/etdc_fd.h:29,
-	                 from src/etc.cc:21:
-	/usr/include/c++/12/bits/std\_mutex.h: In member function 'void std::__condvar::wait_until(std::mutex&, clockid_t, timespec&)':
-	/usr/include/c++/12/bits/std\_mutex.h:169:7: error: 'pthread_cond_clockwait' was not declared in this scope; did you mean 'pthread_cond_wait'?
-	  169 |       pthread_cond_clockwait(&_M_cond, __m.native_handle(), __clock,
-	      |       ^~~~~~~~~~~~~~~~~~~~~~
-	      |       pthread_cond_wait
-	/usr/include/c++/12/mutex: In member function 'bool std::timed_mutex::_M_clocklock(clockid_t, const __gthread_time_t&)':
-	/usr/include/c++/12/mutex:272:17: error: 'pthread_mutex_clocklock' was not declared in this scope; did you mean 'pthread_mutex_unlock'?
-	  272 |       { return !pthread_mutex_clocklock(&_M_mutex, clockid, &__ts); }
-	      |                 ^~~~~~~~~~~~~~~~~~~~~~~
-	      |                 pthread_mutex_unlock
-	/usr/include/c++/12/mutex: In member function 'bool std::recursive_timed_mutex::_M_clocklock(clockid_t, const __gthread_time_t&)':
-	/usr/include/c++/12/mutex:338:17: error: 'pthread_mutex_clocklock' was not declared in this scope; did you mean 'pthread_mutex_unlock'?
-	  338 |       { return !pthread_mutex_clocklock(&_M_mutex, clockid, &__ts); }
-	      |                 ^~~~~~~~~~~~~~~~~~~~~~~
-	      |                 pthread_mutex_unlock
-
-This seems to be caused by part of the (system)headers still thinking we're compiling `_GNU_SOURCE` and another part not, because that's explicitly disabled on the command line.  The `-DPOSIX_C_SOURCE=200809L -D_GNU_SOURCE -U_GNU_SOURCE` sequence in the [Makefile](./Makefile) is (one of) the ways to force the compiler into using POSIX interfaces and disallow any of the GNU extension nonsense ;-)
-
-See for example [this Stackoverflow Q+A](https://stackoverflow.com/questions/11670581/why-is-gnu-source-defined-by-default-and-how-to-turn-it-off) for some background.
-
-To quickly fix your build simply remove the `-D_GNU_SOURCE -U_GNU_SOURCE` from the `BASEOPT=` list of compilation options in the `Makefile`.
-
-Thanks to @Aar�nG for reporting this.
 
 ## GCC9 / CentOS7 build problems
 
