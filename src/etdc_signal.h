@@ -44,7 +44,14 @@
 #include <pthread.h>
 
 namespace etdc {
-    constexpr int getMaskValue = 0xDEADBEEF; // Let's hope that SIG_SETMASK, SIG_BLOCK, SIG_UNBLOCK are never this
+    // Magic sentinel for "no operation" mask op. The bit pattern
+    // 0xDEADBEEF is an 'unsigned int' literal (it overflows int32);
+    // since this constant is consumed both as an int-backed enum
+    // initialiser and as an int case-label, we explicitly narrow
+    // it to int (well-defined on every supported target -- the
+    // exact value is irrelevant, only its non-clash with SIG_*
+    // constants matters).
+    constexpr int getMaskValue = static_cast<int>(0xDEADBEEFu); // Let's hope that SIG_SETMASK, SIG_BLOCK, SIG_UNBLOCK are never this
     // Transform the #defines from <signal.h> into a proper type. Types are
     // good. Let's have more of those. With the new 'enum class' we can't
     // mistake e.g. MaskOp::setMask with plain old integers anymore!!!!!! Yay!
@@ -250,7 +257,11 @@ operator<<(std::basic_ostream<CharT, Traits>& os, sigset_t const& ss) {
     auto allSigs    = etdc::mk_sequence(1, 31);
     
     return os << std::accumulate(std::begin(allSigs), std::end(allSigs), uint32_t(0),
-                                 [&](uint32_t& acc, int s) { return acc |= (sigismember(&ss, s) << s); });
+                                 // sigismember() returns int; promote to uint32_t *before*
+                                 // shifting so (a) -Wsign-conversion on the |= into 'acc'
+                                 // doesn't fire and (b) we never risk shifting a 1 into the
+                                 // sign bit of a (signed) int if the signal range grows.
+                                 [&](uint32_t& acc, int s) { return acc |= (static_cast<uint32_t>(sigismember(&ss, s)) << s); });
 }
 #if 0
     // This implementation could be used to display ALL possible signals on Loonix

@@ -8,10 +8,14 @@ BINDIR=/usr/local/bin
 BUILDINFO=$(shell hostname; echo ":"; date '+%d-%b-%Y : %Hh%Mm%Ss' )
 DATE=$(shell date '+%d-%b-%Y %Hh%Mm%Ss')
 
-# on some compilers of the gcc.4.3.<small digit> the "-Wconversion" flag
-# is broken - it produces warning for perfectly legitimate code.
-# All files that could be fixed are fixed, however atomic.h can't be 
-BASEOPT=-fPIC $(OPT) -Wall -W -Werror -Wextra -pedantic -DB2B=$(B2B) -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -D_GNU_SOURCE -U_GNU_SOURCE -D__STDC_FORMAT_MACROS -Wcast-qual -Wwrite-strings -Wredundant-decls -Wfloat-equal -Wshadow -D_FILE_OFFSET_BITS=64
+# NOTE: -Wconversion is intentionally *not* enabled. It produces a flood
+# of -Wsign-conversion noise at every POSIX I/O boundary (read/write
+# returning ssize_t, fed into size_t buffers) where the typical "fix"
+# is a static_cast<size_t>() that hides nothing and catches nothing.
+# See docs/checked-conversions-plan.md for a sketch of how we'd revisit
+# this with throwing checked conversions (etdc::narrow) if we ever want
+# real bounds-checking at those boundaries.
+BASEOPT=-fPIC $(OPT) -Wall -W -Werror -Wextra -pedantic -pedantic-errors -DB2B=$(B2B) -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -D__STDC_FORMAT_MACROS -Wcast-qual -Wwrite-strings -Wredundant-decls -Wfloat-equal -Wshadow -Wundef -D_FILE_OFFSET_BITS=64
 
 CCOPT=$(BASEOPT) -Wbad-function-cast -Wstrict-prototypes
 CXXOPT=$(BASEOPT) -std=c++11 

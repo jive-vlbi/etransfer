@@ -906,7 +906,11 @@ void do_daemonize( void ) {
         // 2) still no known limit
         // either way, we still don't know how many file descriptors to
         // close ...
-        rl.rlim_max = (scopenmax==-1) ? 1024 : scopenmax;
+        // Both ternary branches forced to rlim_t (the destination's
+        // unsigned type) so the ?:-expression has a single signedness
+        // and -Wsign-conversion doesn't fire. The ==-1 test already
+        // guarantees scopenmax is non-negative on the taken branch.
+        rl.rlim_max = (scopenmax==-1) ? rlim_t{1024} : static_cast<rlim_t>(scopenmax);
     }
     // do not close stderr - we've redirected that to syslog
     for(decltype(rl.rlim_max) i = 0; i<rl.rlim_max; i++)
