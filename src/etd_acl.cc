@@ -48,50 +48,61 @@ namespace etdc {
         }
     }
 
-    void ACL::populate_rule(rule& target_rule) {
-        target_rule.has_prefix = has_recursive_suffix(target_rule.pattern);
-        if (target_rule.has_prefix) {
-            const std::string prefix_glob = target_rule.pattern.substr(0, target_rule.pattern.size() - 2);
+    std::regex ACL::compile_prefix_regex(std::string const& pattern) {
+        if( !has_recursive_suffix(pattern) )
+            return std::regex();
 
-            std::string regex_pattern("^");
-            regex_pattern.reserve(prefix_glob.size() * 2 + 8);
+        const std::string prefix_glob = pattern.substr(0, pattern.size() - 2);
 
-            for(char ch : prefix_glob) {
-                if( ch == '*' ) {
-                    regex_pattern.append("[^/]*");
-                    continue;
-                }
-                if( ch == '?' ) {
-                    regex_pattern.append("[^/]");
-                    continue;
-                }
+        std::string regex_pattern("^");
+        regex_pattern.reserve(prefix_glob.size() * 2 + 8);
 
-                switch( ch ) {
-                    case '.': case '^': case '$': case '+':
-                    case '{': case '}': case '(': case ')':
-                    case '[': case ']': case '|': case '\\':
-                        regex_pattern.push_back('\\');
-                        break;
-                    default:
-                        break;
-                }
-                regex_pattern.push_back(ch);
+        for(char ch : prefix_glob) {
+            if( ch == '*' ) {
+                regex_pattern.append("[^/]*");
+                continue;
+            }
+            if( ch == '?' ) {
+                regex_pattern.append("[^/]");
+                continue;
             }
 
-            if( prefix_glob.empty() ) {
-                regex_pattern.append(".*");
-            } else {
-                if( !regex_pattern.empty() && regex_pattern.back() == '/' ) {
-                    regex_pattern.pop_back();
-                }
-                regex_pattern.append("(?:/.*)?");
+            switch( ch ) {
+                case '.': case '^': case '$': case '+':
+                case '{': case '}': case '(': case ')':
+                case '[': case ']': case '|': case '\\':
+                    regex_pattern.push_back('\\');
+                    break;
+                default:
+                    break;
             }
-
-            target_rule.prefix_regex = std::regex(regex_pattern);
-        } else {
-            target_rule.prefix_regex = std::regex();
+            regex_pattern.push_back(ch);
         }
+
+        if( prefix_glob.empty() ) {
+            regex_pattern.append(".*");
+        } else {
+            if( !regex_pattern.empty() && regex_pattern.back() == '/' ) {
+                regex_pattern.pop_back();
+            }
+            regex_pattern.append("(?:/.*)?");
+        }
+
+        return std::regex(regex_pattern);
     }
+
+    ACL::rule::rule(bool allow, std::string pattern)
+        : _m_allow{allow}
+        , _m_pattern{std::move(pattern)}
+        , _m_has_prefix{has_recursive_suffix(_m_pattern)}
+        , _m_prefix_regex{compile_prefix_regex(_m_pattern)}
+    {}
+
+    ACL::section::section(rule default_rule, std::vector<rule> allow_rules, std::vector<rule> deny_rules)
+        : _m_default_rule{std::move(default_rule)}
+        , _m_allow_rules{std::move(allow_rules)}
+        , _m_deny_rules{std::move(deny_rules)}
+    {}
 
     // Our ACL requires a few things.
     // Permissions tested in order, first to match wins.
@@ -161,14 +172,11 @@ namespace etdc {
             ETDCASSERT((allow && m_def["allow"].is_string()) || (deny && m_def["deny"].is_string()),
                        "Node '" << nm << "': key '" << (allow? "allow" : "deny") << "' is not a string (path)");
 
-            section& target = _m_sections[static_cast<int>(which)];
             const std::string default_pattern = allow ? m_def["allow"].as_str() : m_def["deny"].as_str();
             validate_pattern(default_pattern, nm + " default rule");
-            target.default_rule.allow = allow;
-            target.default_rule.pattern = default_pattern;
-            populate_rule(target.default_rule);
-            target.allow_rules.clear();
-            target.deny_rules.clear();
+
+            std::vector<rule> allow_rules;
+            std::vector<rule> deny_rules;
 
             // *IF* they have 'allow:' and/or 'deny:' they need to be
             // sequences-of-strings
@@ -181,24 +189,22 @@ namespace etdc {
                 for(auto const& entry : n["allow"]) {
                     const std::string pattern = entry.as_str();
                     validate_pattern(pattern, nm + " allow rule");
-                    rule allow_rule;
-                    allow_rule.allow   = true;
-                    allow_rule.pattern = pattern;
-                    populate_rule(allow_rule);
-                    target.allow_rules.push_back(allow_rule);
+                    allow_rules.emplace_back(true, pattern);
                 }
             }
             if( n.contains("deny") ) {
                 for(auto const& entry : n["deny"]) {
                     const std::string pattern = entry.as_str();
                     validate_pattern(pattern, nm + " deny rule");
-                    rule deny_rule;
-                    deny_rule.allow   = false;
-                    deny_rule.pattern = pattern;
-                    populate_rule(deny_rule);
-                    target.deny_rules.push_back(deny_rule);
+                    deny_rules.emplace_back(false, pattern);
                 }
             }
+
+            _m_sections[static_cast<int>(which)] = section{
+                rule{allow, default_pattern},
+                std::move(allow_rules),
+                std::move(deny_rules)
+            };
         };
 
         node_ok( _m_root["read"],  "read",  section_type::Read );
@@ -224,47 +230,47 @@ namespace etdc {
     bool ACL::check( section_type which, std::string const& path ) const {
         auto const& lcl_section = _m_sections[static_cast<int>(which)];
         const auto matches = [&](rule const& r) {
-            if( r.has_prefix ) {
+            if( r.has_prefix() ) {
                 if( path.empty() ) {
                     return false;
                 }
                 std::smatch match;
-                if( !std::regex_match(path, match, r.prefix_regex) ) {
+                if( !std::regex_match(path, match, r.prefix_regex()) ) {
                     return false;
                 }
                 return match.size() > 0;
             }
-            return ::fnmatch(r.pattern.c_str(), path.c_str(), FNM_PATHNAME)==0;
+            return ::fnmatch(r.pattern().c_str(), path.c_str(), FNM_PATHNAME)==0;
         };
 
         auto evaluate_rules = [&](std::vector<rule> const& rules, bool& decision) -> bool {
             for(auto const& r : rules) {
                 if( matches(r) ) {
-                    decision = r.allow;
+                    decision = r.allow();
                     return true;
                 }
             }
             return false;
         };
 
-        const bool default_is_allow = lcl_section.default_rule.allow;
+        const bool default_is_allow = lcl_section.default_rule().allow();
 
         if( default_is_allow ) {
             bool decision;
-            if( evaluate_rules(lcl_section.deny_rules, decision) )
+            if( evaluate_rules(lcl_section.deny_rules(), decision) )
                 return decision;
-            if( evaluate_rules(lcl_section.allow_rules, decision) )
+            if( evaluate_rules(lcl_section.allow_rules(), decision) )
                 return decision;
         } else {
             bool decision;
-            if( evaluate_rules(lcl_section.allow_rules, decision) )
+            if( evaluate_rules(lcl_section.allow_rules(), decision) )
                 return decision;
-            if( evaluate_rules(lcl_section.deny_rules, decision) )
+            if( evaluate_rules(lcl_section.deny_rules(), decision) )
                 return decision;
         }
 
-        if( matches(lcl_section.default_rule) )
-            return lcl_section.default_rule.allow;
+        if( matches(lcl_section.default_rule()) )
+            return lcl_section.default_rule().allow();
 
         return false;
     }

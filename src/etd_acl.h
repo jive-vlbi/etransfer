@@ -57,28 +57,47 @@ namespace etdc {
         private:
             enum class section_type { Read = 0, Write = 1 };
 
-            struct rule {
-                bool        allow;
-                std::string pattern;
-                bool        has_prefix;
-                std::regex  prefix_regex;
+            class rule {
+                public:
+                    rule() = default;
+                    rule( bool allow, std::string pattern );
+
+                    bool               allow()        const noexcept { return _m_allow;        }
+                    std::string const& pattern()      const noexcept { return _m_pattern;      }
+                    bool               has_prefix()   const noexcept { return _m_has_prefix;   }
+                    std::regex  const& prefix_regex() const noexcept { return _m_prefix_regex; }
+
+                private:
+                    bool        _m_allow{false};
+                    std::string _m_pattern{};
+                    bool        _m_has_prefix{false};
+                    std::regex  _m_prefix_regex{};
             };
 
-            struct section {
-                rule                     default_rule;
-                std::vector<rule>        allow_rules;
-                std::vector<rule>        deny_rules;
+            class section {
+                public:
+                    section() = default;
+                    section( rule default_rule, std::vector<rule> allow_rules, std::vector<rule> deny_rules );
+
+                    rule              const& default_rule() const noexcept { return _m_default_rule; }
+                    std::vector<rule> const& allow_rules()  const noexcept { return _m_allow_rules;  }
+                    std::vector<rule> const& deny_rules()   const noexcept { return _m_deny_rules;   }
+
+                private:
+                    rule              _m_default_rule{};
+                    std::vector<rule> _m_allow_rules{};
+                    std::vector<rule> _m_deny_rules{};
             };
 
             fkyaml::node    _m_root;
             section         _m_sections[2];
 
             // Will throw on wonky yaml
-            void            initFromYAML( void );
-            bool            check( section_type which, std::string const& path ) const;
-            static bool     has_recursive_suffix(std::string const& pattern);
-            static void     validate_pattern(std::string const& pattern, std::string const& context);
-            static void     populate_rule(rule& target_rule);
+            void               initFromYAML( void );
+            bool               check( section_type which, std::string const& path ) const;
+            static bool        has_recursive_suffix(std::string const& pattern);
+            static void        validate_pattern(std::string const& pattern, std::string const& context);
+            static std::regex  compile_prefix_regex(std::string const& pattern);
     };
 
     using ACLptr = std::shared_ptr<etdc::ACL>;
