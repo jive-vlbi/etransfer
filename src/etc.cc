@@ -339,6 +339,21 @@ std::ostream& operator<<(std::ostream& os, display_format const& dp) {
     return os << "<INVALID display format>";
 }
 
+enum progress_mode { progress_off, progress_tty, progress_always, progress_invalid };
+std::ostream& operator<<(std::ostream& os, progress_mode const& pm) {
+    switch( pm ) {
+        case progress_off:
+            return os << "off";
+        case progress_tty:
+            return os << "tty";
+        case progress_always:
+            return os << "always";
+        default:
+            break;
+    }
+    return os << "<INVALID progress mode>";
+}
+
 
 int main(int argc, char const*const*const argv) {
     // First things first: block ALL signals
@@ -349,6 +364,7 @@ int main(int argc, char const*const*const argv) {
     unsigned int                 maxFileRetry{ 2 }, nFileRetry{ 0 };
     std::chrono::duration<float> retryDelay{ 10 };
     display_format               display( imperial );
+    progress_mode                progress( progress_tty );
     etdc::openmode_type          mode{ etdc::openmode_type::New };
     etdc::numretry_type          connRetry{ 2 };
     etdc::retrydelay_type        connDelay{ 5 };
@@ -406,6 +422,22 @@ int main(int argc, char const*const*const argv) {
         AP::option(AP::long_name("continental"), AP::store_const_into(continental, display),
                    AP::docstring(std::string("Use continental (European) formatting for number representation")+(display == continental ? " (default)" : ""))) );
 #endif
+
+    // progress bar visibility
+    cmd.add( AP::long_name("progress"), AP::store_into(progress), AP::at_most(1),
+             AP::is_member_of({progress_off, progress_tty, progress_always}),
+             AP::convert([](std::string const& s) {
+                            static std::map<std::string, progress_mode> pmMap{
+                                {"off",    progress_off},    {"never",  progress_off},
+                                {"tty",    progress_tty},    {"auto",   progress_tty},
+                                {"always", progress_always} };
+                            return etdc::get(pmMap, s, progress_invalid);
+                            }),
+             AP::docstring(std::string("Progress bar visibility: 'off' (alias 'never') = never draw; "
+                                       "'tty' (alias 'auto') = only when stderr is a terminal; "
+                                       "'always' = also when stderr is redirected, in which case "
+                                       "newline-terminated lines without ANSI escapes are emitted "
+                                       "so log files stay readable. Default: ")+etdc::repr(progress)) );
 
     // How many times to retry file (so total # of tries is N+1) and how
     // long to wait between retries
@@ -621,6 +653,8 @@ int main(int argc, char const*const*const argv) {
     // fn() so the summary line below starts on a fresh row.
     // -----------------------------------------------------------------
     const bool       stderr_tty{ ::isatty(STDERR_FILENO) != 0 };
+    const bool       show_progress{ progress == progress_always ||
+                                    (progress == progress_tty && stderr_tty) };
     bool             progress_drawn{ false };
 
     auto reset_progress = [&]() {
@@ -628,7 +662,8 @@ int main(int argc, char const*const*const argv) {
     };
     auto finalize_progress = [&]() {
         if( progress_drawn ) {
-            std::cerr << std::endl;
+            if( stderr_tty )
+                std::cerr << std::endl;
             progress_drawn = false;
         }
     };
@@ -657,7 +692,7 @@ int main(int argc, char const*const*const argv) {
                                 etdc::mk_formatter<double>("s",   std::fixed, etdc::imperial,    std::setprecision(2), std::setw(6)));
 
     auto render_progress = [&](off_t bytes_so_far, off_t total, double elapsed) {
-        if( !stderr_tty )
+        if( !show_progress )
             return;
         progress_drawn = true;
 
@@ -684,17 +719,30 @@ int main(int argc, char const*const*const argv) {
         // leftover characters from a previous longer redraw so the
         // line stays visually clean even on outliers.
         std::ostringstream oss;
-        oss << '\r'
-            << '[' << bar << "] "
-            << std::fixed << std::setprecision(1) << std::setw(5) << pct << "%  "
-            << fmtProgBytes((double)bytes_so_far)
-            << " / "
-            << fmtProgBytes((double)total)
-            << "  ["
-            << fmtProgRate(rate)
-            << "]  "
-            << fmtProgTime(elapsed)
-            << "\033[K";
+        if( stderr_tty ) {
+            oss << '\r'
+                << '[' << bar << "] "
+                << std::fixed << std::setprecision(1) << std::setw(5) << pct << "%  "
+                << fmtProgBytes((double)bytes_so_far)
+                << " / "
+                << fmtProgBytes((double)total)
+                << "  ["
+                << fmtProgRate(rate)
+                << "]  "
+                << fmtProgTime(elapsed)
+                << "\033[K";
+        } else {
+            oss << '[' << bar << "] "
+                << std::fixed << std::setprecision(1) << std::setw(5) << pct << "%  "
+                << fmtProgBytes((double)bytes_so_far)
+                << " / "
+                << fmtProgBytes((double)total)
+                << "  ["
+                << fmtProgRate(rate)
+                << "]  "
+                << fmtProgTime(elapsed)
+                << '\n';
+        }
         auto const line = oss.str();
         std::cerr << line << std::flush;
     };
