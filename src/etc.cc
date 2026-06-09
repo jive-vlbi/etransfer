@@ -22,6 +22,7 @@
 #include <etdc_thread.h>
 #include <etdc_etd_state.h>
 #include <etdc_etdserver.h>
+#include <etdc_channel_pref.h>
 #include <etdc_stringutil.h>
 #include <etdc_streamutil.h>
 #include <etdc_sciprint.h>
@@ -132,6 +133,7 @@ HUMANREADABLE(etdc::openmode_type, "file copy mode")
 HUMANREADABLE(std::chrono::duration<float>, "duration (s)")
 HUMANREADABLE(etdc::mss_type, "int (bytes)")
 HUMANREADABLE(etdc::max_bw_type, "int (bytes per second)")
+HUMANREADABLE(std::vector<etdc::pref_token>, "transport list, e.g. srt,udt6")
 
 // Make sure our zignal handlert has C-linkage
 extern "C" {
@@ -365,6 +367,7 @@ int main(int argc, char const*const*const argv) {
     std::chrono::duration<float> retryDelay{ 10 };
     display_format               display( imperial );
     progress_mode                progress( progress_tty );
+    std::vector<etdc::pref_token> channelPref;
     etdc::openmode_type          mode{ etdc::openmode_type::New };
     etdc::numretry_type          connRetry{ 2 };
     etdc::retrydelay_type        connDelay{ 5 };
@@ -438,6 +441,17 @@ int main(int argc, char const*const*const argv) {
                                        "'always' = also when stderr is redirected, in which case "
                                        "newline-terminated lines without ANSI escapes are emitted "
                                        "so log files stay readable. Default: ")+etdc::repr(progress)) );
+
+    // data-channel transport preference (hint only; reorders, never filters)
+    cmd.add( AP::long_name("prefer-data-channel"), AP::store_into(channelPref), AP::at_most(1),
+             AP::convert([](std::string const& s) { return etdc::parse_channel_preference(s); }),
+             AP::docstring("Hint to try preferred data-channel transports first. Comma-separated list of "
+                           "'{tcp,udt,srt}' tokens with optional address-family suffix '4' or '6'; a bare "
+                           "protocol matches either family. E.g. 'srt' prefers SRT (both v4/v6, in the order "
+                           "the daemon advertised them); 'udt6,udt4,srt6' sets a finer order. This only "
+                           "reorders the channels the daemon offers - it never removes one, so non-preferred "
+                           "channels remain as fallback, and it has no effect if the daemon does not offer the "
+                           "preferred transport (e.g. a pre-SRT daemon).") );
 
     // How many times to retry file (so total # of tries is N+1) and how
     // long to wait between retries
@@ -617,6 +631,22 @@ int main(int argc, char const*const*const argv) {
     std::regex  rxWildCard("^(::|0.0.0.0)$");
     for(auto ptr=dataChannels.begin(); ptr!=dataChannels.end(); ptr++)
         update_sockname(*ptr, etdc::host_type(std::regex_replace(get_host(*ptr), rxWildCard, dstHost)));
+
+    // Apply the user's data-channel transport preference (if any) as a
+    // stable reorder keyed on each channel's scheme rank. std::list::sort
+    // is guaranteed stable, so channels sharing a rank - including all the
+    // non-preferred ones - keep the daemon-advertised order. The order set
+    // here is honoured by both push (ETDServer/ETDProxy::sendFile) and pull
+    // (ETDServer::getFile) since both dial the addresses in list order.
+    if( !channelPref.empty() ) {
+        dataChannels.sort([&](etdc::sockname_type const& a, etdc::sockname_type const& b) {
+            return etdc::preference_rank(channelPref, get_protocol(a)) <
+                   etdc::preference_rank(channelPref, get_protocol(b));
+        });
+        ETDCDEBUG(2, "Data channel order after --prefer-data-channel:" << std::endl);
+        for(auto const& addr: dataChannels)
+            ETDCDEBUG(2, "    " << addr << std::endl);
+    }
 
     // Before processing all file(s) we already know if we're going to push or pull
     std::function<etdc::xfer_result(etdc::uuid_type const&, etdc::uuid_type&, off_t, etdc::dataaddrlist_type const&,
