@@ -217,7 +217,7 @@ $(repos)/src/%_version.cco:
 	@ mkdir -p $(repos)
 	@ export TMP=`dirname $@`; if [ ! -d "$${TMP}" ]; then mkdir -p "$${TMP}"; fi;
 	@ if [ ! -f ".$*.seq" ]; then echo 0 > .$*.seq; fi;
-	@ export SEQ=`cat .$*.seq`; sed 's/@@PROG@@/$(*F)/;s/@@PROG_VERSION@@/$($(*F)_VERSION)/;s/@@B2B@@/$(B2B)/;s/@@RELEASE@@/$($(*F)_RELEASE)/;s/@@BUILD@@/$(BUILD)/;s/@@BUILDINFO@@/$(BUILDINFO)/;s/@@DATE@@/$(DATE)/;' src/version.in | $(CXX) -DSEQNR=\"$${SEQ}\" $(CXXOPT) $(INCD) -c -o $@ -pipe -x c++ -; echo `expr $${SEQ} + 1` > .$*.seq
+	@ export SEQ=`cat .$*.seq`; sed 's/@@PROG@@/$(*F)/;s%@@PROG_VERSION@@%$($(*F)_VERSION)%;s/@@B2B@@/$(B2B)/;s/@@RELEASE@@/$($(*F)_RELEASE)/;s/@@BUILD@@/$(BUILD)/;s/@@BUILDINFO@@/$(BUILDINFO)/;s/@@DATE@@/$(DATE)/;' src/version.in | $(CXX) -DSEQNR=\"$${SEQ}\" $(CXXOPT) $(INCD) -c -o $@ -pipe -x c++ -; echo `expr $${SEQ} + 1` > .$*.seq
 
 #@echo "[compile] $< into $@"
 $(repos)/%.cco: %.cc
