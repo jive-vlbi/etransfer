@@ -1795,6 +1795,22 @@ namespace etdc {
     static const std::regex rxSlash("\\\\");
     static const auto       unSlash = [](std::string const& s) { return std::regex_replace(s, rxSlash, ""); };
 
+    // GCC >= 12 (user reports from 14.2 and 15.2) produces bogus
+    // -Warray-bounds errors when, at -O2, it inlines the libstdc++ <regex>
+    // sub_match accessors used in getKeyValuePairs() below: the optimizer
+    // explores an impossible "empty match_results" path and computes
+    // negative subscripts (-3 being the container's internal prefix/suffix/
+    // unmatched slots) on sub_match arrays of ludicrous extent. The code is
+    // runtime-safe: after a successful match, match_results always holds
+    // mark_count()+1 sub_matches plus the three internal ones. This is a
+    // known GCC false positive (several open reports in GCC bugzilla about
+    // bogus -Warray-bounds/-Wstringop-* from inlined std::regex internals),
+    // so suppress the warning for the affected region only - through
+    // ETDDataServer::handle(), into which getKeyValuePairs() gets inlined.
+#if defined(__GNUC__) && !defined(__clang__) && __GNUC__ >= 12
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Warray-bounds"
+#endif
     template <typename InputIter, typename OutputIter,
               typename RegexIter  = std::regex_iterator<InputIter>,
               typename RetvalType = typename std::match_results<InputIter>::size_type>
@@ -1969,6 +1985,9 @@ namespace etdc {
         }
         ETDCDEBUG(4, "ETDDataServer::handle() / terminated" << std::endl);
     }
+#if defined(__GNUC__) && !defined(__clang__) && __GNUC__ >= 12
+#pragma GCC diagnostic pop
+#endif
 
     // PUSH n bytes src to dst, using buffer of size bufSz.
     // the bytes between endPos and rdPos is are what was read from the
