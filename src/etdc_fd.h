@@ -146,8 +146,9 @@ namespace etdc {
     template <class CharT, class Traits>
     std::basic_ostream<CharT, Traits>& operator<<(std::basic_ostream<CharT, Traits>& os, sockname_type const& sn) {
         os << "<" << std::get<0>(sn) << "/" << bracket(std::get<1>(sn)) << ":" << std::get<2>(sn);
-        // Only show udt options when applicable
-        if( untag(std::get<0>(sn)).find("udt")!=std::string::npos )
+        // Only show udt/srt options when applicable
+        if( untag(std::get<0>(sn)).find("udt")!=std::string::npos ||
+            untag(std::get<0>(sn)).find("srt")!=std::string::npos )
             os << "/mss=" << std::get<3>(sn) << ",max-bw=" << std::get<4>(sn);
         return os << ">";
     }
