@@ -105,11 +105,9 @@ namespace etdc {
         transferprops_type( transferprops_type const&) = delete;
 
         transferprops_type(etdc::etdc_fdptr efd, std::string const& p, openmode_type om):
-            path(p), fd(efd), openMode(om), timeout_function( []{} )
-        {
-            cancelled.store( false );
-            lastUpdate.store( transfer_clock::now() );
-        }
+            path(p), fd(efd), openMode(om), cancelled( false ),
+            lastUpdate( transfer_clock::now() ), timeout_function( []{} )
+        {}
     }; 
 
     using cancel_fn         = std::function<void(void)>;
