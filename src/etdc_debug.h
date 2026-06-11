@@ -122,6 +122,14 @@ namespace etdc {
         extern std::atomic<int> __m_fnthres;
 
         std::string timestamp( std::string const& fmt = "" );
+
+        // Log messages may echo peer-controlled strings (paths, UUIDs,
+        // addresses, error reasons). Escape ASCII control characters
+        // (except '\n' and '\t') and DEL as \xNN so ANSI escape
+        // sequences, NULs and '\r' line-rewriting tricks cannot mess
+        // with terminal-based log review. Bytes >= 0x80 are passed
+        // through untouched to keep UTF-8 file names readable.
+        std::string sanitize( std::string const& s );
     } // namespace detail 
 
     // get current debuglevel
@@ -413,8 +421,10 @@ namespace etdc {
             if( std::atomic_load(&etdc::detail::__m_dbglev)>=std::atomic_load(&etdc::detail::__m_fnthres) ) \
                 OsS_ZyP << ETDCDBG_FUNC; \
             OsS_ZyP << b;\
+            /* sanitize outside the lock - see comment above, minimal lock time */ \
+            std::string const ZyP_StR{ etdc::detail::sanitize(OsS_ZyP.str()) };\
             std::lock_guard<std::mutex> OsZyp_Lck(etdc::detail::__m_iolock);\
-            std::cerr << OsS_ZyP.str();\
+            std::cerr << ZyP_StR;\
         }\
     } while( 0 );
 
