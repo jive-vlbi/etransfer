@@ -507,7 +507,6 @@ int main(int argc, char const*const*const argv) {
                           "\t A pattern ending in \"**\" matches recursively under its prefix.\n"
                           "\t \"**\" may only appear at the end (e.g. /data/**)."),
              AP::convert([](std::string const& p) {
-                 ETDCSYSCALL(::access(p.c_str(), R_OK)==0, "ACL file '" << p << "' must exist and be readable");
                  return std::make_shared<etdc::ACL>( etdc::ACL::readFromFile(p) );
              }) );
 

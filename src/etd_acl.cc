@@ -19,8 +19,10 @@
 //          7990 AA Dwingeloo
 #include <etd_acl.h>
 #include <etdc_assert.h>
+#include <reentrant.h>
 
 #include <fstream>
+#include <cerrno>
 #include <fnmatch.h>
 
 namespace etdc {
@@ -210,6 +212,9 @@ namespace etdc {
         // see the argument as "std::istream&"?
         //return ACL( std::ifstream(fn) );
         std::ifstream ifs(fn);
+        // Report open failure directly - this replaces the old
+        // access(2)-then-open TOCTOU pattern at the call site
+        ETDCASSERT(ifs.is_open(), "Failed to open ACL file '" << fn << "' - " << etdc::strerror(errno));
         return ACL( ifs );
     }
 
