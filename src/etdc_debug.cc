@@ -60,5 +60,27 @@ namespace etdc { namespace detail {
         return std::string( buff.get() );
     }
 
+    // See etdc_debug.h for the rationale: escape control characters in
+    // (possibly peer-controlled) log messages, keeping '\n' and '\t'
+    std::string sanitize( std::string const& s ) {
+        static char const hexdigits[] = "0123456789ABCDEF";
+        std::string  rv;
+        // lower bound: the (overwhelmingly) common case has no escapes at
+        // all and is served by a single allocation; escaped characters
+        // (4 chars per escapee) grow the string normally
+        rv.reserve( s.size() );
+        for( unsigned char const c: s ) {
+            if( (c<0x20 && c!='\n' && c!='\t') || c==0x7F ) {
+                rv += '\\';
+                rv += 'x';
+                rv += hexdigits[c >> 4];
+                rv += hexdigits[c & 0x0F];
+            } else {
+                rv += static_cast<char>(c);
+            }
+        }
+        return rv;
+    }
+
     } // namespace detail 
 } // namespace etdc

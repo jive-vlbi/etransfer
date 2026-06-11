@@ -507,7 +507,6 @@ int main(int argc, char const*const*const argv) {
                           "\t A pattern ending in \"**\" matches recursively under its prefix.\n"
                           "\t \"**\" may only appear at the end (e.g. /data/**)."),
              AP::convert([](std::string const& p) {
-                 ETDCSYSCALL(::access(p.c_str(), R_OK)==0, "ACL file '" << p << "' must exist and be readable");
                  return std::make_shared<etdc::ACL>( etdc::ACL::readFromFile(p) );
              }) );
 
@@ -876,8 +875,12 @@ void do_daemonize( void ) {
     pid_t         pid;
     struct rlimit rl;
 
-    // Clear file creation mask - no need to do any assertions
-    ::umask( 0 );
+    // Set a safe file creation mask - no need to do any assertions.
+    // All current file/dir creation passes explicit modes (0644/0755);
+    // the umask only guards against future code paths that forget,
+    // ensuring nothing is ever created world-writable. 022 keeps the
+    // effective modes exactly as they were with the previous umask(0).
+    ::umask( 022 );
 
     // Get max. number of file descriptors
     ETDCASSERT(::getrlimit(RLIMIT_NOFILE, &rl)==0, "Failed to get max number of file descriptors - " << etdc::strerror(errno));

@@ -42,16 +42,22 @@ namespace etdc {
             }
 
             // Generate a new UUID
+            // NOTE: the UUID doubles as the de-facto session token on the
+            //       data channel, so it must not be predictable. Draw every
+            //       character from std::random_device directly (kernel
+            //       entropy on our platforms) rather than from a seeded
+            //       std::default_random_engine, whose future output can be
+            //       reconstructed from a few observed tokens. Lengths of
+            //       22-28 chars over a 62-char alphabet yield >= 128 bits.
             static uuid_type mk( void ) {
                 // In-class statics are a bugger. Jeebus.
-                static const std::string                                     __m_chars{ "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ012345679" };
+                static const std::string                                     __m_chars{ "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" };
                 static std::mutex                                            __m_random_lock{};
                 static std::random_device                                    __m_random_device{};
-                static std::default_random_engine                            __m_random_engine{ __m_random_device() };
-                static std::uniform_int_distribution<std::string::size_type> __m_uniform_sizes{15, 20};
+                static std::uniform_int_distribution<std::string::size_type> __m_uniform_sizes{22, 28};
                 static std::uniform_int_distribution<std::string::size_type> __m_uniform_chars{0, __m_chars.size() - 1};
-                static auto                                                  __m_sizegen = std::bind(__m_uniform_sizes, __m_random_engine);
-                static auto                                                  __m_chargen = [&]() { return __m_chars[__m_uniform_chars(__m_random_engine)]; };
+                static auto                                                  __m_sizegen = std::bind(__m_uniform_sizes, std::ref(__m_random_device));
+                static auto                                                  __m_chargen = [&]() { return __m_chars[__m_uniform_chars(__m_random_device)]; };
 
                 // Non-static, automatic variables
                 std::string                 uuid;
