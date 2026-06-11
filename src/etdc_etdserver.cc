@@ -1896,6 +1896,10 @@ namespace etdc {
             ETDCASSERT(pushptr==kvpairs.end() || pushptr->second=="1", "push keyword may only take one specific value");
             // The size must be an off_t value
             string2off_t(szptr->second, sz);
+            // A negative size would silently convert to a near-SIZE_MAX
+            // size_t in push_n/pull_n below, i.e. an effectively
+            // unbounded transfer. Reject before any I/O happens.
+            ETDCASSERT(sz>=0, "Negative transfer size [sz=" << sz << "]");
 
             const etdc::uuid_type uuid(uuidptr->second);
 
