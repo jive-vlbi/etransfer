@@ -33,6 +33,13 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 
+#ifdef ETDC_TLS
+#include <openssl/err.h>
+#include <openssl/x509.h>
+#include <openssl/evp.h>
+#include <climits>
+#endif
+
 // this one should live in the global namespace
 etdc::max_bw_type max_bw(std::string const& bandwidthstr) {
     // Special case for "-1", every other string should pass the below code
@@ -264,6 +271,173 @@ namespace etdc {
     }
 
     etdc_tcp6::~etdc_tcp6() {}
+
+#ifdef ETDC_TLS
+    ////////////////////////////////////////////////////////////////////////
+    //                        TLS-over-TCP sockets
+    ////////////////////////////////////////////////////////////////////////
+    namespace detail {
+        // Drain the OpenSSL thread-local error queue into a readable string
+        static std::string tls_errors( void ) {
+            std::ostringstream oss;
+            unsigned long      e;
+            char               buf[256];
+            while( (e=ERR_get_error())!=0 ) {
+                ERR_error_string_n(e, buf, sizeof(buf));
+                oss << (oss.tellp()>0 ? "; " : "") << buf;
+            }
+            return oss.tellp()>0 ? oss.str() : std::string("<no OpenSSL error queued>");
+        }
+
+        using ssl_ptr = std::shared_ptr<SSL>;
+
+        // SHA256 fingerprint of a certificate as lowercase ':'-separated hex,
+        // the format used for known-hosts pinning at the client
+        static std::string sha256_fingerprint(X509* cert) {
+            unsigned int  mdlen{ 0 };
+            unsigned char md[EVP_MAX_MD_SIZE];
+            ETDCASSERT(cert && X509_digest(cert, EVP_sha256(), md, &mdlen)==1,
+                       "computing certificate fingerprint - " << tls_errors());
+
+            static char const  hexdigits[] = "0123456789abcdef";
+            std::string        fingerprint;
+            for(unsigned int i=0; i<mdlen; i++) {
+                if( i )
+                    fingerprint += ':';
+                fingerprint += hexdigits[ (md[i]>>4) & 0xF ];
+                fingerprint += hexdigits[  md[i]     & 0xF ];
+            }
+            return fingerprint;
+        }
+
+        // After a successful handshake: re-point the wrapped fd's
+        // read/write/close at the SSL_* counterparts. The shared_ptr<SSL>
+        // captured in the lambdas keeps the SSL object (and through it the
+        // context refcount) alive for as long as the etdc_fd uses it.
+        static void attach_ssl(etdc_fd& fd, ssl_ptr ssl) {
+            etdc::update_fd(fd,
+                read_fn([ssl](int, void* buf, size_t n) -> ssize_t {
+                    const int r = SSL_read(ssl.get(), buf, static_cast<int>(std::min(n, size_t(INT_MAX))));
+                    if( r>0 )
+                        return r;
+                    // clean TLS shutdown reads like EOF, everything else like an error
+                    return (SSL_get_error(ssl.get(), r)==SSL_ERROR_ZERO_RETURN) ? 0 : -1;
+                }),
+                write_fn([ssl](int, const void* buf, size_t n) -> ssize_t {
+                    const int r = SSL_write(ssl.get(), buf, static_cast<int>(std::min(n, size_t(INT_MAX))));
+                    return (r>0) ? r : -1;
+                }),
+                close_fn([ssl](int fd_) {
+                    // Send close_notify (best effort - the peer may be gone)
+                    SSL_shutdown( ssl.get() );
+                    return ::close( fd_ );
+                })
+            );
+        }
+
+        // Common context setup: TLS 1.3 only, no legacy anything
+        static ssl_ctx_ptr mk_tls_ctx(SSL_METHOD const* method) {
+            ssl_ctx_ptr ctx( SSL_CTX_new(method), &SSL_CTX_free );
+            ETDCASSERT(ctx, "SSL_CTX_new() failed - " << tls_errors());
+            ETDCASSERT(SSL_CTX_set_min_proto_version(ctx.get(), TLS1_3_VERSION)==1,
+                       "requiring TLS 1.3 failed - " << tls_errors());
+            return ctx;
+        }
+
+        ssl_ctx_ptr mk_tls_server_ctx(std::string const& certfile, std::string const& keyfile) {
+            auto ctx = mk_tls_ctx( TLS_server_method() );
+            ETDCASSERT(SSL_CTX_use_certificate_chain_file(ctx.get(), certfile.c_str())==1,
+                       "loading certificate '" << certfile << "' - " << tls_errors());
+            ETDCASSERT(SSL_CTX_use_PrivateKey_file(ctx.get(), keyfile.c_str(), SSL_FILETYPE_PEM)==1,
+                       "loading private key '" << keyfile << "' - " << tls_errors());
+            ETDCASSERT(SSL_CTX_check_private_key(ctx.get())==1,
+                       "private key '" << keyfile << "' does not match certificate '" << certfile << "' - " << tls_errors());
+            // Print the fingerprint so the admin has something copy-pasteable
+            // to publish for clients to pre-seed their known-hosts pin file
+            ETDCDEBUG(0, "TLS certificate '" << certfile << "' sha256=" <<
+                         sha256_fingerprint(SSL_CTX_get0_certificate(ctx.get())) << std::endl);
+            return ctx;
+        }
+
+        ssl_ctx_ptr mk_tls_client_ctx( void ) {
+            // Note: no SSL_CTX_set_verify(SSL_VERIFY_PEER) - chain
+            // verification against a CA store is not our model; the peer is
+            // judged by the tls_verify_type callback on its fingerprint
+            // (known-hosts style pinning, done by the application)
+            return mk_tls_ctx( TLS_client_method() );
+        }
+
+        void tls_server_handshake(etdc_fdptr pSok, ssl_ctx_ptr ctx) {
+            ssl_ptr ssl( SSL_new(ctx.get()), &SSL_free );
+            ETDCASSERT(ssl, "SSL_new() failed - " << tls_errors());
+            ETDCASSERT(SSL_set_fd(ssl.get(), pSok->__m_fd)==1, "SSL_set_fd() failed - " << tls_errors());
+            ETDCASSERT(SSL_accept(ssl.get())==1, "TLS handshake (server) failed - " << tls_errors());
+            attach_ssl(*pSok, ssl);
+        }
+
+        void tls_client_handshake(etdc_fdptr pSok, ssl_ctx_ptr ctx, tls_verify_type const& verify, std::string const& peername) {
+            ssl_ptr ssl( SSL_new(ctx.get()), &SSL_free );
+            ETDCASSERT(ssl, "SSL_new() failed - " << tls_errors());
+            ETDCASSERT(SSL_set_fd(ssl.get(), pSok->__m_fd)==1, "SSL_set_fd() failed - " << tls_errors());
+            // SNI - only meaningful (and allowed) for host names, not address literals
+            if( !peername.empty() && peername.find(':')==std::string::npos )
+                SSL_set_tlsext_host_name(ssl.get(), peername.c_str());
+            ETDCASSERT(SSL_connect(ssl.get())==1,
+                       "TLS handshake with [" << peername << "] failed - " << tls_errors());
+
+            // In TLS 1.3 the server always presents a certificate; judge it
+            // by fingerprint through the application-provided callback
+            std::shared_ptr<X509> cert( SSL_get_peer_certificate(ssl.get()), &X509_free );
+            ETDCASSERT(cert, "peer [" << peername << "] presented no certificate");
+
+            if( untag(verify) ) {
+                const std::string fingerprint( sha256_fingerprint(cert.get()) );
+
+                char*       subj_p = X509_NAME_oneline(X509_get_subject_name(cert.get()), nullptr, 0);
+                std::string subject( subj_p ? subj_p : "<no subject>" );
+                if( subj_p )
+                    OPENSSL_free( subj_p );
+
+                ETDCASSERT(untag(verify)(subject, fingerprint),
+                           "server certificate of [" << peername << "] rejected " <<
+                           "[subject=" << subject << ", sha256=" << fingerprint << "]");
+            }
+            attach_ssl(*pSok, ssl);
+        }
+    } // namespace detail
+
+    etdc_tls::etdc_tls(): etdc_tcp() {
+        setup_tls_fns();
+    }
+    etdc_tls::etdc_tls(int fd): etdc_tcp(fd) {
+        setup_tls_fns();
+    }
+    void etdc_tls::setup_tls_fns( void ) {
+        // Only the sockname labels differ from plain TCP; read/write/close
+        // are re-pointed at SSL_* after the handshake (detail::attach_ssl)
+        etdc::update_fd(*this, getsockname_fn( [](int fd) {
+                                    return detail::ipv4_sockname<::getsockname>(fd, "tls", "getsockname"); } ),
+                               getpeername_fn( [](int fd) {
+                                    return detail::ipv4_sockname<::getpeername>(fd, "tls", "getpeername"); } )
+        );
+    }
+    etdc_tls::~etdc_tls() {}
+
+    etdc_tls6::etdc_tls6(): etdc_tcp6() {
+        setup_tls_fns();
+    }
+    etdc_tls6::etdc_tls6(int fd): etdc_tcp6(fd) {
+        setup_tls_fns();
+    }
+    void etdc_tls6::setup_tls_fns( void ) {
+        etdc::update_fd(*this, getsockname_fn( [](int fd) {
+                                    return detail::ipv6_sockname<::getsockname>(fd, "tls6", "getsockname"); } ),
+                               getpeername_fn( [](int fd) {
+                                    return detail::ipv6_sockname<::getpeername>(fd, "tls6", "getpeername"); } )
+        );
+    }
+    etdc_tls6::~etdc_tls6() {}
+#endif // ETDC_TLS
 
     ////////////////////////////////////////////////////////////////////////
     //                        UDT sockets

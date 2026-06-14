@@ -140,6 +140,24 @@ dbgMap = {
                                                 << " max_bw=" << (untag(maxbw)<0 ? "Inf" : etdc::sciprint(untag(maxbw), "Bps"))
                                                 << endl);
                              }}
+#ifdef ETDC_TLS
+    ,
+    {"tls", [](etdc::etdc_fdptr pSok, std::string const& s) {
+                                                                etdc::so_rcvbuf    rcv;
+                                                                etdc::so_sndbuf    snd;
+                                                                etdc::so_keepalive ka;
+                                                                etdc::getsockopt(pSok->__m_fd, rcv, snd, ka);
+                                                                ETDCDEBUG(1, s << "/TLS rcvbuf = " << rcv << " sndbuf = " << snd << " keepalive = " << ka << endl);
+                                                            }},
+    {"tls6", [](etdc::etdc_fdptr pSok, std::string const& s) {
+                                                                 etdc::so_rcvbuf    rcv;
+                                                                 etdc::so_sndbuf    snd;
+                                                                 etdc::ipv6_only    ipv6;
+                                                                 etdc::so_keepalive ka;
+                                                                 etdc::getsockopt(pSok->__m_fd, rcv, ipv6, snd, ka);
+                                                                 ETDCDEBUG(1, s << "/TLS6 rcvbuf = " << rcv << " sndbuf = " << snd << ", ipv6 only = " << ipv6 << " keepalive = " << ka << endl);
+                                                             }}
+#endif
 };
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -169,7 +187,11 @@ HUMANREADABLE(etdc::ACLptr,      "file")
 // In the string below the digits under the '(' are the submatch indices of that group.
 static const std::regex rxURL{
     /* protocol */
+#ifdef ETDC_TLS
+    "((tcp|udt|srt|tls)6?)://"
+#else
     "((tcp|udt|srt)6?)://"
+#endif
 //   12 
     /* optional host name or IPv6 'coloned hex' (with optional interface suffix) in literal []'s*/
     "([-a-z0-9\\.]+|\\[[:0-9a-f]+(/[0-9]{1,3})?(%[a-z0-9\\.]+)?\\])?" 
@@ -201,6 +223,10 @@ struct socketoptions_type {
     etdc::mss_type    srtMSS;
     etdc::max_bw_type srtBW;
     size_t            srtBufSize;
+#ifdef ETDC_TLS
+    std::string       tlsCert;
+    std::string       tlsKey;
+#endif
 };
 
 
@@ -248,6 +274,13 @@ struct string2socket_type_m {
             etdc::detail::update_srv( srvr,
                                       etdc::srt_rcvbuf{ static_cast<int>(__m_sockopts.srtBufSize) },
                                       etdc::srt_sndbuf{ static_cast<int>(__m_sockopts.srtBufSize) } );
+
+#ifdef ETDC_TLS
+        // TLS listeners need the daemon's certificate + private key
+        if( untag(proto).compare(0, 3, "tls")==0 )
+            etdc::detail::update_srv( srvr, etdc::tls_cert_type{ __m_sockopts.tlsCert },
+                                            etdc::tls_key_type{ __m_sockopts.tlsKey } );
+#endif
 
         fd = mk_server( untag(proto), srvr );
 
@@ -373,13 +406,20 @@ int main(int argc, char const*const*const argv) {
     AP::ArgumentParser  cmd( AP::version( buildinfo() ),
                              AP::docstring("'ftp' like etransfer server daemon, to be used with etransfer client for "
                                            "high speed file/directory transfers."),
+#ifdef ETDC_TLS
+                             AP::docstring("addresses are given like (tcp|udt|srt|tls)[6]://[local address][[:#]port]\n"
+                                           "where:\n"
+                                           "    [local address] defaults to all interfaces\n"
+                                           "    [port]          defaults to 4004 (command) or 8008 (data)\n\n"),
+#else
                              AP::docstring("addresses are given like (tcp|udt|srt)[6]://[local address][[:#]port]\n"
                                            "where:\n"
                                            "    [local address] defaults to all interfaces\n"
                                            "    [port]          defaults to 4004 (command) or 8008 (data)\n\n"),
+#endif
                              AP::docstring("Special fake data source and/or sinks are available:\n"
                                            "\t/dev/zero:<size>\tmemory data source of <size> bytes, supports [kMG][i]B suffix\n"
-                                           "\t/dev/null\tmemory data sink\n\n"),
+                                           "\t/dev/null\t\tmemory data sink\n\n"),
                              AP::docstring("IPv6 coloned-hex format is supported for [local address] by "
                                            "enclosing the IPv6 address in square brackets: [fe80::1/64%enp4]") );
 
@@ -493,6 +533,15 @@ int main(int argc, char const*const*const argv) {
 
     cmd.add( AP::store_into(sockopts.bufSize), AP::long_name("buffer"), AP::at_most(1),
              AP::docstring(std::string("Set send/receive buffer size. Default ")+etdc::repr(sockopts.bufSize)) );
+
+#ifdef ETDC_TLS
+    // The daemon's TLS identity, required for tls:// / tls6:// listeners
+    cmd.add( AP::store_into(sockopts.tlsCert), AP::long_name("cert"), AP::at_most(1),
+             AP::docstring("Path to the daemon's TLS certificate (chain), PEM format. Required for tls:// listeners") );
+
+    cmd.add( AP::store_into(sockopts.tlsKey), AP::long_name("key"), AP::at_most(1),
+             AP::docstring("Path to the daemon's TLS private key, PEM format. Required for tls:// listeners") );
+#endif
 
     // command servers; we require at least one of 'm
     cmd.add( AP::store_into(serverState.acl), AP::long_name("acl"), AP::at_most(1),

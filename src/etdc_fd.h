@@ -56,6 +56,11 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 
+// Optional TLS support (see Makefile: TLS=1)
+#ifdef ETDC_TLS
+#include <openssl/ssl.h>
+#endif
+
 
 // Define global ostream operator for struct sockaddr_in[6], dat's handy
 // (forward declaration) - implementation at end of file
@@ -97,6 +102,11 @@ namespace etdc {
         struct blocking_tag   {};
         struct numretry_tag   {};
         struct retrydelay_tag {};
+#ifdef ETDC_TLS
+        struct tls_cert_tag   {};
+        struct tls_key_tag    {};
+        struct tls_verify_tag {};
+#endif
     }
 
     using mss_type        = etdc::tagged<int, tags::mss_tag>; // only >=64 and <= 64kB are allowed (and enforced)
@@ -106,6 +116,16 @@ namespace etdc {
     using blocking_type   = etdc::tagged<bool, tags::blocking_tag>;
     using numretry_type   = etdc::tagged<unsigned int, tags::numretry_tag>;
     using retrydelay_type = etdc::tagged<std::chrono::duration<float>, tags::retrydelay_tag>;
+#ifdef ETDC_TLS
+    // Paths to the server's certificate(chain) + private key, PEM format
+    using tls_cert_type   = etdc::tagged<std::string, tags::tls_cert_tag>;
+    using tls_key_type    = etdc::tagged<std::string, tags::tls_key_tag>;
+    // Client-side peer verification callback: receives the certificate's
+    // subject string and its SHA256 fingerprint (lowercase hex, ':'-separated),
+    // returns true to accept the peer. An empty function accepts any
+    // certificate, i.e. encryption-only operation.
+    using tls_verify_type = etdc::tagged<std::function<bool(std::string const&, std::string const&)>, tags::tls_verify_tag>;
+#endif
     static constexpr port_type any_port = port_type{ (unsigned short)0 };
 
     // ipport_type:   <host> : <port>
@@ -261,6 +281,50 @@ namespace etdc {
         private:
             void setup_basic_fns( void );
     };
+
+#ifdef ETDC_TLS
+    // TLS-1.3 over TCP. The underlying socket is plain TCP (base class);
+    // the SSL state gets attached after connect/accept by the
+    // client_map/server_map entries, which re-point read/write/close at
+    // their SSL_* counterparts (see detail::tls_*_handshake in etdc_fd.cc).
+    // Only the sockname labels need overriding here so the channel
+    // correctly logs/advertises itself as "tls".
+    struct etdc_tls:
+        public etdc_tcp
+    {
+        etdc_tls();
+        etdc_tls(int fd); // take over a file descriptor e.g. from ::accept()
+        virtual ~etdc_tls();
+
+        private:
+            void setup_tls_fns( void );
+    };
+
+    // id. for IPv6
+    struct etdc_tls6:
+        public etdc_tcp6
+    {
+        etdc_tls6();
+        etdc_tls6(int fd);
+        virtual ~etdc_tls6();
+
+        private:
+            void setup_tls_fns( void );
+    };
+
+    // TLS plumbing, implemented in etdc_fd.cc. All of these throw with the
+    // OpenSSL error queue text on failure.
+    namespace detail {
+        using ssl_ctx_ptr = std::shared_ptr<SSL_CTX>;
+        // TLS1.3-only contexts; the server variant loads cert + key (PEM)
+        ssl_ctx_ptr mk_tls_server_ctx(std::string const& certfile, std::string const& keyfile);
+        ssl_ctx_ptr mk_tls_client_ctx( void );
+        // Run the handshake on the already connected/accepted socket inside
+        // pSok and re-point its read/write/close at the SSL_* counterparts
+        void        tls_server_handshake(etdc_fdptr pSok, ssl_ctx_ptr ctx);
+        void        tls_client_handshake(etdc_fdptr pSok, ssl_ctx_ptr ctx, tls_verify_type const& verify, std::string const& peername);
+    }
+#endif
 
     // An UDT socket
     struct etdc_udt:
@@ -640,6 +704,10 @@ namespace etdc {
             {"udt6", []() { return std::make_shared<etdc_udt6>();  }},
             {"srt",  []() { return std::make_shared<etdc_srt>();   }},
             {"srt6", []() { return std::make_shared<etdc_srt6>();  }}
+#ifdef ETDC_TLS
+            ,{"tls",  []() { return std::make_shared<etdc_tls>();  }}
+            ,{"tls6", []() { return std::make_shared<etdc_tls6>(); }}
+#endif
         };
 
 
@@ -670,6 +738,10 @@ namespace etdc {
             etdc::srt_rcvbuf    srtBufSize {};
             etdc::srt_sndbuf    srtSndBufSize {};
             etdc::srt_max_bw    srtMaxBW   {};
+#ifdef ETDC_TLS
+            etdc::tls_cert_type tlsCert    {};
+            etdc::tls_key_type  tlsKey     {};
+#endif
         };
         const etdc::construct<server_settings>  update_srv( &server_settings::blocking,
                                                             &server_settings::backLog,
@@ -694,6 +766,10 @@ namespace etdc {
                                                             &server_settings::srtMSS,
                                                             &server_settings::srtBufSize,
                                                             &server_settings::srtSndBufSize,
+#ifdef ETDC_TLS
+                                                            &server_settings::tlsCert,
+                                                            &server_settings::tlsKey,
+#endif
                                                             &server_settings::srtMaxBW );
 
         using server_defaults_map = std::map<std::string, std::function<server_settings(void)>>;
@@ -762,6 +838,31 @@ namespace etdc {
                                                  etdc::udt_mss{1500},
                                                  etdc::udt_max_bw{-1} );
                          }}
+#ifdef ETDC_TLS
+            // TLS = TCP at the socket level; mirror the tcp/tcp6 defaults
+            ,{"tls", []() { return update_srv.mk( backlog_type{4}
+                                                 ,any_port
+                                                 ,blocking_type{true}
+                                                 ,so_keepalive{false}
+#ifdef ETDC_HAVE_TCP_KEEPALIVE
+                                                 ,tcp_keepcnt{0}
+                                                 ,tcp_keepidle{0}
+                                                 ,tcp_keepintvl{0}
+#endif // !ETDC_HAVE_TCP_KEEPALIVE
+                    );
+                         }}
+            ,{"tls6", []() { return update_srv.mk( backlog_type{4}
+                                                  ,any_port, etdc::ipv6_only{true}
+                                                  ,blocking_type{true}
+                                                  ,so_keepalive{false}
+#ifdef ETDC_HAVE_TCP_KEEPALIVE
+                                                  ,tcp_keepcnt{0}
+                                                  ,tcp_keepidle{0}
+                                                  ,tcp_keepintvl{0}
+#endif // !ETDC_HAVE_TCP_KEEPALIVE
+                    );
+                         }}
+#endif
         };
 
         // Basic transformation from plain socket into server 
@@ -1164,6 +1265,64 @@ namespace etdc {
                                 : std::shared_ptr<etdc_fd>(std::make_shared<etdc::etdc_srt6>(fd));
                         };
                     }}
+#ifdef ETDC_TLS
+            ,
+            ////////// TLS server (IPv4)
+            {"tls", [](etdc_fdptr pSok, detail::server_settings const& srv) -> void {
+                        ETDCASSERT(!untag(srv.tlsCert).empty() && !untag(srv.tlsKey).empty(),
+                                   "a tls:// listener requires a certificate and a private key");
+                        // At the socket level a TLS server is a TCP server; delegate.
+                        // (Safe: this lambda runs at mk_server() time, when the map
+                        //  is fully initialised.)
+                        server_map.find("tcp")->second(pSok, srv);
+                        // One context per listener: cert + key are loaded once
+                        auto ctx       = detail::mk_tls_server_ctx(untag(srv.tlsCert), untag(srv.tlsKey));
+                        auto tcpaccept = pSok->accept;
+                        pSok->accept   = [=](int f) -> etdc_fdptr {
+                            auto peer = tcpaccept(f);
+                            if( !peer )
+                                return peer;
+                            // Take over the connected fd into a TLS wrapper and shake hands
+                            auto pTls = std::make_shared<etdc::etdc_tls>(peer->__m_fd);
+                            peer->__m_fd = -1; // prevent double close by peer's destructor
+                            try {
+                                detail::tls_server_handshake(pTls, ctx);
+                            }
+                            catch( std::exception const& e ) {
+                                // A failed handshake is this client's problem, not the
+                                // listener's: drop the connection (pTls' destructor
+                                // closes the fd), keep on accepting
+                                ETDCDEBUG(1, "tls/accept: dropping client - " << e.what() << std::endl);
+                                return etdc_fdptr{};
+                            }
+                            return pTls;
+                        };
+                    }}
+            ,
+            ////////// TLS server (IPv6)
+            {"tls6", [](etdc_fdptr pSok, detail::server_settings const& srv) -> void {
+                        ETDCASSERT(!untag(srv.tlsCert).empty() && !untag(srv.tlsKey).empty(),
+                                   "a tls6:// listener requires a certificate and a private key");
+                        server_map.find("tcp6")->second(pSok, srv);
+                        auto ctx       = detail::mk_tls_server_ctx(untag(srv.tlsCert), untag(srv.tlsKey));
+                        auto tcpaccept = pSok->accept;
+                        pSok->accept   = [=](int f) -> etdc_fdptr {
+                            auto peer = tcpaccept(f);
+                            if( !peer )
+                                return peer;
+                            auto pTls = std::make_shared<etdc::etdc_tls6>(peer->__m_fd);
+                            peer->__m_fd = -1; // prevent double close by peer's destructor
+                            try {
+                                detail::tls_server_handshake(pTls, ctx);
+                            }
+                            catch( std::exception const& e ) {
+                                ETDCDEBUG(1, "tls6/accept: dropping client - " << e.what() << std::endl);
+                                return etdc_fdptr{};
+                            }
+                            return pTls;
+                        };
+                    }}
+#endif
         };
     /////////// More protocols may follow?
 
@@ -1201,6 +1360,9 @@ namespace etdc {
             etdc::srt_rcvbuf srtRcvBufSize {};
             etdc::srt_max_bw srtMaxBW   {};
             cancelfn_type    cancel_fn  {};
+#ifdef ETDC_TLS
+            etdc::tls_verify_type tlsVerify {};
+#endif
         };
         const etdc::construct<client_settings>  update_clnt( &client_settings::blocking,
                                                              &client_settings::clntPort,
@@ -1221,6 +1383,9 @@ namespace etdc {
                                                              &client_settings::srtBufSize,
                                                              &client_settings::srtRcvBufSize,
                                                              &client_settings::srtMaxBW,
+#ifdef ETDC_TLS
+                                                             &client_settings::tlsVerify,
+#endif
                                                              &client_settings::cancel_fn );
 
         using client_defaults_map = std::map<std::string, std::function<client_settings(void)>>;
@@ -1284,6 +1449,17 @@ namespace etdc {
                                                   etdc::udt_max_bw{-1},
                                                   cancelfn_type{noCancelFn} );
                          }}
+#ifdef ETDC_TLS
+            // TLS = TCP at the socket level; mirror the tcp/tcp6 defaults
+            ,{"tls", []() { return update_clnt.mk(blocking_type{true},
+                                                 numretry_type{0}, retrydelay_type{0},
+                                                 any_port, cancelfn_type{noCancelFn} );
+                         }}
+            ,{"tls6", []() { return update_clnt.mk(blocking_type{true}, etdc::ipv6_only{true},
+                                                 numretry_type{0}, retrydelay_type{0},
+                                                 any_port, cancelfn_type{noCancelFn} );
+                         }}
+#endif
         };
 
         // Default actions to turn a socket into a client socket
@@ -1519,6 +1695,19 @@ namespace etdc {
                         ETDCSYSCALL(srt::UDT::connect(pSok->__m_fd, reinterpret_cast<struct sockaddr const*>(&sa), sl)!=SRT_ERROR,
                                     "connecting to srt6[" << sa << "] - " << detail::format_srt_error());
                     }}
+#ifdef ETDC_TLS
+            ,
+            {"tls", [](etdc_fdptr pSok, detail::client_settings const& clnt) {
+                        // TCP-level connect is identical; delegate, then shake hands
+                        client_map.find("tcp")->second(pSok, clnt);
+                        detail::tls_client_handshake(pSok, detail::mk_tls_client_ctx(), clnt.tlsVerify, clnt.clntHost);
+                    }}
+            ,
+            {"tls6", [](etdc_fdptr pSok, detail::client_settings const& clnt) {
+                        client_map.find("tcp6")->second(pSok, clnt);
+                        detail::tls_client_handshake(pSok, detail::mk_tls_client_ctx(), clnt.tlsVerify, clnt.clntHost);
+                    }}
+#endif
         };
     }
 }

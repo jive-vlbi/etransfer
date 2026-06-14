@@ -11,6 +11,8 @@ multiple files irrespective of wether they are remote or local. Since Jun 2026 (
 
 - Single e-transfer daemon command and data channels are sufficient to support multiple parallel clients. The daemon allows specifiying multiple command and/or data channels for the purpose of offering the service over multiple protocols or to fine-tune support of specific protocol(s) on specific interfaces, see [Example](#Example).
 
+- Since Jun 2026 (v3.0) the tools can be compiled with optional [TLS 1.3 support](#tls-transport-encrypted-command-and-data-channels) (`make TLS=1`), adding encrypted `tls://` / `tls6://` command- and data channels with ssh-style certificate pinning at the client.
+
 - The etransfer tools do not yet have authentication or authorization built in.
 
 - Memory data source and/or sink available for throughput/bottleneck testing; either
@@ -192,6 +194,68 @@ New option:
 - `--inactive-timeout <seconds>` – if set to a positive value, the daemon spawns a watchdog thread that cancels transfers which have seen no progress for the specified number of seconds. The default is “disabled” (timeout ≤ 0).
 
 When a timeout triggers, the daemon force-closes the transfer’s command and data connections and removes the lock on the destination path in question, freeing it for a new attempt. Clients may want to use the `--resume` file copy mode to pick up where the stalled transfer left off.
+
+### TLS transport (encrypted command and data channels)
+
+Motivation: the plain `tcp://` command channel sends everything - paths, directory listings, transfer commands - in the clear. Compiling with TLS support adds `tls://` and `tls6://` as additional channel schemes; these are ordinary TCP connections upgraded to TLS 1.3 immediately after connecting. See `docs/tls-design.md` for the design and the planned authentication follow-up.
+
+#### Building with TLS support
+
+TLS support is optional and off by default - the zero-dependency build is preserved. To enable it, OpenSSL >= 1.1.1 (or LibreSSL) including development headers must be installed, then:
+
+```bash
+    $ make TLS=1 [-j <number>]
+```
+
+On macOS the Makefile asks `brew --prefix openssl@3` for the location of the (keg-only) homebrew OpenSSL automatically. Note that the object directory is shared between TLS and non-TLS builds, so run `make clean` when switching between the two.
+
+#### Creating the daemon's certificate
+
+A `tls://` listener requires a certificate and private key in PEM format, passed via the `--cert` and `--key` options. There is **no need to run a CA**: the client does not validate the certificate chain, it pins the certificate's SHA256 fingerprint ssh-known_hosts style (see below), so a self-signed certificate is exactly as trustworthy as a CA-signed one. Generate one like this:
+
+```bash
+    server$ openssl req -x509 -newkey rsa:3072 -nodes \
+                -keyout etd.key -out etd.crt \
+                -days 3650 -subj "/CN=$(hostname -f)"
+    server$ chmod 600 etd.key
+```
+
+(Any key type OpenSSL supports for TLS 1.3 works; substitute e.g. `-newkey ec -pkeyopt ec_paramgen_curve:P-256` for a smaller/faster ECDSA key. The `CN` is informational only - the client displays it, but trust is decided on the fingerprint.)
+
+#### Starting a TLS listener
+
+```bash
+    server$ .../etd --command tls://:4004 --data {any of the supported protocols}://:8008 \
+                    --cert /path/to/etd.crt --key /path/to/etd.key
+```
+
+One `--cert`/`--key` pair serves all `tls`/`tls6` listeners of the daemon. The key file must be readable by the user the daemon runs as (mind `--run-as`) and should not be readable by anyone else. Mixing schemes is fine, e.g. a `tls://` command channel with `srt://` + `tcp://` data channels, or offering both `tcp://` and `tls://` command channels during a migration period.
+
+Older clients (protocol version < 5) are automatically not offered `tls`/`tls6` data channels - same filtering mechanism as for SRT - so adding a TLS data channel does not break existing clients as long as a non-TLS data channel remains available for them.
+
+#### Client side: trust-on-first-use pinning
+
+The client connects with:
+
+```bash
+    client$ .../etc /local/path 'tls://server#4004:/remote/path'
+```
+
+On first contact with a daemon the client stores the certificate's SHA256 fingerprint in `~/.etransfer_known_hosts` (one `host#port fingerprint` pair per line) and trusts it from then on - the same trust-on-first-use model as ssh. If the certificate later changes, the client refuses the connection and prints both fingerprints; if (and only if) the change is expected - e.g. the daemon admin rolled a new key - remove the stale entry from `~/.etransfer_known_hosts` and reconnect.
+
+To close the first-contact window entirely the daemon admin can publish the certificate fingerprint out-of-band. The daemon prints it at startup when loading the certificate:
+
+```text
+    TLS certificate 'etd.crt' sha256=ab:12:...:ef
+```
+
+or it can be extracted from the certificate file at any time:
+
+```bash
+    server$ openssl x509 -in etd.crt -noout -fingerprint -sha256
+```
+
+Users then pre-seed their `~/.etransfer_known_hosts` with a line containing `host#port` followed by the fingerprint (`:`-separated hex; matching is case-insensitive so the uppercase `openssl` output can be pasted as-is, minus the `sha256 Fingerprint=` prefix).
 
 
 ## File copy modes

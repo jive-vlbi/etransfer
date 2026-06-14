@@ -27,6 +27,7 @@
 #include <etdc_etd_state.h>
 
 // C++ headers
+#include <set>
 #include <list>
 #include <regex>
 #include <string>
@@ -81,6 +82,46 @@ namespace etdc {
             __m_Finished(success), __m_BytesTransferred(nb), __m_Reason(r), __m_DeltaT(std::chrono::duration_cast<duration_type>(dt))
         {}
     };
+
+    // Introduced in protocol version 5: features.
+    // The code may be compiled with optional features, which are negotiated
+    // between past and future daemons (older daemons don't ask so we don't
+    // tell) and between peer and future daenons we negotiate the common
+    // features.
+    // Note: conditional compilation doesn't happen *here* this is the set
+    // of features we know in the current version!
+    // Requirement: keep enums (and their string values) unique!
+    enum feature_t {
+        // Map future features we don't recognize into this to eliminate
+        // them from the common set and prevent older feature-aware daemons
+        // choking on stuff they don't recognize
+        unsupportedFeature,
+        // TLS support is an optional feature
+        tlsSupport
+    };
+    // Kept in ETDServerInterface
+    using featureset_type     = std::set<feature_t>;
+
+    // Keep a mapping from enum => string rep;
+    // is used for all I/O functions (input looks for value and return key,
+    // output finds key and outputs value).
+    // Requirement: keep BOTH enums and values unique!
+    // initialized in the accompanying .cc file
+    using feature2string_type = std::map<feature_t, std::string>;
+    //extern feature2string_type const feature2string;
+    feature2string_type const feature2string{
+        // Requirement: keep BOTH enums and values unique!
+        {unsupportedFeature, "unsupportedFeature"},
+        {tlsSupport,         "TLS"}
+    };
+
+
+    // Write normalized feature string to a stream, and also
+    // the inverse: parse a feature string into something we recognize
+    // (or map to unsupportedFeature, obviously)
+    std::ostream& operator<<(std::ostream& os, feature_t const& feature);
+    std::ostream& operator>>(std::istream& is, feature_t const& feature);
+    std::ostream& operator<<(std::ostream& os, featureset_type const& featureset);
 
     // On some systems off_t is an 'alias' for long long int, on others for
     // long int. So when converting between string and off_t we must choose
@@ -147,13 +188,25 @@ namespace etdc {
             virtual protocolversion_type  protocolVersion( void ) const = 0;
             virtual protocolversion_type  set_protocolVersion( protocolversion_type ) = 0;
 
+            // get/update the featureset:
+            // default = compiled in featureset of this version
+            // when setting featureset will be the intersection of the
+            // given featureset and the ones this code understands
+            virtual featureset_type      featureSet( void ) const = 0;
+
             // The version of the protocol this code understands.
             //   v0  legacy unversioned
             //   v1  versioned, data-channel-addr-ext, etc
             //   v3  + SRT data-channel scheme
             //   v4  + in-band PROGRESS lines during sendFile/getFile
-            static const protocolversion_type currentProtocolVersion = 4;
+            //   v5  + advertise feature(s) in protocol-version reply
+            //         e.g. TLS data-channel scheme (tls/tls6) ONLY AVAIL WHEN COMPILED WITH TLS=1
+            static const protocolversion_type currentProtocolVersion = 5;
             static const protocolversion_type unknownProtocolVersion = ~((protocolversion_type)0);
+
+            // Here we initialize the featureset that this specific code is compiled with
+            // has to be done out-of-line in the accompanying .cc file
+            static const featureset_type      currentFeatureSet;
 
             virtual ~ETDServerInterface() {}
     };
@@ -195,6 +248,8 @@ namespace etdc {
             virtual protocolversion_type  protocolVersion( void ) const;
             virtual protocolversion_type  set_protocolVersion( protocolversion_type ) NOTIMPLEMENTED;
 
+            virtual featureset_type       featureSet( void ) const;
+
             virtual ~ETDServer();
 
         private:
@@ -213,7 +268,7 @@ namespace etdc {
         public:
             explicit ETDProxy(etdc::etdc_fdptr conn):
                 __m_connection( conn ), __m_protocolVersion( ETDServerInterface::unknownProtocolVersion ),
-                __m_attemptExtendedProbe( true )
+                __m_attemptExtendedProbe( true ), __m_featureSetInitialised( false )
             { ETDCASSERT(__m_connection, "The proxy must have a valid connection"); }
 
             virtual filelist_type     listPath(std::string const& /*path*/, bool /*allow tilde expansion*/) const;
@@ -239,6 +294,8 @@ namespace etdc {
             // Returns previous protocol version
             virtual protocolversion_type  set_protocolVersion( protocolversion_type pvn );
 
+            virtual featureset_type       featureSet( void ) const;
+
             void preferExtendedProbe(bool enable);
 
             template <typename... Options>
@@ -253,6 +310,8 @@ namespace etdc {
             etdc::etdc_fdptr             __m_connection;
             mutable protocolversion_type __m_protocolVersion;
             mutable bool                 __m_attemptExtendedProbe;
+            mutable featureset_type      __m_featureSet;
+            mutable bool                 __m_featureSetInitialised;
     };
 
     //////////////////////////////////////////////////////////////////////
@@ -280,8 +339,9 @@ namespace etdc {
 
         private:
             // We operate on shared state
-            ETDServer           __m_etdserver;
-            etdc::etdc_fdptr    __m_connection;
+            ETDServer            __m_etdserver;
+            featureset_type      __m_clientFeatures;
+            etdc::etdc_fdptr     __m_connection;
             protocolversion_type __m_clientProtocolVersion;
             // Serialises writes to __m_connection across the wrapper's main
             // read-loop thread and any detached worker threads it may have

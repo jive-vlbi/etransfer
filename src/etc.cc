@@ -39,6 +39,11 @@
 #include <algorithm>
 #include <functional>
 #include <memory>
+#ifdef ETDC_TLS
+#include <fstream>
+#include <sstream>
+#include <cctype>
+#endif
 
 // For isatty() so the progress renderer can stay quiet when stderr is
 // not a terminal (e.g. redirected to a logfile).
@@ -49,15 +54,19 @@ namespace AP = argparse;
 
 // The client may support local URLs by just using "/path/to/file"
 //
-// Better shtick to what ppl understand:
-//  [[(tcp|udt|srt)6?://][user@]host[#port]/]path
+// Better shtick to what ppl understand (note: 'tls' only if compiled with "make TLS=1"):
+//  [[(tcp|udt|srt|tls)6?://][user@]host[#port]/]path
 //
 static const std::regex rxURL{
     /* remote prefix is optional! */
     "("
 //   1
     /* protocol */
+#ifdef ETDC_TLS
+    "(((tcp|udt|srt|tls)6?):\\/\\/)?"
+#else
     "(((tcp|udt|srt)6?):\\/\\/)?"
+#endif
 //   234 
     /* optional user@ prefix */
     "(([a-z0-9]+)@)?" 
@@ -100,6 +109,21 @@ struct str2url_type:
         std::match_results<std::string::const_iterator> m;
 
         std::regex_match(s, m, rxURL);
+
+        // A scheme-like prefix that did not parse as a supported protocol
+        // (e.g. tls:// in a non-TLS build, or a typo'd scheme) would
+        // otherwise silently be mistaken for a host name
+        static const std::regex rxScheme{ "^[a-z0-9]+://", std::regex_constants::ECMAScript | std::regex_constants::icase };
+#ifndef ETDC_TLS
+        static const std::string tls_note{" (note: tls:// requires a client rebuilt with 'make TLS=1')"};
+#else
+        static const std::string tls_note{};
+#endif
+        ETDCASSERT(m[2].length()>0 || !std::regex_search(s, rxScheme),
+                   "URL '" << s << "': unsupported protocol scheme"
+                   << tls_note
+                   );
+
         // path HAS to be there
         url.path = m[12];
 
@@ -132,6 +156,56 @@ HUMANREADABLE(etdc::openmode_type, "file copy mode")
 HUMANREADABLE(std::chrono::duration<float>, "duration (s)")
 HUMANREADABLE(etdc::mss_type, "int (bytes)")
 HUMANREADABLE(etdc::max_bw_type, "int (bytes per second)")
+
+#ifdef ETDC_TLS
+///////////////////////////////////////////////////////////////////////////////
+//
+// Trust-on-first-use certificate pinning, ssh known_hosts style.
+// The pin file stores one "<host>#<port> <sha256-fingerprint>" entry per
+// line. On first contact the daemon's certificate fingerprint is recorded;
+// on subsequent contacts it must match or the connection is refused.
+//
+///////////////////////////////////////////////////////////////////////////////
+static std::string known_hosts_file( void ) {
+    char const*const home = ::getenv("HOME");
+    return std::string(home ? home : ".") + "/.etransfer_known_hosts";
+}
+
+static etdc::tls_verify_type mk_tofu_verifier(etdc::host_type const& host, etdc::port_type port) {
+    const std::string key( std::string(host) + "#" + std::to_string(untag(port)) );
+
+    return etdc::tls_verify_type{ [=](std::string const& subject, std::string const& fingerprint) {
+        const std::string fn( known_hosts_file() );
+        std::ifstream     f( fn );
+        std::string       line;
+
+        while( std::getline(f, line) ) {
+            std::istringstream iss( line );
+            std::string        k, fp;
+
+            if( !(iss >> k >> fp) || k!=key )
+                continue;
+            // Pre-seeded pins may be pasted from `openssl x509 -fingerprint`
+            // output, which prints uppercase hex; compare case-insensitively
+            std::transform(fp.begin(), fp.end(), fp.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if( fp==fingerprint )
+                return true;
+            ETDCDEBUG(-1, "etc: WARNING: the TLS certificate of " << key << " has CHANGED!" << endl <<
+                          "     pinned: " << fp << endl <<
+                          "     now:    " << fingerprint << endl <<
+                          "     subject: " << subject << endl <<
+                          "     If (and only if) this is expected, remove the entry from " << fn << " and retry." << endl);
+            return false;
+        }
+        // First contact: trust + record the fingerprint
+        std::ofstream of( fn, std::ios::app );
+        of << key << " " << fingerprint << endl;
+        ETDCDEBUG(1, "etc: first connection to " << key << ", pinning certificate sha256=" << fingerprint << " in " << fn << endl);
+        return true;
+    } };
+}
+#endif
 
 // Make sure our zignal handlert has C-linkage
 extern "C" {
@@ -375,7 +449,11 @@ int main(int argc, char const*const*const argv) {
                                               "high speed file/directory transfers or it can be used "
                                               "to list the contents of a remote directory, if the remote "
                                               "etransfer daemon allows your credentials to do so."),
+#ifdef ETDC_TLS
+                                AP::docstring("Remote URLs are formatted as\n\t[[tcp|udt|srt|tls][6]://][user@]host[#port]:/path\n"
+#else
                                 AP::docstring("Remote URLs are formatted as\n\t[[tcp|udt|srt][6]://][user@]host[#port]:/path\n"
+#endif
                                               "Paths on the local machine are specified just as /<path> (i.e. absolute path)"),
                                 AP::docstring("The syntax on the remote URLs is slightly more complicated than e.g. scp(1) but that is "
                                               "because this client can trigger remote daemon => remote daemon transfers."),
@@ -559,6 +637,12 @@ int main(int argc, char const*const*const argv) {
     // We must transform the URL(s) into ETDServerInterface* 
     std::transform(std::begin(urls), std::end(urls), std::back_inserter(servers),
                    [&](url_type const& url) {
+#ifdef ETDC_TLS
+                        // TLS command channels get the known-hosts verifier attached
+                        if( !url.isLocal && untag(url.protocol).compare(0, 3, "tls")==0 )
+                            return etc::mk_etdproxy(url.protocol, url.host, url.port, connRetry, connDelay,
+                                                    mk_tofu_verifier(url.host, url.port));
+#endif
                         return url.isLocal ? ::mk_etdserver(std::ref(localState)) : etc::mk_etdproxy(url.protocol, url.host, url.port, connRetry, connDelay);
                     });
 
