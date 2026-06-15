@@ -120,7 +120,7 @@ namespace etdc {
     // the inverse: parse a feature string into something we recognize
     // (or map to unsupportedFeature, obviously)
     std::ostream& operator<<(std::ostream& os, feature_t const& feature);
-    std::ostream& operator>>(std::istream& is, feature_t const& feature);
+    std::istream& operator>>(std::istream& is, feature_t& feature);
     std::ostream& operator<<(std::ostream& os, featureset_type const& featureset);
 
     // On some systems off_t is an 'alias' for long long int, on others for
