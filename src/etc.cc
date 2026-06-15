@@ -906,6 +906,17 @@ int main(int argc, char const*const*const argv) {
                     }
                 }
             }
+            catch( etdc::xfer_not_possible const& e ) {
+                finalize_progress();
+                eptr = std::current_exception();
+                // Deterministic capability mismatch (e.g. a non-TLS source
+                // asked to dial a TLS-only destination): retrying cannot
+                // change the outcome, so report it and stop rather than
+                // sleeping through the whole retry budget.
+                ETDCDEBUG(-1, "etc: cannot transfer '" << file << "': " << e.what() << std::endl);
+                finished   = true;
+                nFileRetry = maxFileRetry;
+            }
             catch( std::exception const& e ) {
                 finalize_progress();
                 ETDCDEBUG(3, "Got exception: " << e.what() << std::endl);

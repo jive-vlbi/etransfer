@@ -1329,7 +1329,7 @@ namespace etdc {
                 << __m_protocolVersion << "). Schemes offered: ";
             for(auto p = dataaddrs.begin(); p!=dataaddrs.end(); p++)
                 err << (p==dataaddrs.begin() ? "" : ",") << get_protocol(*p);
-            throw std::runtime_error(err.str());
+            throw xfer_not_possible(err.str());
         }
 
         msgBuf << "send-file " << srcUUID << " " << dstUUID << " " << todo << " ";

@@ -32,6 +32,7 @@
 #include <regex>
 #include <string>
 #include <memory>
+#include <stdexcept>
 #include <functional>
 #include <type_traits>
 
@@ -39,6 +40,15 @@ namespace etdc {
     using filelist_type        = std::list<std::string>;
     using result_type          = std::tuple<etdc::uuid_type, off_t>;
     using protocolversion_type = unsigned long int;
+
+    // Thrown when a transfer cannot possibly succeed as requested - e.g. the
+    // source daemon shares no data-channel scheme with the destination (a
+    // non-TLS source asked to dial a TLS-only destination). Such a failure is
+    // deterministic, so the client treats it as non-retryable instead of
+    // burning its retry budget (and inter-attempt delays) on it.
+    struct xfer_not_possible: std::runtime_error {
+        using std::runtime_error::runtime_error;
+    };
 
     // return the appropropritate sockname conversion function based on
     // actual protocol version (taking into account "unknownProtocolVersion")
