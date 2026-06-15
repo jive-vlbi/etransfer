@@ -171,7 +171,28 @@ static std::string known_hosts_file( void ) {
     return std::string(home ? home : ".") + "/.etransfer_known_hosts";
 }
 
-static etdc::tls_verify_type mk_tofu_verifier(etdc::host_type const& host, etdc::port_type port) {
+// TLS host-verification policy for tls:// command channels (see --tls-verify).
+// 'invalid' is the sentinel the command-line converter maps unknown values to.
+//   strict : only fingerprints already pinned in known_hosts are trusted
+//   tofu   : trust+record an unknown host on first contact (ssh 'accept-new')
+//   ask    : prompt for confirmation on first contact when interactive,
+//            otherwise fall back to 'strict' (never auto-trust in a script)
+enum tls_verify_mode { tls_verify_strict, tls_verify_tofu, tls_verify_ask, tls_verify_invalid };
+std::ostream& operator<<(std::ostream& os, tls_verify_mode const& vm) {
+    switch( vm ) {
+        case tls_verify_strict:
+            return os << "strict";
+        case tls_verify_tofu:
+            return os << "tofu";
+        case tls_verify_ask:
+            return os << "ask";
+        default:
+            break;
+    }
+    return os << "<INVALID tls-verify mode>";
+}
+
+static etdc::tls_verify_type mk_tls_verifier(etdc::host_type const& host, etdc::port_type port, tls_verify_mode mode) {
     const std::string key( std::string(host) + "#" + std::to_string(untag(port)) );
 
     return etdc::tls_verify_type{ [=](std::string const& subject, std::string const& fingerprint) {
@@ -191,6 +212,7 @@ static etdc::tls_verify_type mk_tofu_verifier(etdc::host_type const& host, etdc:
                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
             if( fp==fingerprint )
                 return true;
+            // A changed pin is always a hard failure, whatever the policy
             ETDCDEBUG(-1, "etc: WARNING: the TLS certificate of " << key << " has CHANGED!" << endl <<
                           "     pinned: " << fp << endl <<
                           "     now:    " << fingerprint << endl <<
@@ -198,11 +220,46 @@ static etdc::tls_verify_type mk_tofu_verifier(etdc::host_type const& host, etdc:
                           "     If (and only if) this is expected, remove the entry from " << fn << " and retry." << endl);
             return false;
         }
-        // First contact: trust + record the fingerprint
-        std::ofstream of( fn, std::ios::app );
-        of << key << " " << fingerprint << endl;
-        ETDCDEBUG(1, "etc: first connection to " << key << ", pinning certificate sha256=" << fingerprint << " in " << fn << endl);
-        return true;
+
+        // First contact: behaviour depends on the configured --tls-verify policy.
+        // Recording the pin is shared by the 'tofu' and the confirmed-'ask' paths.
+        auto record_pin = [&](void) {
+            std::ofstream of( fn, std::ios::app );
+            of << key << " " << fingerprint << endl;
+            ETDCDEBUG(1, "etc: pinning certificate of " << key << " sha256=" << fingerprint << " in " << fn << endl);
+        };
+
+        if( mode==tls_verify_tofu ) {
+            record_pin();
+            return true;
+        }
+        // 'ask' can only get an answer from a genuine interactive session; when
+        // stdin is not a terminal it deliberately behaves like 'strict' rather
+        // than silently trusting an unverified key in a script/pipeline.
+        if( mode==tls_verify_ask && ::isatty(STDIN_FILENO) ) {
+            std::cerr << "The authenticity of TLS host '" << key << "' can't be established." << endl
+                      << "  subject:            " << subject << endl
+                      << "  SHA256 fingerprint: " << fingerprint << endl
+                      << "Are you sure you want to continue connecting (yes/no)? " << std::flush;
+            std::string answer;
+            if( std::getline(std::cin, answer) ) {
+                std::transform(answer.begin(), answer.end(), answer.begin(),
+                               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                if( answer=="yes" ) {
+                    record_pin();
+                    return true;
+                }
+            }
+            ETDCDEBUG(-1, "etc: host '" << key << "' not confirmed; refusing connection." << endl);
+            return false;
+        }
+        // 'strict', or 'ask' without a usable terminal: fail closed.
+        ETDCDEBUG(-1, "etc: TLS host '" << key << "' is not pinned in " << fn << "; refusing "
+                      "(--tls-verify=" << mode << ")." << endl <<
+                      "     To trust it, add the following line to " << fn << ":" << endl <<
+                      "         " << key << " " << fingerprint << endl <<
+                      "     or connect interactively with --tls-verify=ask, or use --tls-verify=tofu." << endl);
+        return false;
     } };
 }
 #endif
@@ -442,6 +499,9 @@ int main(int argc, char const*const*const argv) {
     etdc::openmode_type          mode{ etdc::openmode_type::New };
     etdc::numretry_type          connRetry{ 2 };
     etdc::retrydelay_type        connDelay{ 5 };
+#ifdef ETDC_TLS
+    tls_verify_mode              tlsVerify{ tls_verify_ask };
+#endif
 
     AP::ArgumentParser     cmd( AP::version( buildinfo() ),
                                 AP::docstring("'ftp' like etransfer client program.\n"
@@ -537,6 +597,24 @@ int main(int argc, char const*const*const argv) {
                            etdc::repr(etdc::untag(connDelay).count())),
              AP::constrain([](std::chrono::duration<float> const& v) { return v.count()>= 0; }, "duration should be >= 0s"),
              AP::convert([](std::string const& s) { return std::chrono::duration<float>(std::stof(s)); }) );
+
+#ifdef ETDC_TLS
+    // TLS host-verification policy for tls:// command channels
+    cmd.add( AP::long_name("tls-verify"), AP::store_into(tlsVerify), AP::at_most(1),
+             AP::is_member_of({tls_verify_strict, tls_verify_tofu, tls_verify_ask}),
+             AP::convert([](std::string const& s) {
+                            static std::map<std::string, tls_verify_mode> vmMap{
+                                {"strict", tls_verify_strict},
+                                {"tofu",   tls_verify_tofu},  {"accept-new", tls_verify_tofu},
+                                {"ask",    tls_verify_ask} };
+                            return etdc::get(vmMap, s, tls_verify_invalid);
+                            }),
+             AP::docstring(std::string("TLS host verification policy for tls:// command channels: "
+                                       "'strict' = only trust fingerprints already pinned in ~/.etransfer_known_hosts; "
+                                       "'tofu' (alias 'accept-new') = trust+record an unknown host on first contact, refuse a changed one; "
+                                       "'ask' = prompt for confirmation on first contact when interactive, otherwise behave like 'strict'. "
+                                       "A changed fingerprint is always refused. Default: ")+etdc::repr(tlsVerify)) );
+#endif
 
     // User can choose between:
     //  * the target file(s) may not exist [default]
@@ -641,7 +719,7 @@ int main(int argc, char const*const*const argv) {
                         // TLS command channels get the known-hosts verifier attached
                         if( !url.isLocal && untag(url.protocol).compare(0, 3, "tls")==0 )
                             return etc::mk_etdproxy(url.protocol, url.host, url.port, connRetry, connDelay,
-                                                    mk_tofu_verifier(url.host, url.port));
+                                                    mk_tls_verifier(url.host, url.port, tlsVerify));
 #endif
                         return url.isLocal ? ::mk_etdserver(std::ref(localState)) : etc::mk_etdproxy(url.protocol, url.host, url.port, connRetry, connDelay);
                     });
