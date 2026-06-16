@@ -124,6 +124,10 @@ namespace etdc {
         std::mutex              lock;
         unsigned int            n_threads;
         etdc::ACLptr            acl;
+        // Directory holding per-principal OpenSSH authorized_keys files for
+        // Phase 2 ssh-pubkey auth (--authorized-keys). Empty => no principal
+        // can authenticate. Always present (the option is TLS-only in etd.cc).
+        std::string             authKeysDir{};
         etdc::mss_type          udtMSS{ 0/*1500*/ };
         etdc::mss_type          srtMSS{ 0 };
         etdc::max_bw_type       udtMaxBW{ 0/*-1*/ };

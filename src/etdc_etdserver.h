@@ -264,6 +264,10 @@ namespace etdc {
 
             virtual featureset_type       featureSet( void ) const;
 
+            // Directory of per-principal authorized_keys files (Phase 2
+            // ssh-pubkey auth). Empty => no principal can authenticate.
+            std::string const&            authKeysDir( void ) const { return __m_shared_state.get().authKeysDir; }
+
             virtual ~ETDServer();
 
         private:

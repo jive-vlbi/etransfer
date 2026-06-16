@@ -541,6 +541,14 @@ int main(int argc, char const*const*const argv) {
 
     cmd.add( AP::store_into(sockopts.tlsKey), AP::long_name("key"), AP::at_most(1),
              AP::docstring("Path to the daemon's TLS private key, PEM format. Required for tls:// listeners") );
+
+    // Phase 2 ssh-pubkey auth: a directory with one OpenSSH authorized_keys
+    // file per principal (e.g. <dir>/alice). A client authenticates over a
+    // tls:// command channel with 'auth' (signature bound to the TLS session).
+    cmd.add( AP::store_into(serverState.authKeysDir), AP::long_name("authorized-keys"), AP::at_most(1),
+             AP::docstring("Directory of per-principal OpenSSH authorized_keys files (<dir>/<principal>) "
+                           "used to verify ssh-pubkey 'auth' over tls:// command channels. "
+                           "If unset, no principal can authenticate.") );
 #endif
 
     // command servers; we require at least one of 'm

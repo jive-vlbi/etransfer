@@ -19,6 +19,7 @@
 //          7990 AA Dwingeloo
 #include <utilities.h>
 #include <etdc_etdserver.h>
+#include <etdc_auth.h>
 
 // C++ headerts
 //#include <regex>
@@ -1596,24 +1597,6 @@ namespace etdc {
         __m_attemptExtendedProbe = enable;
     }
 
-    // Phase 2a STUB verifier. The real per-principal authorized_keys lookup
-    // and EVP signature verification land in Phase 2b (in etdc_auth.{h,cc}).
-    // To let the wire format be exercised end-to-end before the crypto
-    // exists, an explicit, loudly-logged, dev-only escape hatch accepts any
-    // signature when the environment variable ETD_AUTH_STUB_ACCEPT_ANY is
-    // set. Default behaviour (no env var): reject - there is deliberately no
-    // accept-any path in a normal build.
-    static bool verifyAuthStub(std::string const& principal, std::string const& keytype,
-                               std::string const& /*pubkey_b64*/, std::string const& /*sig_b64*/) {
-        static const bool acceptAny = (std::getenv("ETD_AUTH_STUB_ACCEPT_ANY")!=nullptr);
-        if( acceptAny ) {
-            ETDCDEBUG(-1, "ETDServerWrapper: *** ETD_AUTH_STUB_ACCEPT_ANY set - accepting auth for principal '"
-                          << principal << "' (keytype=" << keytype << ") WITHOUT verification (Phase 2a stub) ***" << std::endl);
-            return true;
-        }
-        return false;
-    }
-
     //////////////////////////////////////////////////////////////////////
     //
     // This class does NOT implementing the ETDServerInterface but
@@ -1927,12 +1910,48 @@ namespace etdc {
                             static const std::regex rxPrincipal("^[a-z0-9]+$");
                             if( !std::regex_match(principal, rxPrincipal) ) {
                                 replies.emplace_back("ERR malformed principal");
-                            } else if( verifyAuthStub(principal, fields[2].str(), fields[3].str(), fields[4].str()) ) {
-                                __m_principal = principal;
-                                ETDCDEBUG(2, "ETDServerWrapper: session authenticated as principal '" << principal << "'" << std::endl);
-                                replies.emplace_back("OK");
                             } else {
-                                replies.emplace_back("ERR authentication failed");
+#ifdef ETDC_TLS
+                                const std::string keytype( fields[2].str() );
+                                // Verify the presented ssh signature against
+                                // the principal's authorized_keys, binding it
+                                // to *this* TLS session via the exporter. Any
+                                // malformed input / failure -> generic ERR; the
+                                // reason is only ever logged, never returned.
+                                bool        authed = false;
+                                std::string keyComment, failReason;
+                                try {
+                                    const etdc::auth::bytes pubkey( etdc::auth::base64_decode(fields[3].str()) );
+                                    const etdc::auth::bytes sig( etdc::auth::base64_decode(fields[4].str()) );
+                                    const etdc::auth::bytes signedData(
+                                        __m_connection->tls_exporter
+                                            ? __m_connection->tls_exporter("EXPORTER-etransfer-auth-v1", principal, 32)
+                                            : etdc::auth::bytes() );
+                                    if( signedData.empty() )
+                                        failReason = "no TLS channel binding available";
+                                    else
+                                        authed = etdc::auth::authenticate(__m_etdserver.authKeysDir(), principal,
+                                                                          signedData, keytype, pubkey, sig, keyComment);
+                                }
+                                catch( std::exception const& e ) { failReason = e.what(); }
+
+                                if( authed ) {
+                                    __m_principal = principal;
+                                    // Audit (always logged): who authenticated, with which key.
+                                    ETDCDEBUG(-1, "ETDServerWrapper: session authenticated as principal '" << principal
+                                                  << "' (algo=" << keytype << ", key='"
+                                                  << (keyComment.empty() ? std::string("<no comment>") : keyComment) << "')" << std::endl);
+                                    replies.emplace_back("OK");
+                                } else {
+                                    ETDCDEBUG(1, "ETDServerWrapper: auth failed for principal '" << principal << "'"
+                                                 << (failReason.empty() ? std::string() : (" ("+failReason+")")) << std::endl);
+                                    replies.emplace_back("ERR authentication failed");
+                                }
+#else
+                                // Unreachable: without TLS __m_encrypted is
+                                // never true, but keep this branch compilable.
+                                replies.emplace_back("ERR authentication not supported");
+#endif
                             }
                         }
                     } else {
