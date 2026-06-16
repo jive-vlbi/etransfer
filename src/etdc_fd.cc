@@ -333,6 +333,20 @@ namespace etdc {
                     return ::close( fd_ );
                 })
             );
+            // Mark the connection encrypted (the application-level 'auth'
+            // command refuses to run otherwise) and expose the TLS exporter
+            // so the auth layer can bind its signature to *this* TLS session.
+            fd.__m_encrypted = true;
+            fd.tls_exporter  = tls_exporter_fn([ssl](std::string const& label, std::string const& context,
+                                                     size_t length) -> std::vector<unsigned char> {
+                std::vector<unsigned char> out(length);
+                ETDCASSERT(SSL_export_keying_material(ssl.get(), out.data(), length,
+                                                      label.data(), label.size(),
+                                                      reinterpret_cast<const unsigned char*>(context.data()),
+                                                      context.size(), /*use_context=*/1)==1,
+                           "SSL_export_keying_material() failed - " << tls_errors());
+                return out;
+            });
         }
 
         // Common context setup: TLS 1.3 only, no legacy anything

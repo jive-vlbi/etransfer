@@ -43,6 +43,7 @@
 #include <memory>
 #include <thread>
 #include <string>
+#include <vector>
 #include <sstream>
 #include <iostream>
 #include <functional>
@@ -222,6 +223,15 @@ namespace etdc {
     using getpeername_fn = etdc::tagged<std::function<sockname_type(int)>, detail::peername_tag>;
     using setblocking_fn = std::function<void(int, bool)>;
 
+    // TLS channel binding. Empty/unset on non-TLS fds; on a TLS fd it
+    // returns 'length' bytes of keying material exported from *this* TLS
+    // session under the given label + context (SSL_export_keying_material).
+    // The ssh-pubkey auth signature is computed over this value, welding it
+    // to the exact TLS session (anti-replay / anti-MITM). See docs/tls-design.md.
+    using tls_exporter_fn = std::function<std::vector<unsigned char>(std::string const& /*label*/,
+                                                                     std::string const& /*context*/,
+                                                                     size_t             /*length*/)>;
+
     // A wrapped file descriptor - the actual systemcalls travel with the fd
     // such that we can write functions that can call the appropriate
     // methods to their own liking (e.g. writing a big block in smaller
@@ -229,6 +239,13 @@ namespace etdc {
     struct etdc_fd {
 
         int __m_fd {};
+
+        // True once a TLS handshake has completed on this fd (set in
+        // detail::attach_ssl). The application-level 'auth' command is
+        // refused unless this is set: there is no channel binding to sign
+        // on a cleartext connection, and an authenticated cleartext session
+        // would be hijackable. Always false on non-TLS fds.
+        bool __m_encrypted {false};
 
         // We pretend to be just an interface
         explicit etdc_fd();
@@ -246,6 +263,11 @@ namespace etdc {
         getsockname_fn getsockname;
         getpeername_fn getpeername;
         setblocking_fn setblocking;
+
+        // Non-empty only on a TLS fd after a successful handshake; see the
+        // tls_exporter_fn comment above. Not part of update_fd: assigned
+        // directly in detail::attach_ssl.
+        tls_exporter_fn tls_exporter;
     };
 
     static const etdc::construct<etdc_fd> update_fd( &etdc_fd::read, &etdc_fd::write, &etdc_fd::close, &etdc_fd::accept,

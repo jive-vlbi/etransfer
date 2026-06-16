@@ -107,7 +107,10 @@ namespace etdc {
         // choking on stuff they don't recognize
         unsupportedFeature,
         // TLS support is an optional feature
-        tlsSupport
+        tlsSupport,
+        // ssh-pubkey authentication (Phase 2); only advertised when compiled
+        // with TLS, since auth requires an encrypted channel (channel binding)
+        authSupport
     };
     // Kept in ETDServerInterface
     using featureset_type     = std::set<feature_t>;
@@ -122,7 +125,8 @@ namespace etdc {
     feature2string_type const feature2string{
         // Requirement: keep BOTH enums and values unique!
         {unsupportedFeature, "unsupportedFeature"},
-        {tlsSupport,         "TLS"}
+        {tlsSupport,         "TLS"},
+        {authSupport,        "AUTH"}
     };
 
 
@@ -353,6 +357,10 @@ namespace etdc {
             featureset_type      __m_clientFeatures;
             etdc::etdc_fdptr     __m_connection;
             protocolversion_type __m_clientProtocolVersion;
+            // The authenticated principal for this session, empty until a
+            // successful 'auth' command. Phase 2 only records it (audit /
+            // future per-principal ACL); --require-auth gating reads it.
+            std::string          __m_principal;
             // Serialises writes to __m_connection across the wrapper's main
             // read-loop thread and any detached worker threads it may have
             // spawned (currently sendFile workers, which also emit in-band

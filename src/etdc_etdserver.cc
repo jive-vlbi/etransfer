@@ -30,6 +30,7 @@
 // Plain-old-C
 #include <glob.h>
 #include <string.h>
+#include <cstdlib>
 
 // Make sure our zignal handlert has C-linkage
 extern "C" {
@@ -41,7 +42,8 @@ namespace etdc {
     // Can be inlined from C++17 onwards but we not going there yet
     const featureset_type ETDServerInterface::currentFeatureSet = featureset_type{
 #ifdef ETDC_TLS
-        tlsSupport
+        tlsSupport,
+        authSupport
 #endif
     };
 
@@ -1594,6 +1596,24 @@ namespace etdc {
         __m_attemptExtendedProbe = enable;
     }
 
+    // Phase 2a STUB verifier. The real per-principal authorized_keys lookup
+    // and EVP signature verification land in Phase 2b (in etdc_auth.{h,cc}).
+    // To let the wire format be exercised end-to-end before the crypto
+    // exists, an explicit, loudly-logged, dev-only escape hatch accepts any
+    // signature when the environment variable ETD_AUTH_STUB_ACCEPT_ANY is
+    // set. Default behaviour (no env var): reject - there is deliberately no
+    // accept-any path in a normal build.
+    static bool verifyAuthStub(std::string const& principal, std::string const& keytype,
+                               std::string const& /*pubkey_b64*/, std::string const& /*sig_b64*/) {
+        static const bool acceptAny = (std::getenv("ETD_AUTH_STUB_ACCEPT_ANY")!=nullptr);
+        if( acceptAny ) {
+            ETDCDEBUG(-1, "ETDServerWrapper: *** ETD_AUTH_STUB_ACCEPT_ANY set - accepting auth for principal '"
+                          << principal << "' (keytype=" << keytype << ") WITHOUT verification (Phase 2a stub) ***" << std::endl);
+            return true;
+        }
+        return false;
+    }
+
     //////////////////////////////////////////////////////////////////////
     //
     // This class does NOT implementing the ETDServerInterface but
@@ -1654,6 +1674,9 @@ namespace etdc {
                 static const std::regex  rxFeatureSet("^feature-set(?:\\s+(\\S+))?$", etdc_rxFlags);
                                                 //                        1
                                                 //                        comma separated list of features
+                static const std::regex  rxAuth("^auth\\s+(\\S+)\\s+(\\S+)\\s+(\\S+)\\s+(\\S+)$", etdc_rxFlags);
+                                                //         1         2         3         4
+                                                //         principal keytype   pubkey-b64 sig-b64
 
 
                 // Match it against the known commands
@@ -1884,6 +1907,34 @@ namespace etdc {
 
                         // and add it to the list of replies
                         replies.emplace_back( msgBuf.str() );
+                    } else if( std::regex_match(*line, fields, rxAuth) ) {
+                        // auth <principal> <keytype> <pubkey-b64> <sig-b64>
+                        //
+                        // Orthogonality rule (docs/tls-design.md sec 3): auth
+                        // requires an encrypted channel. On cleartext there is
+                        // no channel binding to sign and an authenticated
+                        // session would be hijackable, so refuse before any
+                        // crypto path is reached.
+                        if( !__m_connection->__m_encrypted ) {
+                            replies.emplace_back("ERR auth requires an encrypted (tls) connection");
+                        } else {
+                            const std::string principal( fields[1].str() );
+                            // Re-validate the principal charset (case-sensitive,
+                            // no icase) before it could ever become a filename
+                            // component in 2b: never trust the wire string as a
+                            // path (traversal guard). The client URL grammar
+                            // already constrains it to the same set.
+                            static const std::regex rxPrincipal("^[a-z0-9]+$");
+                            if( !std::regex_match(principal, rxPrincipal) ) {
+                                replies.emplace_back("ERR malformed principal");
+                            } else if( verifyAuthStub(principal, fields[2].str(), fields[3].str(), fields[4].str()) ) {
+                                __m_principal = principal;
+                                ETDCDEBUG(2, "ETDServerWrapper: session authenticated as principal '" << principal << "'" << std::endl);
+                                replies.emplace_back("OK");
+                            } else {
+                                replies.emplace_back("ERR authentication failed");
+                            }
+                        }
                     } else {
                         ETDCDEBUG(4, "line '" << *line << "' did not match any regex" << std::endl);
                         __m_connection->close( __m_connection->__m_fd );
