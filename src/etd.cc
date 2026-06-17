@@ -691,7 +691,17 @@ int main(int argc, char const*const*const argv) {
         serverState.add_thread(&data_server_thread<SIGUSR2>, srv, std::ref(serverState));
     }
 
-    for(auto&& cmdsrv: cmd.get<std::list<std::string>>("command"))
+    auto const               cmdsrvs{ cmd.get<std::list<std::string>>("command") };
+    decltype(cmdsrvs.size()) nTLS{ 0 };
+
+    for(auto&& cmdsrv: cmdsrvs) {
+        if( cmdsrv.find("tls")==static_cast<std::string::size_type>(0) )
+            nTLS++;
+    }
+    ETDCASSERT(!serverState.requireAuth || (serverState.requireAuth && (nTLS==cmdsrvs.size())),
+               "--require-auth needs ALL command channels to be encrypted (tls:// or tls6://)");
+
+    for(auto&& cmdsrv: cmdsrvs)
         serverState.add_thread(&command_server_thread<SIGUSR1>, mk_cmd(cmdsrv), std::ref(serverState));
 
     // And add a transfer-monitoring-thread when timeouts are requested

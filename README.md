@@ -13,7 +13,8 @@ multiple files irrespective of wether they are remote or local. Since Jun 2026 (
 
 - Since Jun 2026 (v3.0) the tools can be compiled with optional [TLS 1.3 support](#tls-transport-encrypted-command-and-data-channels) (`make TLS=1`), adding encrypted `tls://` / `tls6://` command- and data channels with ssh-style certificate pinning at the client.
 
-- The etransfer tools do not yet have authentication or authorization built in.
+- ~~The etransfer tools do not yet have authentication or authorization built in.~~
+- Since mid-June 2026 the etransfer tools support [encryption (TLS1.3) and ssh-style public-key authentication!](#authentication-and-authorization)
 
 - Memory data source and/or sink available for throughput/bottleneck testing; either
   disk read, disk write or both can be avoided by replacement with
@@ -132,6 +133,49 @@ over UDT/IPv6:46227.
 Both the e-transfer daemon and client support the "--help" command line option explain all options.
 
 ## Daemon features
+
+### Authentication and authorization
+
+If the system is compiled with TLS support (`make TlS=1`) the daemon and client gain support for `tls://...` and `tls6://...` protocols. The main goal is to provide encrypted communication between the client and daemon over its _command_ channel, but nothing prevents you from using `tls://...` for data transfers as well - albeit they will go over 'slow' TCP, but allows for encrypted data transfers of sensitive data.
+
+To fully exploit / secure the etransfer daemon and client the following steps are necessary:
+
+#### Daemon side 
+Generate TLS key/certificate pair for the daemon
+```bash
+    $> openssl req -x509 -newkey rsa:3072 -nodes -keyout <keyfile> -out <certfile> -days 3650 -subj "/CN=$(hostname -f)"
+```
+   - create a '/path/to/keystore' directory, e.g. `~/.etransfer/keystore`
+   - start `etd`:
+       - include `--key <keyfile> --cert <certfile>` on the command line
+       - use `--command tls://...` to specify the command channel
+       - add `--require-auth` if you _only_ want to allow authenticated users to use your daemon
+   - `etd` prints its "TLS fingerprint"
+- share a line of text:
+```bash
+<host>#<port> <TLS fingerprint>
+```
+with users through a secondary medium/publish somewhere for prospective clients
+
+#### Client side:
+- create a file `~/.etransfer_known_hosts` and put the shared daemon-fingerprint(s) in it for daemons you want to connect to
+- if you don't already have a SSH key pair, generate one: `ssh-keygen -t ed25519 -f ~/.ssh/etransfer_id_ed25519`
+- share the public key and a username-to-go-with-it with the daemon admin
+
+
+#### Back to daemon side:
+For each public key + supplied username that you want to allow, put the shared key in a file:
+```bash
+<keystore>/<username>
+```
+
+#### Then:
+```bash
+$> etc ... --identity ~/.ssh/etransfer_id_ed25519 /path/to/local/file tls://<username>@<host>#<port>:/path/to/remote/file 
+```
+
+Clients can be relaxed to accecpt unknown daemon fingerprints on first connection attempt, but for max security it is better to rely on daemon-admin published known-good fingerprints.
+
 
 ### Access control lists
 
