@@ -37,6 +37,48 @@ extern "C" {
 }
 
 namespace etdc {
+    // Out-of-line definitions of static const variables.
+    // Can be inlined from C++17 onwards but we not going there yet
+    const featureset_type ETDServerInterface::currentFeatureSet = featureset_type{
+#ifdef ETDC_TLS
+        tlsSupport
+#endif
+    };
+
+
+    std::ostream& operator<<(std::ostream& os, feature_t const& feature) {
+        // this can never fail, is our own compiled code, not from external input
+        return os << feature2string.find(feature)->second;
+     }
+
+    // parse a string into a known feature, or else unsupportedFeature
+    // it is up to the caller to decide if that is an error, or find a
+    // different stop condition for trying to parse strings ;-)
+    std::istream& operator>>(std::istream& is, feature_t& feature) {
+        std::string token;
+
+        if( is>>token ) {
+            // here we may be looking at what someone external gave us
+            auto const entry  = std::find_if(feature2string.begin(), feature2string.end(),
+                                             [&token](feature2string_type::value_type const& p) { return p.second == token; });
+            if( entry!=feature2string.end() ) {
+                feature = entry->first;
+            } else {
+                feature = unsupportedFeature;
+            }
+        } else {
+            // Signal a parsing failure to the stream
+            is.setstate(std::ios::failbit);
+        }
+        return is;
+    }
+
+    std::ostream& operator<<(std::ostream& os, featureset_type const& featureset) {
+        std::streampos startp = os.tellp();
+        for(auto const& f: featureset)
+            os << ((os.tellp()>startp) ? "," : "") << f;
+        return os;
+    }
 
     sockname2string_fn sockname2str( etdc::protocolversion_type v) {
         if( v==0 || v== ETDServerInterface::unknownProtocolVersion )
@@ -60,11 +102,13 @@ namespace etdc {
     // Schemes introduced at each protocol version:
     //   v0+: tcp, tcp6, udt, udt6
     //   v3+: srt, srt6
+    //   v5+: tls, tls6
     //
     // When extending the protocol with new data-channel schemes, add the
     // version gate below; both call-sites pick the change up automatically.
     static void filter_dataaddrs_for_protocol(dataaddrlist_type& addrs,
-                                              protocolversion_type peerVersion) {
+                                              protocolversion_type peerVersion,
+                                              featureset_type const& features) {
         // Constraint: peers at version <= 1 only know the original family
         // (tcp, tcp6, udt, udt6). Drop anything else.
         if( peerVersion<=1 ) {
@@ -80,6 +124,13 @@ namespace etdc {
             addrs.remove_if([](sockname_type const& sn) {
                 auto const& proto = get_protocol(sn);
                 return (proto=="srt" || proto=="srt6");
+            });
+        }
+        // Constraint: TLS may be optionally compiled in, i.e. a feature
+        if( features.find(etdc::tlsSupport)==features.end() ) {
+            addrs.remove_if([](sockname_type const& sn) {
+                auto const& proto = get_protocol(sn);
+                return (proto=="tls" || proto=="tls6");
             });
         }
     }
@@ -868,6 +919,10 @@ namespace etdc {
         return ETDServerInterface::currentProtocolVersion;
     }
 
+    featureset_type ETDServer::featureSet( void ) const {
+        return ETDServerInterface::currentFeatureSet;
+    }
+
     ETDServer::~ETDServer() {
         // we must clean up our UUID!
         try {
@@ -1264,7 +1319,7 @@ namespace etdc {
         // mk_client(). Filter the list to schemes the source's negotiated
         // protocol version is guaranteed to understand.
         dataaddrlist_type        usable( dataaddrs );
-        filter_dataaddrs_for_protocol(usable, __m_protocolVersion);
+        filter_dataaddrs_for_protocol(usable, __m_protocolVersion, __m_featureSet);
 
         if( usable.empty() ) {
             std::ostringstream    err;
@@ -1274,7 +1329,7 @@ namespace etdc {
                 << __m_protocolVersion << "). Schemes offered: ";
             for(auto p = dataaddrs.begin(); p!=dataaddrs.end(); p++)
                 err << (p==dataaddrs.begin() ? "" : ",") << get_protocol(*p);
-            throw std::runtime_error(err.str());
+            throw xfer_not_possible(err.str());
         }
 
         msgBuf << "send-file " << srcUUID << " " << dstUUID << " " << todo << " ";
@@ -1447,17 +1502,92 @@ namespace etdc {
             ETDCASSERT(fields[1].str()=="OK", "protocolVersion failed: " << fields[2].str());
 
             // The format should be "OK <number>"
-            remoteVersion = std::stoul( fields[3].str() );
-            __m_protocolVersion = (remoteVersion<ETDServerInterface::currentProtocolVersion)
-                                  ? remoteVersion
-                                  : ETDServerInterface::currentProtocolVersion;
+            remoteVersion       = std::stoul( fields[3].str() );
+            __m_protocolVersion = std::min(remoteVersion, ETDServerInterface::currentProtocolVersion);
 
             // Otherwise we're done
             break;
         }
-        ETDCASSERT(remoteVersion!=ETDServerInterface::unknownProtocolVersion, "protocolVersion negotiation failed to determine remote version");
+        ETDCASSERT(remoteVersion!=ETDServerInterface::unknownProtocolVersion,
+                   "protocolVersion negotiation failed to determine remote version");
         __m_attemptExtendedProbe = false;
+
+        // Advertise/negotiate the features (the called fn checks if the
+        // remotely advertised protocol version allows this, so we don't have to)
+        this->featureSet();
+
         return __m_protocolVersion;
+    }
+
+    featureset_type ETDProxy::featureSet( void ) const {
+        // an empty feature set don't mean anything (it is a valid featureset)
+        // so we can't cache it, just ask again then, that is, if the
+        // protocol version allows it
+        if( __m_protocolVersion==unknownProtocolVersion || __m_protocolVersion < 5 )
+            return featureset_type{};
+        if( __m_featureSetInitialised )
+            return __m_featureSet;
+
+        // Hmmm don't know what's at the other end, better check
+        // At the same time we advertise our own features, if any
+        std::ostringstream     msgBuf{};
+        featureset_type const& myfeatures{ ETDServerInterface::currentFeatureSet };
+
+        msgBuf << "feature-set" << (myfeatures.empty() ? "" : " ") << myfeatures << "\n";
+        const std::string  msg( msgBuf.str() );
+
+        ETDCDEBUG(4, "ETDProxy::featureSet/sending message '" << msg << "'" << std::endl);
+        ETDCASSERTX(__m_connection->write(__m_connection->__m_fd, msg.data(), msg.size())==(ssize_t)msg.size());
+
+        // And await the reply. We don't expect /a lot/ of data channel addrs so don't need a really big buf
+        const size_t            bufSz( 2048 );
+        std::unique_ptr<char[]> buffer(new char[bufSz]);
+
+        size_t                  curPos{ 0 };
+        std::string             state;
+        featureset_type         remoteFeatures{};
+
+        while( curPos<bufSz ) {
+            const ssize_t n = __m_connection->read(__m_connection->__m_fd, &buffer[curPos], bufSz-curPos);
+
+            // did we read anything?
+            ETDCASSERT(n>0, "Failed to read data from remote end");
+            curPos += n;
+
+            std::vector<std::string>  lines;
+            std::smatch               fields;
+
+            // Discard the return value from getReplies - we don't need to remember where we end in the buffer
+            (void)getReplies(&buffer[0], &buffer[curPos], std::back_inserter(lines));
+
+            // If no line(s) yet, read more bytes
+            if( lines.empty() )
+                continue;
+
+            // If we get >1 line, the client's messin' wiv de heads - we only allow 1 (one) line of reply
+            ETDCASSERT(lines.size()==1, "The client sent wrong number of responses - this is likely a protocol error");
+            // And that line should match our expectations
+            ETDCASSERT(std::regex_match(*lines.begin(), fields, rxReply), "The client sent a non-conforming response");
+            // Translate "ERR <Reason>" into an exception
+            ETDCASSERT(fields[1].str()=="OK", "featureSet failed: " << fields[2].str());
+
+            // The format should be "OK" or "OK feature,feature,feature"
+            feature_t          f;
+            std::istringstream theirfeatures{ etdc::replace_char(fields[3].str(), ',', ' ') };
+
+            // Filter out unrecognized features, as well as those features that we recognize
+            // but were not compiled with
+            while( theirfeatures >> f )
+                if( f!=unsupportedFeature && myfeatures.find(f)!=myfeatures.end() )
+                    remoteFeatures.insert(f);
+
+            // Otherwise we're done
+            break;
+        }
+        __m_featureSet            = remoteFeatures;
+        __m_featureSetInitialised = true;
+        ETDCDEBUG(4, "ETDProxy: features: common=" << remoteFeatures << " ours=" << myfeatures << std::endl);
+        return __m_featureSet;
     }
 
     void ETDProxy::preferExtendedProbe(bool enable) {
@@ -1516,9 +1646,15 @@ namespace etdc {
                 static const std::regex  rxDataChannelAddr("^data-channel-addr(-ext)?$", etdc_rxFlags);
                                                 //                            1 extended info?
                 static const std::regex  rxRemoveUUID("^(remove-uuid|cancel)\\s+(\\S+)$", etdc_rxFlags);
-                                                //      1              2
-                                                //      what to do     UUID
+                                                //      1                       2
+                                                //      what to do              UUID
                 static const std::regex  rxProtocolVersion("^protocol-version(?:\\s+([0-9]+))?$", etdc_rxFlags);
+                                                //                                  1
+                                                //                                  protocol vsn number
+                static const std::regex  rxFeatureSet("^feature-set(?:\\s+(\\S+))?$", etdc_rxFlags);
+                                                //                        1
+                                                //                        comma separated list of features
+
 
                 // Match it against the known commands
                 std::smatch              fields;
@@ -1655,7 +1791,7 @@ namespace etdc {
 
                         // Drop schemes the peer cannot understand, using the
                         // shared filter helper (see top of this file).
-                        filter_dataaddrs_for_protocol(entries, peerVersion);
+                        filter_dataaddrs_for_protocol(entries, peerVersion, __m_clientFeatures);
 
                         if( entries.empty() && !configuredSchemes.empty() ) {
                             // Symmetrical guard to the one in ETDProxy::sendFile:
@@ -1726,6 +1862,28 @@ namespace etdc {
                         }
                         // and add a final OK
                         replies.emplace_back("OK "+repr(reply_v));
+                    } else if( std::regex_match(*line, fields, rxFeatureSet) ) {
+                        // Ah. Remote end advertises its features and expects us to show them ours
+                        // The format should be "feature-set[ feature,feature,..]"
+                        feature_t              f;
+                        featureset_type        remoteFeatures{};
+                        std::istringstream     theirfeatures{ etdc::replace_char(fields[1].str(), ',', ' ') };
+                        featureset_type const& myfeatures{ ETDServerInterface::currentFeatureSet };
+
+                        // Filter out unrecognized features, as well as those features that we recognize
+                        // but were not compiled with
+                        while( theirfeatures >> f )
+                            if( f!=unsupportedFeature && myfeatures.find(f)!=myfeatures.end() )
+                                remoteFeatures.insert(f);
+                        __m_clientFeatures = remoteFeatures;
+
+                        // Form the reply
+                        std::ostringstream     msgBuf{};
+                        msgBuf << "OK" << (myfeatures.empty() ? "" : " ") << myfeatures;
+                        ETDCDEBUG(4, "ETDServerWrapper: features common=" << remoteFeatures << " ours=" << myfeatures << std::endl);
+
+                        // and add it to the list of replies
+                        replies.emplace_back( msgBuf.str() );
                     } else {
                         ETDCDEBUG(4, "line '" << *line << "' did not match any regex" << std::endl);
                         __m_connection->close( __m_connection->__m_fd );

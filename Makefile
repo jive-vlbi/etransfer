@@ -158,6 +158,23 @@ ifneq ($(strip $(findstring fkyaml, $(foreach P, $(TODO), $($(P)_DEPS)))),)
 	INCD+=-I$(shell pwd)/fkyaml
 endif
 
+# Optional TLS support: build with "make TLS=1 ..." to compile in the
+# tls:// / tls6:// transports. Requires system OpenSSL >= 1.1.1
+# (LibreSSL works too). NOTE: object repository is shared between
+# TLS and non-TLS builds - run 'make clean' when switching.
+ifneq ($(strip $(TLS)),)
+	BASEOPT+=-DETDC_TLS=1
+	PLATFORMLIBS+=-lssl -lcrypto
+	# macOS: openssl is keg-only in homebrew, ask brew where it lives
+	ifeq ($(shell uname),Darwin)
+		OPENSSLPREFIX?=$(shell brew --prefix openssl@3 2>/dev/null)
+		ifneq ($(strip $(OPENSSLPREFIX)),)
+			INCD+=-I$(OPENSSLPREFIX)/include
+			LIBD+=-L$(OPENSSLPREFIX)/lib
+		endif
+	endif
+endif
+
 
 # Hints to gmake 
 .PHONY: info clean %.depend %.version %.target libudt4hv libudt5ab libsrt5ab pthread %.dep
