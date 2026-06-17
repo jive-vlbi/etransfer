@@ -145,34 +145,45 @@ Generate TLS key/certificate pair for the daemon
 ```bash
     $> openssl req -x509 -newkey rsa:3072 -nodes -keyout <keyfile> -out <certfile> -days 3650 -subj "/CN=$(hostname -f)"
 ```
-   - create a '/path/to/keystore' directory, e.g. `~/.etransfer/keystore`
-   - start `etd`:
-       - include `--key <keyfile> --cert <certfile>` on the command line
-       - use `--command tls://...` to specify the command channel
-       - add `--require-auth` if you _only_ want to allow authenticated users to use your daemon
-   - `etd` prints its "TLS fingerprint"
-- share a line of text:
+
+Then create a `/path/to/keystore` directory, e.g. `~/.etransfer/keystore`.
+
+Start `etd` with the following options:
+- use `--key <keyfile> --cert <certfile>` to point the code at the Sekrit Stuff
+- use `--command tls://...` to specify encrypted command channel(s)
+- add `--authorized-keys <path/to/keystore>` to specify the keystore directory
+- add `--require-auth` if you _only_ want to allow authenticated users to use your daemon
+
+`etd` prints its "TLS fingerprint", on a line that looks something like this
+```bash
+2026-06-17 13:08:59.78: TLS certificate 'etd.crt' sha256=29:4c:dd:cf:49: ... (snip)
+```
+Then it's time to share a line of text like below with users through a secondary medium/publish somewhere for prospective clients
+
 ```bash
 <host>#<port> <TLS fingerprint>
 ```
-with users through a secondary medium/publish somewhere for prospective clients
+For example, for the test daemon on 127.0.0.1, default port, that I used for testing, this line reads:
+```bash
+127.0.0.1#4004 29:4c:dd:cf:49: ... (snip)
+```
 
 #### Client side:
-- create a file `~/.etransfer_known_hosts` and put the shared daemon-fingerprint(s) in it for daemons you want to connect to
+- create a file `~/.etransfer_known_hosts` and put the fingerprint(s) that `etd`-admins shared in it for daemons you want to connect to. The client refuses to connect to a `tls://...` host it don't recognize (but it can be relaxed to accept it always, but that's not the default)
 - if you don't already have a SSH key pair, generate one: `ssh-keygen -t ed25519 -f ~/.ssh/etransfer_id_ed25519`
-- share the public key and a username-to-go-with-it with the daemon admin
-
+- share the public key part of the key-pair you just created or already had, and a `username` (that you want to go with the public key) with (the) daemon admin(s) of any/all `etd`-daemons you might want to transfer with
 
 #### Back to daemon side:
-For each public key + supplied username that you want to allow, put the shared key in a file:
+For each public key + supplied `username` that you want to allow, put the shared key in a file:
 ```bash
-<keystore>/<username>
+/path/to/keystore/<username>
 ```
 
-#### Then:
+#### Then, client side do this
 ```bash
-$> etc ... --identity ~/.ssh/etransfer_id_ed25519 /path/to/local/file tls://<username>@<host>#<port>:/path/to/remote/file 
+$> etc ... --identity ~/.ssh/etransfer_id_ed25519 <file> tls://<username>@<host>#<port>:/path/to/remote/file 
 ```
+**Note** the `--identity` argument points at the _private_ key of the key-pair!
 
 Clients can be relaxed to accecpt unknown daemon fingerprints on first connection attempt, but for max security it is better to rely on daemon-admin published known-good fingerprints.
 
