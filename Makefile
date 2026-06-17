@@ -79,7 +79,7 @@ mkobjs=$(foreach O, $(patsubst %.c, %.co, $(patsubst %.cc, %.cco, $(patsubst %.S
 #         only set this variable if you actually need it
 
 # etransfer daemon
-etd_SRC=src/etd.cc src/reentrant.cc src/etdc_fd.cc src/etdc_etdserver.cc src/etdc_debug.cc src/etd_acl.cc
+etd_SRC=src/etd.cc src/reentrant.cc src/etdc_fd.cc src/etdc_etdserver.cc src/etdc_debug.cc src/etd_acl.cc src/etdc_auth.cc src/etdc_bcrypt.cc
 etd_VERSION=$(shell ./get_version)
 etd_RELEASE=dev
 etd_OBJS=$(call mkobjs,etd)
@@ -90,7 +90,7 @@ etd_OBJS=$(call mkobjs,etd)
 etd_DEPS=libudt5ab libsrt5ab fkyaml pthread
 
 # etransfer client
-etc_SRC=src/etc.cc src/reentrant.cc src/etdc_fd.cc src/etdc_etdserver.cc src/etdc_debug.cc src/etd_acl.cc
+etc_SRC=src/etc.cc src/reentrant.cc src/etdc_fd.cc src/etdc_etdserver.cc src/etdc_debug.cc src/etd_acl.cc src/etdc_auth.cc src/etdc_bcrypt.cc
 etc_VERSION=$(shell ./get_version)
 etc_RELEASE=dev
 etc_OBJS=$(call mkobjs,etc)
@@ -128,6 +128,21 @@ tACL_SRC=src/tACL.cc src/etd_acl.cc
 tACL_VERSION=0
 tACL_OBJS=$(call mkobjs,tACL)
 tACL_DEPS=fkyaml
+
+# ssh-pubkey auth crypto self-test - needs a TLS build: 'make TLS=1 tAUTH'
+tAUTH_SRC=src/tAUTH.cc src/etdc_auth.cc src/etdc_bcrypt.cc
+tAUTH_VERSION=0
+tAUTH_OBJS=$(call mkobjs,tAUTH)
+
+# Blowfish/bcrypt KAT - needs a TLS build: 'make TLS=1 tBCRYPT'
+tBCRYPT_SRC=src/tBCRYPT.cc src/etdc_bcrypt.cc
+tBCRYPT_VERSION=0
+tBCRYPT_OBJS=$(call mkobjs,tBCRYPT)
+
+# OpenSSH private-key load test (uses ssh-keygen) - 'make TLS=1 tIDENTITY'
+tIDENTITY_SRC=src/tIDENTITY.cc src/etdc_auth.cc src/etdc_bcrypt.cc
+tIDENTITY_VERSION=0
+tIDENTITY_OBJS=$(call mkobjs,tIDENTITY)
 
 # Process make command line targets and filter out the ones that we should build
 # This is only to be able to include the correct dependency files

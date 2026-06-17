@@ -25,6 +25,8 @@
 #include <etdc_uuid.h>
 #include <etdc_assert.h>
 #include <etdc_etd_state.h>
+// ssh-pubkey auth types (signer_fn etc.); a no-op include without ETDC_TLS
+#include <etdc_auth.h>
 
 // C++ headers
 #include <set>
@@ -107,7 +109,10 @@ namespace etdc {
         // choking on stuff they don't recognize
         unsupportedFeature,
         // TLS support is an optional feature
-        tlsSupport
+        tlsSupport,
+        // ssh-pubkey authentication (Phase 2); only advertised when compiled
+        // with TLS, since auth requires an encrypted channel (channel binding)
+        authSupport
     };
     // Kept in ETDServerInterface
     using featureset_type     = std::set<feature_t>;
@@ -122,7 +127,8 @@ namespace etdc {
     feature2string_type const feature2string{
         // Requirement: keep BOTH enums and values unique!
         {unsupportedFeature, "unsupportedFeature"},
-        {tlsSupport,         "TLS"}
+        {tlsSupport,         "TLS"},
+        {authSupport,        "AUTH"}
     };
 
 
@@ -260,6 +266,14 @@ namespace etdc {
 
             virtual featureset_type       featureSet( void ) const;
 
+            // Directory of per-principal authorized_keys files (Phase 2
+            // ssh-pubkey auth). Empty => no principal can authenticate.
+            std::string const&            authKeysDir( void ) const { return __m_shared_state.get().authKeysDir; }
+
+            // Whether this daemon was started with --require-auth: command
+            // channels must authenticate before any non-handshake command.
+            bool                          requireAuth( void ) const { return __m_shared_state.get().requireAuth; }
+
             virtual ~ETDServer();
 
         private:
@@ -308,6 +322,17 @@ namespace etdc {
 
             void preferExtendedProbe(bool enable);
 
+#ifdef ETDC_TLS
+            // Client-only ssh-pubkey authentication (Phase 2). After feature
+            // negotiation established that the daemon offers AUTH, present a
+            // signature - produced by 'signer' over *this* session's TLS
+            // channel binding - so the daemon can map the session to
+            // 'principal'. Returns true on the daemon's "OK", false on an
+            // "ERR" reply; throws on a transport/protocol error or if the
+            // command channel is not encrypted (no binding to sign).
+            bool authenticate(std::string const& principal, etdc::auth::signer_fn const& signer);
+#endif
+
             template <typename... Options>
             int setsockopt(Options&&... options) {
                 return etdc::setsockopt(__m_connection->__m_fd, std::forward<Options>(options)...);
@@ -353,6 +378,10 @@ namespace etdc {
             featureset_type      __m_clientFeatures;
             etdc::etdc_fdptr     __m_connection;
             protocolversion_type __m_clientProtocolVersion;
+            // The authenticated principal for this session, empty until a
+            // successful 'auth' command. Phase 2 only records it (audit /
+            // future per-principal ACL); --require-auth gating reads it.
+            std::string          __m_principal;
             // Serialises writes to __m_connection across the wrapper's main
             // read-loop thread and any detached worker threads it may have
             // spawned (currently sendFile workers, which also emit in-band

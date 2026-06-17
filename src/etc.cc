@@ -43,6 +43,9 @@
 #include <fstream>
 #include <sstream>
 #include <cctype>
+#include <cstdlib>
+#include <pwd.h>
+#include <etdc_auth.h>
 #endif
 
 // For isatty() so the progress renderer can stay quiet when stderr is
@@ -169,6 +172,20 @@ HUMANREADABLE(etdc::max_bw_type, "int (bytes per second)")
 static std::string known_hosts_file( void ) {
     char const*const home = ::getenv("HOME");
     return std::string(home ? home : ".") + "/.etransfer_known_hosts";
+}
+
+// The principal to authenticate as when neither the URL's 'user@' nor
+// --principal pin one down: the local login name (LOGNAME/USER, else passwd).
+static std::string default_principal( void ) {
+    char const* nm = ::getenv("LOGNAME");
+    if( !(nm && *nm) )
+        nm = ::getenv("USER");
+    if( nm && *nm )
+        return std::string(nm);
+    if( struct passwd const*const pw = ::getpwuid(::getuid()) )
+        if( pw->pw_name )
+            return std::string(pw->pw_name);
+    return std::string();
 }
 
 // TLS host-verification policy for tls:// command channels (see --tls-verify).
@@ -501,6 +518,8 @@ int main(int argc, char const*const*const argv) {
     etdc::retrydelay_type        connDelay{ 5 };
 #ifdef ETDC_TLS
     tls_verify_mode              tlsVerify{ tls_verify_ask };
+    std::string                  identityFile{};
+    std::string                  principalName{};
 #endif
 
     AP::ArgumentParser     cmd( AP::version( buildinfo() ),
@@ -614,6 +633,17 @@ int main(int argc, char const*const*const argv) {
                                        "'tofu' (alias 'accept-new') = trust+record an unknown host on first contact, refuse a changed one; "
                                        "'ask' = prompt for confirmation on first contact when interactive, otherwise behave like 'strict'. "
                                        "A changed fingerprint is always refused. Default: ")+etdc::repr(tlsVerify)) );
+
+    // ssh-pubkey authentication (Phase 2) over tls:// command channels.
+    cmd.add( AP::store_into(identityFile), AP::long_name("identity"), AP::at_most(1),
+             AP::docstring("Private-key file used to authenticate to a tls:// daemon that offers "
+                           "ssh-pubkey auth. Accepts OpenSSH keys (incl. ed25519 and "
+                           "passphrase-encrypted) and PEM/PKCS#8; any passphrase is prompted on the "
+                           "terminal. Without --identity no client authentication is attempted.") );
+    cmd.add( AP::store_into(principalName), AP::long_name("principal"), AP::at_most(1),
+             AP::docstring("Principal (account name) to authenticate as; the daemon looks up "
+                           "<authorized-keys-dir>/<principal>. Defaults to the 'user@' in the URL, "
+                           "otherwise your login name. Only used together with --identity.") );
 #endif
 
     // User can choose between:
@@ -729,6 +759,45 @@ int main(int argc, char const*const*const argv) {
     for(const auto &srv: servers) {
         ETDCDEBUG(4, "Server protocol version: " << srv->protocolVersion() << std::endl);
     }
+
+#ifdef ETDC_TLS
+    // ssh-pubkey authentication (Phase 2). With --identity given, authenticate
+    // to every remote endpoint reached over an encrypted tls:// channel whose
+    // daemon advertised AUTH. Standalone signing - no ssh-agent required. This
+    // runs after protocol/feature negotiation (protocolVersion() above primes
+    // the per-proxy feature set) and before the first real command (listPath).
+    if( !identityFile.empty() ) {
+        // Load (and, if needed, decrypt) the key once, up front: a bad path or
+        // wrong passphrase fails here rather than mid-transfer.
+        etdc::auth::signer_fn const signer = etdc::auth::make_identity_signer(identityFile);
+        for(size_t idx=0; idx<servers.size(); idx++) {
+            url_type const& url = urls[idx];
+            // auth only makes sense over an encrypted (tls://) command channel
+            if( url.isLocal || untag(url.protocol).compare(0, 3, "tls")!=0 )
+                continue;
+            // ...and only if the daemon actually offered it: sending an unknown
+            // 'auth' command to a non-AUTH daemon would make it drop the link.
+            etdc::featureset_type const feats = servers[idx]->featureSet();
+            if( feats.find(etdc::authSupport)==feats.end() ) {
+                ETDCDEBUG(1, "etc: " << url.host << " does not offer ssh-pubkey auth; ignoring --identity for it" << std::endl);
+                continue;
+            }
+            auto proxy = std::dynamic_pointer_cast<etdc::ETDProxy>(servers[idx]);
+            ETDCASSERT(proxy, "etc: internal error - tls:// endpoint is not an ETDProxy");
+
+            // Per-endpoint principal: URL 'user@', else --principal, else login.
+            std::string principal = url.user;
+            if( principal.empty() ) principal = principalName;
+            if( principal.empty() ) principal = default_principal();
+            ETDCASSERT(!principal.empty(),
+                       "etc: cannot determine a principal to authenticate to " << url.host << " as; use --principal");
+
+            ETDCASSERT(proxy->authenticate(principal, signer),
+                       "etc: authentication as '" << principal << "' to " << url.host << " was refused");
+            ETDCDEBUG(2, "etc: authenticated to " << url.host << " as principal '" << principal << "'" << std::endl);
+        }
+    }
+#endif
 
     // Get the list of files to transfer (or to list if servers.size()==1)
     static const auto isDir = [](std::string const& str) { return !str.empty() && str[str.size()-1]=='/'; };

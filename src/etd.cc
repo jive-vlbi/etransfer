@@ -541,6 +541,23 @@ int main(int argc, char const*const*const argv) {
 
     cmd.add( AP::store_into(sockopts.tlsKey), AP::long_name("key"), AP::at_most(1),
              AP::docstring("Path to the daemon's TLS private key, PEM format. Required for tls:// listeners") );
+
+    // Phase 2 ssh-pubkey auth: a directory with one OpenSSH authorized_keys
+    // file per principal (e.g. <dir>/alice). A client authenticates over a
+    // tls:// command channel with 'auth' (signature bound to the TLS session).
+    cmd.add( AP::store_into(serverState.authKeysDir), AP::long_name("authorized-keys"), AP::at_most(1),
+             AP::docstring("Directory of per-principal OpenSSH authorized_keys files (<dir>/<principal>) "
+                           "used to verify ssh-pubkey 'auth' over tls:// command channels. "
+                           "If unset, no principal can authenticate.") );
+
+    // Phase 2c: refuse all real work on a control connection until the client
+    // has authenticated. Only the protocol-version/feature-set/auth handshake
+    // is honoured beforehand. Requires --authorized-keys (sanity-checked below).
+    cmd.add( AP::long_name("require-auth"), AP::store_const_into(true, serverState.requireAuth), AP::at_most(1),
+             AP::docstring("Refuse every command on a control connection until the client has authenticated "
+                           "with ssh-pubkey 'auth' (only the protocol-version / feature-set / auth handshake "
+                           "is permitted beforehand). Requires --authorized-keys and an encrypted (tls://) "
+                           "command channel, since cleartext sessions can never authenticate.") );
 #endif
 
     // command servers; we require at least one of 'm
@@ -605,6 +622,15 @@ int main(int argc, char const*const*const argv) {
     // Set message level based on command line value (or default)
     etdc::dbglev_fn( message_level );
 
+#ifdef ETDC_TLS
+    // --require-auth is meaningless without a key store to verify against:
+    // with no authorized-keys directory no client could ever authenticate,
+    // which would turn every command channel into a brick wall. Fail fast,
+    // before daemonizing, so the message reaches the terminal not syslog.
+    ETDCASSERT(!(serverState.requireAuth && serverState.authKeysDir.empty()),
+               "--require-auth needs --authorized-keys: without a key store no client can authenticate");
+#endif
+
     // To daemonize or not to daemonize, that is the question.
     // If we do, we do that by replacing the streambuf of std::cerr by one
     // that actually stuffs stuff into syslog.
@@ -665,7 +691,17 @@ int main(int argc, char const*const*const argv) {
         serverState.add_thread(&data_server_thread<SIGUSR2>, srv, std::ref(serverState));
     }
 
-    for(auto&& cmdsrv: cmd.get<std::list<std::string>>("command"))
+    auto const               cmdsrvs{ cmd.get<std::list<std::string>>("command") };
+    decltype(cmdsrvs.size()) nTLS{ 0 };
+
+    for(auto&& cmdsrv: cmdsrvs) {
+        if( cmdsrv.find("tls")==static_cast<std::string::size_type>(0) )
+            nTLS++;
+    }
+    ETDCASSERT(!serverState.requireAuth || (serverState.requireAuth && (nTLS==cmdsrvs.size())),
+               "--require-auth needs ALL command channels to be encrypted (tls:// or tls6://)");
+
+    for(auto&& cmdsrv: cmdsrvs)
         serverState.add_thread(&command_server_thread<SIGUSR1>, mk_cmd(cmdsrv), std::ref(serverState));
 
     // And add a transfer-monitoring-thread when timeouts are requested
