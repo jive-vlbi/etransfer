@@ -25,6 +25,8 @@
 #include <etdc_uuid.h>
 #include <etdc_assert.h>
 #include <etdc_etd_state.h>
+// ssh-pubkey auth types (signer_fn etc.); a no-op include without ETDC_TLS
+#include <etdc_auth.h>
 
 // C++ headers
 #include <set>
@@ -268,6 +270,10 @@ namespace etdc {
             // ssh-pubkey auth). Empty => no principal can authenticate.
             std::string const&            authKeysDir( void ) const { return __m_shared_state.get().authKeysDir; }
 
+            // Whether this daemon was started with --require-auth: command
+            // channels must authenticate before any non-handshake command.
+            bool                          requireAuth( void ) const { return __m_shared_state.get().requireAuth; }
+
             virtual ~ETDServer();
 
         private:
@@ -315,6 +321,17 @@ namespace etdc {
             virtual featureset_type       featureSet( void ) const;
 
             void preferExtendedProbe(bool enable);
+
+#ifdef ETDC_TLS
+            // Client-only ssh-pubkey authentication (Phase 2). After feature
+            // negotiation established that the daemon offers AUTH, present a
+            // signature - produced by 'signer' over *this* session's TLS
+            // channel binding - so the daemon can map the session to
+            // 'principal'. Returns true on the daemon's "OK", false on an
+            // "ERR" reply; throws on a transport/protocol error or if the
+            // command channel is not encrypted (no binding to sign).
+            bool authenticate(std::string const& principal, etdc::auth::signer_fn const& signer);
+#endif
 
             template <typename... Options>
             int setsockopt(Options&&... options) {

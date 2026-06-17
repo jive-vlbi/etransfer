@@ -6,10 +6,16 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
 #include <algorithm>
+
+#include <termios.h>
+#include <unistd.h>
+
+#include <etdc_bcrypt.h>
 
 #include <openssl/evp.h>
 #include <openssl/rsa.h>
@@ -17,6 +23,7 @@
 #include <openssl/bn.h>
 #include <openssl/pem.h>
 #include <openssl/err.h>
+#include <openssl/bio.h>
 #include <openssl/obj_mac.h>
 
 // OpenSSL 3.0 deprecates the low-level RSA_*/EC_KEY_* key-construction API
@@ -154,6 +161,207 @@ namespace {
         if( algo=="rsa-sha2-512" )           { md = EVP_sha512(); return true; }
         if( algo=="ecdsa-sha2-nistp256" )    { md = EVP_sha256(); is_ecdsa = true; return true; }
         return false;
+    }
+
+    // ---- OpenSSH-native private key support ------------------------------
+    //
+    // Layout of a "BEGIN OPENSSH PRIVATE KEY" container (after un-base64):
+    //   "openssh-key-v1\0"
+    //   string ciphername          ("none" | "aes256-ctr" | ...)
+    //   string kdfname             ("none" | "bcrypt")
+    //   string kdfoptions          (bcrypt: string salt || uint32 rounds)
+    //   uint32 nkeys
+    //   string publickey[nkeys]
+    //   string encrypted           (the - possibly encrypted - private section)
+    // The decrypted private section is:
+    //   uint32 checkint1, uint32 checkint2   (must be equal)
+    //   per key: <inline type-specific private fields> string comment
+    //   byte   padding 1,2,3,...
+
+    // Read a passphrase from the controlling terminal with echo disabled.
+    std::string read_passphrase(std::string const& prompt) {
+        FILE* tty = std::fopen("/dev/tty", "r+");
+        FILE* in  = tty ? tty : stdin;
+        FILE* out = tty ? tty : stderr;
+        const int fd = ::fileno(in);
+
+        std::fputs(prompt.c_str(), out); std::fflush(out);
+
+        struct termios oldt, newt;
+        const bool haveTermios = (::tcgetattr(fd, &oldt)==0);
+        if( haveTermios ) { newt = oldt; newt.c_lflag &= ~static_cast<tcflag_t>(ECHO); ::tcsetattr(fd, TCSAFLUSH, &newt); }
+
+        std::string pass;
+        int c;
+        while( (c=std::fgetc(in))!=EOF && c!='\n' && c!='\r' )
+            pass.push_back(static_cast<char>(c));
+
+        if( haveTermios ) ::tcsetattr(fd, TCSAFLUSH, &oldt);
+        std::fputs("\n", out); std::fflush(out);
+        if( tty ) std::fclose(tty);
+        return pass;
+    }
+
+    // OpenSSL PEM password callback shim: forwards to a passphrase_cb passed
+    // via 'u', or to the terminal prompt when none was supplied.
+    extern "C" {
+        static int etdc_pem_pw_cb(char* buf, int size, int /*rwflag*/, void* u) {
+            const passphrase_cb* ask = static_cast<const passphrase_cb*>(u);
+            const std::string    pass = (ask && *ask) ? (*ask)("Enter passphrase for key: ")
+                                                      : read_passphrase("Enter passphrase for key: ");
+            const int n = static_cast<int>(std::min(pass.size(), static_cast<size_t>(size<0?0:size)));
+            std::memcpy(buf, pass.data(), static_cast<size_t>(n));
+            return n;
+        }
+    }
+
+    bool lookup_cipher(std::string const& name, int& keylen, int& ivlen,
+                       int& blocksize, const EVP_CIPHER*& cipher) {
+        cipher = nullptr;
+        if( name=="none"       ) { keylen=0;  ivlen=0;  blocksize=8;  return true; }
+        if( name=="aes256-ctr" ) { keylen=32; ivlen=16; blocksize=16; cipher=EVP_aes_256_ctr(); return true; }
+        if( name=="aes256-cbc" ) { keylen=32; ivlen=16; blocksize=16; cipher=EVP_aes_256_cbc(); return true; }
+        if( name=="aes192-ctr" ) { keylen=24; ivlen=16; blocksize=16; cipher=EVP_aes_192_ctr(); return true; }
+        if( name=="aes192-cbc" ) { keylen=24; ivlen=16; blocksize=16; cipher=EVP_aes_192_cbc(); return true; }
+        if( name=="aes128-ctr" ) { keylen=16; ivlen=16; blocksize=16; cipher=EVP_aes_128_ctr(); return true; }
+        if( name=="aes128-cbc" ) { keylen=16; ivlen=16; blocksize=16; cipher=EVP_aes_128_cbc(); return true; }
+        return false;
+    }
+
+    // Reconstruct an EVP_PKEY from the inline private-key fields at the
+    // reader's current position. Returns null on unsupported/malformed input.
+    pkey_ptr openssh_priv_to_pkey(ssh_reader& r) {
+        std::string algo;
+        if( !r.str(algo) ) return pkey_ptr();
+
+        if( algo=="ssh-ed25519" ) {
+            bytes pub, priv;
+            // priv is seed(32) || pub(32); the raw ed25519 private key is the seed.
+            if( !r.str(pub) || !r.str(priv) || priv.size()!=64 ) return pkey_ptr();
+            EVP_PKEY* pk = EVP_PKEY_new_raw_private_key(EVP_PKEY_ED25519, nullptr, priv.data(), 32);
+            return pk ? pkey_ptr(pk, &EVP_PKEY_free) : pkey_ptr();
+        }
+        if( algo=="ssh-rsa" ) {
+            bytes nb, eb, db, iqmpb, pb, qb;
+            // n,e,d are sufficient for signing; p,q,iqmp (CRT) are not needed.
+            if( !r.str(nb) || !r.str(eb) || !r.str(db) ||
+                !r.str(iqmpb) || !r.str(pb) || !r.str(qb) ) return pkey_ptr();
+            BIGNUM* n = BN_bin2bn(nb.data(), static_cast<int>(nb.size()), nullptr);
+            BIGNUM* e = BN_bin2bn(eb.data(), static_cast<int>(eb.size()), nullptr);
+            BIGNUM* d = BN_bin2bn(db.data(), static_cast<int>(db.size()), nullptr);
+            RSA*    rsa = RSA_new();
+            if( !n || !e || !d || !rsa || RSA_set0_key(rsa, n, e, d)!=1 ) {
+                BN_free(n); BN_free(e); BN_free(d); RSA_free(rsa); return pkey_ptr();
+            }
+            EVP_PKEY* pk = EVP_PKEY_new();
+            if( !pk || EVP_PKEY_assign_RSA(pk, rsa)!=1 ) { EVP_PKEY_free(pk); RSA_free(rsa); return pkey_ptr(); }
+            return pkey_ptr(pk, &EVP_PKEY_free);
+        }
+        if( algo=="ecdsa-sha2-nistp256" ) {
+            std::string curve; bytes point, db;
+            if( !r.str(curve) || curve!="nistp256" || !r.str(point) || !r.str(db) ) return pkey_ptr();
+            EC_KEY* ec = EC_KEY_new_by_curve_name(NID_X9_62_prime256v1);
+            if( !ec ) return pkey_ptr();
+            BIGNUM*         d   = BN_bin2bn(db.data(), static_cast<int>(db.size()), nullptr);
+            const EC_GROUP* grp = EC_KEY_get0_group(ec);
+            EC_POINT*       pt  = EC_POINT_new(grp);
+            const bool      ok  = d && pt &&
+                                  EC_POINT_oct2point(grp, pt, point.data(), point.size(), nullptr)==1 &&
+                                  EC_KEY_set_public_key(ec, pt)==1 &&
+                                  EC_KEY_set_private_key(ec, d)==1;   // copies d
+            EC_POINT_free(pt);
+            BN_free(d);
+            if( !ok ) { EC_KEY_free(ec); return pkey_ptr(); }
+            EVP_PKEY* pk = EVP_PKEY_new();
+            if( !pk || EVP_PKEY_assign_EC_KEY(pk, ec)!=1 ) { EVP_PKEY_free(pk); EC_KEY_free(ec); return pkey_ptr(); }
+            return pkey_ptr(pk, &EVP_PKEY_free);
+        }
+        return pkey_ptr();
+    }
+
+    pkey_ptr parse_openssh_private(bytes const& raw, passphrase_cb const& ask) {
+        static const char MAGIC[] = "openssh-key-v1";   // 14 chars + NUL = 15 bytes
+        if( raw.size()<sizeof(MAGIC) || std::memcmp(raw.data(), MAGIC, sizeof(MAGIC))!=0 )
+            throw std::runtime_error("openssh key: bad magic");
+
+        ssh_reader r(raw);
+        r.cur += sizeof(MAGIC);
+
+        std::string ciphername, kdfname;
+        bytes       kdfoptions;
+        uint32_t    nkeys = 0;
+        if( !r.str(ciphername) || !r.str(kdfname) || !r.str(kdfoptions) || !r.u32(nkeys) || nkeys<1 )
+            throw std::runtime_error("openssh key: truncated header");
+        for(uint32_t i=0; i<nkeys; i++) { bytes pub; if( !r.str(pub) ) throw std::runtime_error("openssh key: truncated public key"); }
+        bytes enc;
+        if( !r.str(enc) ) throw std::runtime_error("openssh key: truncated private section");
+
+        int              keylen=0, ivlen=0, blocksize=0;
+        const EVP_CIPHER* cipher = nullptr;
+        if( !lookup_cipher(ciphername, keylen, ivlen, blocksize, cipher) )
+            throw std::runtime_error("openssh key: unsupported cipher '"+ciphername+"'");
+
+        bytes plain;
+        if( cipher==nullptr ) {
+            if( kdfname!="none" ) throw std::runtime_error("openssh key: cipher 'none' with kdf '"+kdfname+"'");
+            plain = enc;
+        } else {
+            if( kdfname!="bcrypt" ) throw std::runtime_error("openssh key: unsupported kdf '"+kdfname+"'");
+            ssh_reader kr(kdfoptions);
+            bytes      salt;
+            uint32_t   rounds = 0;
+            if( !kr.str(salt) || !kr.u32(rounds) || salt.empty() || rounds<1 )
+                throw std::runtime_error("openssh key: bad bcrypt parameters");
+            const std::string pass = (ask ? ask("Enter passphrase for key: ")
+                                          : read_passphrase("Enter passphrase for key: "));
+            if( pass.empty() )
+                throw std::runtime_error("openssh key is encrypted but no passphrase was supplied");
+
+            bytes keyiv(static_cast<size_t>(keylen+ivlen));
+            if( bcrypt_pbkdf(reinterpret_cast<const uint8_t*>(pass.data()), pass.size(),
+                             salt.data(), salt.size(), keyiv.data(), keyiv.size(), rounds)!=0 )
+                throw std::runtime_error("openssh key: bcrypt_pbkdf failed");
+            if( enc.empty() || (enc.size()%static_cast<size_t>(blocksize))!=0 )
+                throw std::runtime_error("openssh key: bad encrypted length");
+
+            plain.resize(enc.size());
+            EVP_CIPHER_CTX* cc = EVP_CIPHER_CTX_new();
+            if( !cc ) throw std::runtime_error("EVP_CIPHER_CTX_new - "+ssl_err());
+            int  outl=0, total=0; bool ok=false;
+            do {
+                if( EVP_DecryptInit_ex(cc, cipher, nullptr, keyiv.data(), keyiv.data()+keylen)!=1 ) break;
+                EVP_CIPHER_CTX_set_padding(cc, 0);   // OpenSSH pads to blocksize itself
+                if( EVP_DecryptUpdate(cc, plain.data(), &outl, enc.data(), static_cast<int>(enc.size()))!=1 ) break;
+                total = outl;
+                if( EVP_DecryptFinal_ex(cc, plain.data()+total, &outl)!=1 ) break;
+                total += outl; ok = true;
+            } while(false);
+            EVP_CIPHER_CTX_free(cc);
+            if( !ok ) { ERR_clear_error(); throw std::runtime_error("openssh key: decryption failed"); }
+            plain.resize(static_cast<size_t>(total));
+        }
+
+        ssh_reader pr(plain);
+        uint32_t   c1=0, c2=0;
+        if( !pr.u32(c1) || !pr.u32(c2) ) throw std::runtime_error("openssh key: truncated private body");
+        if( c1!=c2 ) throw std::runtime_error("openssh key: incorrect passphrase or corrupt key");
+        pkey_ptr pk = openssh_priv_to_pkey(pr);
+        if( !pk ) throw std::runtime_error("openssh key: unsupported or malformed private key");
+        return pk;
+    }
+
+    // If 'data' is an OpenSSH-native PEM container, base64-decode its body
+    // into 'out' and return true. Returns false if it is not such a container.
+    bool extract_openssh_b64(std::string const& data, bytes& out) {
+        static const std::string B = "-----BEGIN OPENSSH PRIVATE KEY-----";
+        static const std::string E = "-----END OPENSSH PRIVATE KEY-----";
+        const size_t b = data.find(B);
+        if( b==std::string::npos ) return false;
+        const size_t s = b + B.size();
+        const size_t e = data.find(E, s);
+        if( e==std::string::npos ) throw std::runtime_error("openssh key: missing END marker");
+        out = base64_decode(data.substr(s, e-s));   // base64_decode skips whitespace/newlines
+        return true;
     }
 } // anonymous namespace
 
@@ -313,14 +521,25 @@ namespace {
     }
 
     // ---- signing (client / test) ----------------------------------------
-    pkey_ptr load_private_key(std::string const& path) {
-        FILE* fp = std::fopen(path.c_str(), "r");
-        if( !fp ) throw std::runtime_error("cannot open identity file '"+path+"'");
-        EVP_PKEY* pk = PEM_read_PrivateKey(fp, nullptr, nullptr, nullptr);
-        std::fclose(fp);
+    pkey_ptr load_private_key(std::string const& path, passphrase_cb ask) {
+        std::ifstream f(path.c_str(), std::ios::binary);
+        if( !f ) throw std::runtime_error("cannot open identity file '"+path+"'");
+        std::ostringstream ss; ss << f.rdbuf();
+        const std::string data = ss.str();
+
+        // Native OpenSSH container (incl. ed25519 and encrypted keys)?
+        bytes osshblob;
+        if( extract_openssh_b64(data, osshblob) )
+            return parse_openssh_private(osshblob, ask);
+
+        // Otherwise PEM / PKCS#8 (possibly encrypted - the callback prompts).
+        BIO* bio = BIO_new_mem_buf(data.data(), static_cast<int>(data.size()));
+        if( !bio ) throw std::runtime_error("BIO_new_mem_buf - "+ssl_err());
+        EVP_PKEY* pk = PEM_read_bio_PrivateKey(bio, nullptr, &etdc_pem_pw_cb, &ask);
+        BIO_free(bio);
         if( !pk )
             throw std::runtime_error("failed to load private key from '"+path+
-                                     "' (PEM/PKCS#8 only; OpenSSH-format keys not yet supported) - "+ssl_err());
+                                     "' (not a supported PEM/PKCS#8 or OpenSSH key, or wrong passphrase) - "+ssl_err());
         return pkey_ptr(pk, &EVP_PKEY_free);
     }
 
@@ -425,6 +644,34 @@ namespace {
             put_string(blob, rawsig);
         }
         return blob;
+    }
+
+    // ---- channel binding + signer abstraction ---------------------------
+    bytes auth_channel_binding(exporter_fn const& exporter, std::string const& principal) {
+        // Single source of truth for the exporter parameters; the daemon's
+        // verify path derives the same bytes the same way.
+        if( !exporter )
+            throw std::runtime_error("no TLS channel binding available (cleartext connection?)");
+        return exporter("EXPORTER-etransfer-auth-v1", principal, 32);
+    }
+
+    signer_fn make_identity_signer(std::string const& path, passphrase_cb ask) {
+        // Load (and, if encrypted, decrypt) the key now so a bad path / wrong
+        // passphrase fails fast - before any TLS handshake or negotiation.
+        // The returned closure keeps the key alive via the shared_ptr.
+        pkey_ptr          key     = load_private_key(path, ask);
+        std::string       keyAlgo;                                  // unused out-param
+        const bytes       pub     = public_key_blob(key.get(), keyAlgo);
+        const std::string sigAlgo = default_sig_algo(key.get());
+
+        return signer_fn([key, pub, sigAlgo](std::string const& principal,
+                                             exporter_fn const& exporter) -> auth_material {
+            auth_material mat;
+            mat.sig_algo    = sigAlgo;
+            mat.pubkey_blob = pub;
+            mat.sig_blob    = sign(key.get(), sigAlgo, auth_channel_binding(exporter, principal));
+            return mat;
+        });
     }
 
 }} // namespace etdc::auth

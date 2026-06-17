@@ -1597,6 +1597,60 @@ namespace etdc {
         __m_attemptExtendedProbe = enable;
     }
 
+#ifdef ETDC_TLS
+    bool ETDProxy::authenticate(std::string const& principal, etdc::auth::signer_fn const& signer) {
+        // No channel binding exists on a cleartext channel: refuse rather than
+        // emit a signature that could be replayed onto a different session.
+        ETDCASSERT(__m_connection->__m_encrypted && __m_connection->tls_exporter,
+                   "authenticate: refusing - the command channel is not encrypted");
+
+        // Produce the SSH material, bound to *this* TLS session, for principal.
+        // (auth::auth_channel_binding inside the signer uses the same exporter
+        // label/length the daemon verifies against.)
+        const etdc::auth::auth_material mat =
+            signer(principal, etdc::auth::exporter_fn(__m_connection->tls_exporter));
+
+        std::ostringstream msgBuf;
+        msgBuf << "auth " << principal << " " << mat.sig_algo << " "
+               << etdc::auth::base64_encode(mat.pubkey_blob) << " "
+               << etdc::auth::base64_encode(mat.sig_blob) << "\n";
+        const std::string  msg( msgBuf.str() );
+
+        ETDCDEBUG(4, "ETDProxy::authenticate/sending auth for principal '" << principal << "'" << std::endl);
+        ETDCASSERTX(__m_connection->write(__m_connection->__m_fd, msg.data(), msg.size())==(ssize_t)msg.size());
+
+        // Await a single reply line: "OK" (authenticated) or "ERR <reason>".
+        const size_t            bufSz( 2048 );
+        std::unique_ptr<char[]> buffer(new char[bufSz]);
+        size_t                  curPos{ 0 };
+
+        while( curPos<bufSz ) {
+            const ssize_t n = __m_connection->read(__m_connection->__m_fd, &buffer[curPos], bufSz-curPos);
+
+            ETDCASSERT(n>0, "Failed to read data from remote end");
+            curPos += n;
+
+            std::vector<std::string>  lines;
+            std::smatch               fields;
+
+            (void)getReplies(&buffer[0], &buffer[curPos], std::back_inserter(lines));
+
+            // If no complete line yet, read more bytes
+            if( lines.empty() )
+                continue;
+
+            ETDCASSERT(lines.size()==1, "The remote end sent the wrong number of responses - likely a protocol error");
+            ETDCASSERT(std::regex_match(*lines.begin(), fields, rxReply), "The remote end sent a non-conforming response");
+            // "OK" => session authenticated; "ERR <reason>" => refused. The
+            // latter is an expected outcome (not a protocol error), so report
+            // it to the caller rather than throwing.
+            return fields[1].str()=="OK";
+        }
+        ETDCASSERT(false, "authenticate: no usable reply from remote end");
+        return false; // unreachable (ETDCASSERT throws)
+    }
+#endif // ETDC_TLS
+
     //////////////////////////////////////////////////////////////////////
     //
     // This class does NOT implementing the ETDServerInterface but
@@ -1666,8 +1720,23 @@ namespace etdc {
                 std::smatch              fields;
                 std::vector<std::string> replies;
 
+                // --require-auth gate: until this session has authenticated,
+                // honour only the negotiation/auth handshake (protocol-version,
+                // feature-set, auth). Everything else - including unknown lines
+                // - gets a uniform "authentication required" so we neither do
+                // any work nor reveal whether the command was even valid. The
+                // regex checks are short-circuited away when --require-auth is
+                // off, so the common (no-auth) path pays nothing.
+                const bool authGateBlocks =
+                    __m_etdserver.requireAuth() && __m_principal.empty() &&
+                    !( std::regex_match(*line, rxProtocolVersion) ||
+                       std::regex_match(*line, rxFeatureSet)      ||
+                       std::regex_match(*line, rxAuth) );
+
                 try {
-                    if( std::regex_match(*line, fields, rxList) ) {
+                    if( authGateBlocks ) {
+                        replies.emplace_back("ERR authentication required");
+                    } else if( std::regex_match(*line, fields, rxList) ) {
                         // we're a remote ETDServer (seen from the client)
                         // so we do not support ~ expansion
                         const auto entries = __m_etdserver.listPath(fields[1].str(), false);
@@ -1923,15 +1992,21 @@ namespace etdc {
                                 try {
                                     const etdc::auth::bytes pubkey( etdc::auth::base64_decode(fields[3].str()) );
                                     const etdc::auth::bytes sig( etdc::auth::base64_decode(fields[4].str()) );
-                                    const etdc::auth::bytes signedData(
-                                        __m_connection->tls_exporter
-                                            ? __m_connection->tls_exporter("EXPORTER-etransfer-auth-v1", principal, 32)
-                                            : etdc::auth::bytes() );
-                                    if( signedData.empty() )
+                                    // Native check first: converting an empty
+                                    // tls_exporter_fn to auth::exporter_fn would
+                                    // yield a non-empty wrapper that throws on
+                                    // call, so guard before handing it over.
+                                    if( !__m_connection->tls_exporter ) {
                                         failReason = "no TLS channel binding available";
-                                    else
+                                    } else {
+                                        // Derive the binding the same way the
+                                        // client signed it (single source of
+                                        // truth: etdc::auth::auth_channel_binding).
+                                        const etdc::auth::bytes signedData(
+                                            etdc::auth::auth_channel_binding(__m_connection->tls_exporter, principal) );
                                         authed = etdc::auth::authenticate(__m_etdserver.authKeysDir(), principal,
                                                                           signedData, keytype, pubkey, sig, keyComment);
+                                    }
                                 }
                                 catch( std::exception const& e ) { failReason = e.what(); }
 

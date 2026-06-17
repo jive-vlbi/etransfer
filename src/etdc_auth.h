@@ -30,6 +30,7 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <functional>
 
 #include <openssl/evp.h>
 
@@ -86,11 +87,19 @@ namespace etdc { namespace auth {
     //
     // All of these throw std::runtime_error on failure.
 
-    // Load a private key from a PEM / PKCS#8 file (optionally encrypted; the
-    // standard OpenSSL passphrase prompt is used if needed). NOTE: native
-    // OpenSSH-format keys ("BEGIN OPENSSH PRIVATE KEY") are not handled here
-    // yet - that is a 2b-ii concern.
-    pkey_ptr    load_private_key(std::string const& path);
+    // Called to obtain a passphrase for an encrypted private key. Given the
+    // prompt to display, returns the (possibly empty) passphrase. When a
+    // load needs a passphrase and no callback was supplied, the key is read
+    // from the controlling terminal with echo disabled.
+    using passphrase_cb = std::function<std::string(std::string const& prompt)>;
+
+    // Load a private key from 'path'. Both PEM / PKCS#8 and native OpenSSH
+    // ("BEGIN OPENSSH PRIVATE KEY") containers are accepted, including
+    // passphrase-encrypted keys (OpenSSH uses bcrypt_pbkdf + AES; see
+    // etdc_bcrypt.h). 'ask' supplies the passphrase if the key is encrypted;
+    // if empty, a no-echo terminal prompt is used. Throws on any failure
+    // (including a wrong passphrase).
+    pkey_ptr    load_private_key(std::string const& path, passphrase_cb ask = {});
 
     // The canonical SSH *signature* algorithm name to use with this key:
     // ed25519 -> "ssh-ed25519", RSA -> "rsa-sha2-256", EC P-256 ->
@@ -105,6 +114,44 @@ namespace etdc { namespace auth {
     // Produce the SSH signature blob (string(algo) || string(sig)) over
     // 'data' using private key 'pkey' and SSH signature algorithm 'sig_algo'.
     bytes       sign(EVP_PKEY* pkey, std::string const& sig_algo, bytes const& data);
+
+    // ---- channel binding ------------------------------------------------
+    //
+    // The TLS keying-material exporter (RFC 5705) both peers use to derive
+    // the bytes an 'auth' signature commits to. Same shape as
+    // etdc::etdc_fd::tls_exporter_fn, but kept as a distinct alias so this
+    // module does not need to include etdc_fd.h.
+    using exporter_fn = std::function<bytes(std::string const& label,
+                                            std::string const& context,
+                                            size_t length)>;
+
+    // Derive the channel binding for 'principal' from 'exporter'. Defined
+    // once so the client (signing) and daemon (verifying) cannot drift on the
+    // exporter label / output length. Throws std::runtime_error if 'exporter'
+    // is empty (e.g. a cleartext connection - there is no binding to sign).
+    bytes       auth_channel_binding(exporter_fn const& exporter, std::string const& principal);
+
+    // ---- signer abstraction (client side) -------------------------------
+    //
+    // What the client must present in the wire 'auth' command (besides the
+    // principal, which the caller already knows): the SSH signature-algorithm
+    // name and the SSH public-key + signature blobs.
+    struct auth_material {
+        std::string sig_algo;     // 'keytype' field
+        bytes       pubkey_blob;  // base64 -> 'pubkey-b64' field
+        bytes       sig_blob;     // base64 -> 'sig-b64' field
+    };
+
+    // A signer turns the channel binding (derived from 'exporter' for the
+    // given principal) into auth_material. Backends: an identity file now,
+    // ssh-agent later (2b-iii). Throws std::runtime_error on failure.
+    using signer_fn = std::function<auth_material(std::string const& principal,
+                                                  exporter_fn const& exporter)>;
+
+    // Identity-file backend: load (and, if needed, decrypt via 'ask') the
+    // private key at 'path' now - so a bad path / wrong passphrase fails fast,
+    // before any network round-trip - and return a signer that signs with it.
+    signer_fn   make_identity_signer(std::string const& path, passphrase_cb ask = {});
 
 }} // namespace etdc::auth
 

@@ -549,6 +549,15 @@ int main(int argc, char const*const*const argv) {
              AP::docstring("Directory of per-principal OpenSSH authorized_keys files (<dir>/<principal>) "
                            "used to verify ssh-pubkey 'auth' over tls:// command channels. "
                            "If unset, no principal can authenticate.") );
+
+    // Phase 2c: refuse all real work on a control connection until the client
+    // has authenticated. Only the protocol-version/feature-set/auth handshake
+    // is honoured beforehand. Requires --authorized-keys (sanity-checked below).
+    cmd.add( AP::long_name("require-auth"), AP::store_const_into(true, serverState.requireAuth), AP::at_most(1),
+             AP::docstring("Refuse every command on a control connection until the client has authenticated "
+                           "with ssh-pubkey 'auth' (only the protocol-version / feature-set / auth handshake "
+                           "is permitted beforehand). Requires --authorized-keys and an encrypted (tls://) "
+                           "command channel, since cleartext sessions can never authenticate.") );
 #endif
 
     // command servers; we require at least one of 'm
@@ -612,6 +621,15 @@ int main(int argc, char const*const*const argv) {
 
     // Set message level based on command line value (or default)
     etdc::dbglev_fn( message_level );
+
+#ifdef ETDC_TLS
+    // --require-auth is meaningless without a key store to verify against:
+    // with no authorized-keys directory no client could ever authenticate,
+    // which would turn every command channel into a brick wall. Fail fast,
+    // before daemonizing, so the message reaches the terminal not syslog.
+    ETDCASSERT(!(serverState.requireAuth && serverState.authKeysDir.empty()),
+               "--require-auth needs --authorized-keys: without a key store no client can authenticate");
+#endif
 
     // To daemonize or not to daemonize, that is the question.
     // If we do, we do that by replacing the streambuf of std::cerr by one

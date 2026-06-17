@@ -128,6 +128,11 @@ namespace etdc {
         // Phase 2 ssh-pubkey auth (--authorized-keys). Empty => no principal
         // can authenticate. Always present (the option is TLS-only in etd.cc).
         std::string             authKeysDir{};
+        // When true (set via --require-auth, TLS-only), a command-channel
+        // session may only run the negotiation/auth handshake until it has
+        // successfully authenticated; every other command is refused. Requires
+        // authKeysDir to be non-empty (checked at daemon startup in etd.cc).
+        bool                    requireAuth{ false };
         etdc::mss_type          udtMSS{ 0/*1500*/ };
         etdc::mss_type          srtMSS{ 0 };
         etdc::max_bw_type       udtMaxBW{ 0/*-1*/ };
