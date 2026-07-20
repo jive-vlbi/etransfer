@@ -396,8 +396,8 @@ namespace etdc {
             // SNI - only meaningful (and allowed) for host names, not address literals
             if( !peername.empty() && peername.find(':')==std::string::npos )
                 SSL_set_tlsext_host_name(ssl.get(), peername.c_str());
-            ETDCASSERT(SSL_connect(ssl.get())==1,
-                       "TLS handshake with [" << peername << "] failed - " << tls_errors());
+            if( SSL_connect(ssl.get())!=1 )
+                throw etdc::tls_handshake_error(std::string("TLS handshake with [") + peername + "] failed - " + tls_errors());
 
             // In TLS 1.3 the server always presents a certificate; judge it
             // by fingerprint through the application-provided callback
