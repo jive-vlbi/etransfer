@@ -37,6 +37,7 @@
 #include <iterator>
 #include <iostream>
 #include <functional>
+#include <cctype>
 
 // C-stuff
 #include <pwd.h>
@@ -695,10 +696,18 @@ int main(int argc, char const*const*const argv) {
     decltype(cmdsrvs.size()) nTLS{ 0 };
 
     for(auto&& cmdsrv: cmdsrvs) {
-        if( cmdsrv.find("tls")==static_cast<std::string::size_type>(0) )
-            nTLS++;
+        // cmd.parse already validated the URL against rxURL, so we can
+        // re-match and extract the protocol. The regex is case-insensitive
+        // so convert the protocol to lower case before checking it.
+        std::match_results<std::string::const_iterator>  m;
+        if( std::regex_match(cmdsrv, m, rxURL) ) {
+            std::string proto = m[1].str();
+            for(auto& c: proto) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            if( proto.compare(0, 3, "tls")==0 )
+                nTLS++;
+        }
     }
-    ETDCASSERT(!serverState.requireAuth || (serverState.requireAuth && (nTLS==cmdsrvs.size())),
+    ETDCASSERT(!(serverState.requireAuth && nTLS!=cmdsrvs.size()),
                "--require-auth needs ALL command channels to be encrypted (tls:// or tls6://)");
 
     for(auto&& cmdsrv: cmdsrvs)

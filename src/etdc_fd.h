@@ -75,6 +75,14 @@ std::basic_ostream<CharT, Traits>& operator<<(std::basic_ostream<CharT, Traits>&
 // Make <host> and <protocol> constructible from std::string (and usable as ~)
 // but you cannot mix them - they become their own type
 namespace etdc {
+    // Dedicated exception for TLS handshake failures. mk_client uses it to
+    // distinguish a permanent TLS negotiation error (e.g. talking to a
+    // cleartext daemon) from transient network problems, so the former is
+    // not retried several times with delays in between.
+    struct tls_handshake_error: public std::runtime_error {
+        explicit tls_handshake_error(std::string const& s): std::runtime_error(s) {}
+    };
+
     // set file descriptor in blocking or non-blocking mode
     void setfdblockingmode(int fd, bool blocking);
 
@@ -1805,6 +1813,12 @@ etdc::etdc_fdptr mk_client(T const& proto, etdc::detail::client_settings const& 
             etdc::detail::client_map.find(proto)->second(pSok, clntSettings);
 
             return pSok;
+        }
+        catch( etdc::tls_handshake_error const& ) {
+            // A TLS handshake failure is not a transient network hiccup; retrying
+            // will not turn a cleartext (or otherwise TLS-incapable) peer into a
+            // TLS server. Rethrow immediately.
+            throw;
         }
         catch( ... ) {
             // That failed! 

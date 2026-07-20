@@ -136,56 +136,120 @@ Both the e-transfer daemon and client support the "--help" command line option e
 
 ### Authentication and authorization
 
-If the system is compiled with TLS support (`make TlS=1`) the daemon and client gain support for `tls://...` and `tls6://...` protocols. The main goal is to provide encrypted communication between the client and daemon over its _command_ channel, but nothing prevents you from using `tls://...` for data transfers as well - albeit they will go over 'slow' TCP, but allows for encrypted data transfers of sensitive data.
-
-To fully exploit / secure the etransfer daemon and client the following steps are necessary:
-
-#### Daemon side 
-Generate TLS key/certificate pair for the daemon
-```bash
-    $> openssl req -x509 -newkey rsa:3072 -nodes -keyout <keyfile> -out <certfile> -days 3650 -subj "/CN=$(hostname -f)"
-```
-
-Then create a `/path/to/keystore` directory, e.g. `~/.etransfer/keystore`.
-
-Start `etd` with the following options:
-- use `--key <keyfile> --cert <certfile>` to point the code at the Sekrit Stuff
-- use `--command tls://...` to specify encrypted command channel(s)
-- add `--authorized-keys <path/to/keystore>` to specify the keystore directory
-- add `--require-auth` if you _only_ want to allow authenticated users to use your daemon
-
-`etd` prints its "TLS fingerprint", on a line that looks something like this
-```bash
-2026-06-17 13:08:59.78: TLS certificate 'etd.crt' sha256=29:4c:dd:cf:49: ... (snip)
-```
-Then it's time to share a line of text like below with users through a secondary medium/publish somewhere for prospective clients
+Since v3.0 the daemon and client support TLS 1.3 encrypted command channels and ssh-style public-key authentication. This is **optional** and must be enabled at build time:
 
 ```bash
-<host>#<port> <TLS fingerprint>
-```
-For example, for the test daemon on 127.0.0.1, default port, that I used for testing, this line reads:
-```bash
-127.0.0.1#4004 29:4c:dd:cf:49: ... (snip)
+make clean
+make TLS=1 [-j <number>]
 ```
 
-#### Client side:
-- create a file `~/.etransfer_known_hosts` and put the fingerprint(s) that `etd`-admins shared in it for daemons you want to connect to. The client refuses to connect to a `tls://...` host it don't recognize (but it can be relaxed to accept it always, but that's not the default)
-- if you don't already have a SSH key pair, generate one: `ssh-keygen -t ed25519 -f ~/.ssh/etransfer_id_ed25519`
-- share the public key part of the key-pair you just created or already had, and a `username` (that you want to go with the public key) with (the) daemon admin(s) of any/all `etd`-daemons you might want to transfer with
+OpenSSL >= 1.1.1 (or LibreSSL) is required. The zero-dependency non-TLS build remains supported: compile without `TLS=1` to keep the original `tcp://`/`udt://`/`srt://` behaviour. The protocol surface is additive: a TLS-enabled daemon can still offer `tcp://` command channels for older clients.
 
-#### Back to daemon side:
-For each public key + supplied `username` that you want to allow, put the shared key in a file:
-```bash
-/path/to/keystore/<username>
+The main goal is to encrypt the _command_ channel (`tls://` / `tls6://`). You can also use `tls://` for data channels, but it runs over TCP so it is slower than UDT/SRT; use it only when you need end-to-end encrypted data.
+
+#### Daemon setup
+
+1. **Generate a self-signed certificate and key** (a CA is unnecessary; clients pin the certificate fingerprint, see below):
+
+   ```bash
+   server$ openssl req -x509 -newkey rsa:3072 -nodes \
+               -keyout etd.key -out etd.crt \
+               -days 3650 -subj "/CN=$(hostname -f)"
+   server$ chmod 600 etd.key
+   ```
+
+   ECDSA (`-newkey ec -pkeyopt ec_paramgen_curve:P-256`) works too and gives smaller handshakes.
+
+2. **Create the authorized-keys directory.** This is a directory that contains one file per allowed principal. The file name is the principal name; the file contents are one or more OpenSSH `authorized_keys` lines, exactly like `~/.ssh/authorized_keys`:
+
+   ```bash
+   server$ mkdir -p /etc/etransfer/keystore
+   server$ chmod 700 /etc/etransfer/keystore
+   ```
+
+3. **Start the daemon** with a TLS command channel and the auth keystore:
+
+   ```bash
+   server$ .../etd --command tls://:4004 --data srt://:8008 \
+                   --cert etd.crt --key etd.key \
+                   --authorized-keys /etc/etransfer/keystore
+   ```
+
+   To make authentication **mandatory**, add `--require-auth`. When this is set, `etd` will refuse to start unless:
+   - `--authorized-keys` is also set, and
+   - _every_ `--command` channel is `tls://` or `tls6://` (cleartext command channels can never authenticate, so they would be unusable).
+
+   `etd` prints the TLS fingerprint at startup:
+
+   ```text
+   2026-06-17 13:08:59.78: TLS certificate 'etd.crt' sha256=29:4c:dd:cf:49: ... (snip)
+   ```
+
+   Share this with users out-of-band, or publish a line like `host#port sha256=...` so they can pre-seed their known-hosts file.
+
+#### Adding authorized users
+
+For each user that should be allowed:
+- Pick a principal name (e.g. `alice`).
+- Have the user share their **public** key (the `.pub` file from `ssh-keygen`, or an entry copied from `~/.ssh/authorized_keys`).
+- Create `/etc/etransfer/keystore/alice` and paste the key(s) in it. Multiple keys per principal are allowed, one per line. Comments on the key line are preserved and logged.
+
+Example keystore file `/etc/etransfer/keystore/alice`:
+
+```text
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... alice@laptop
+ssh-rsa AAAA... alice@desktop
 ```
 
-#### Then, client side do this
-```bash
-$> etc ... --identity ~/.ssh/etransfer_id_ed25519 <file> tls://<username>@<host>#<port>:/path/to/remote/file 
-```
-**Note** the `--identity` argument points at the _private_ key of the key-pair!
+#### Client setup
 
-Clients can be relaxed to accecpt unknown daemon fingerprints on first connection attempt, but for max security it is better to rely on daemon-admin published known-good fingerprints.
+1. **Trust the daemon's certificate.** The client stores fingerprints in `~/.etransfer_known_hosts` (one `host#port fingerprint` pair per line). The first contact can be handled automatically or interactively:
+   - `--tls-verify=strict` (default): only connect if the fingerprint is already pinned in `~/.etransfer_known_hosts`.
+   - `--tls-verify=tofu` (alias `accept-new`): trust and record an unknown host on first contact, but refuse if the fingerprint later changes.
+   - `--tls-verify=ask`: prompt for confirmation on first contact when running interactively; in a script or pipeline it falls back to `strict` so it never auto-trusts.
+
+   A changed fingerprint is always refused. To pre-seed a known host, add a line such as:
+
+   ```text
+   server.example.com#4004 sha256=29:4c:dd:cf:49:...
+   ```
+
+   The fingerprint format is the same as `openssl x509 -in etd.crt -noout -fingerprint -sha256` (case-insensitive).
+
+2. **Generate an SSH key pair** if you do not have one:
+
+   ```bash
+   client$ ssh-keygen -t ed25519 -f ~/.ssh/etransfer_id_ed25519 -N ''
+   ```
+
+   The private key file can be unencrypted or passphrase-protected (the passphrase is prompted for if needed). Share only the `.pub` file with the daemon admin.
+
+3. **Run `etc` with authentication.** Use `--identity` to point to your private key file and `tls://<principal>@<host>#<port>:/path` to tell the daemon who you are:
+
+   ```bash
+   client$ .../etc --identity ~/.ssh/etransfer_id_ed25519 \
+                   /local/path 'tls://alice@server.example.com#4004:/remote/path'
+   ```
+
+   The `--identity` argument points to the **private** key.
+
+   If the URL does not contain a `user@` prefix, the client falls back to `--principal <name>`, and if that is also omitted, to the local login name. The easiest workflow is to put the principal in the URL:
+
+   ```bash
+   client$ .../etc --identity ~/.ssh/etransfer_id_ed25519 \
+                   --principal alice \
+                   /local/path 'tls://server.example.com#4004:/remote/path'
+   ```
+
+#### What happens when authentication is required
+
+With `--require-auth` on the daemon:
+
+- A client that connects without `--identity` is rejected with `ERR authentication required` as soon as it tries a real command.
+- A client that presents an identity not in the principal's keystore file is rejected with `ERR authentication failed`.
+- A client that connects to the daemon over `tcp://` (or `udt://`/`srt://`) can never authenticate; `etd` refuses to start if `--require-auth` is combined with a non-TLS `--command` channel.
+
+The command channel is authenticated; data channels are protected by the transfer UUIDs that are only handed out after a successful command-channel request, so an unauthenticated command channel cannot obtain a data channel capability.
 
 
 ### Access control lists
