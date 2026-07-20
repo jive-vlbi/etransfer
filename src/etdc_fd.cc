@@ -414,7 +414,13 @@ namespace etdc {
             if( !peername.empty() && peername.find(':')==std::string::npos )
                 SSL_set_tlsext_host_name(ssl.get(), peername.c_str());
             if( SSL_connect(ssl.get())!=1 )
-                throw etdc::tls_handshake_error(std::string("TLS handshake with [") + peername + "] failed - " + tls_errors());
+                // A failed client handshake is most often the mirror image of the
+                // server-side sniff above: we spoke TLS to a peer that answered in
+                // cleartext (an old/non-TLS daemon, or a tls:// typo for a tcp://
+                // port). Keep the raw OpenSSL diagnostics but append a plain-language
+                // hint so the operator isn't left guessing at the crypto error.
+                throw etdc::tls_handshake_error(std::string("TLS handshake with [") + peername + "] failed - " + tls_errors() +
+                                                " (the peer may be a non-TLS/cleartext daemon - if so, connect with tcp:// instead of tls://)");
 
             // In TLS 1.3 the server always presents a certificate; judge it
             // by fingerprint through the application-provided callback
