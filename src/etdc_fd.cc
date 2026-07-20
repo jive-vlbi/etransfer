@@ -368,6 +368,23 @@ namespace etdc {
         }
 
         void tls_server_handshake(etdc_fdptr pSok, ssl_ctx_ptr ctx) {
+            // Before committing to a TLS handshake, peek at the first byte the
+            // peer sent. A TLS record always starts with 0x16 (content-type =
+            // handshake); our cleartext command protocol always starts with a
+            // printable ASCII letter (e.g. 'p' of "protocol-version"). If the
+            // first byte is not 0x16 the peer is almost certainly speaking
+            // cleartext to an encrypted-only command channel. Rather than let
+            // SSL_accept() choke on it - which leaves the client staring at a
+            // silent EOF - send back one human- and protocol-readable line so
+            // the operator immediately knows to reconnect with tls://.
+            unsigned char firstByte{ 0 };
+            const ssize_t peeked = ::recv(pSok->__m_fd, &firstByte, 1, MSG_PEEK);
+            if( peeked==1 && firstByte!=0x16 ) {
+                static const std::string clearText("ERR this is a TLS (encrypted) command channel - reconnect using tls://\n");
+                // Best effort: the peer may already have hung up.
+                (void)pSok->write(pSok->__m_fd, clearText.data(), clearText.size());
+                throw std::runtime_error("cleartext peer on a TLS command channel - refused");
+            }
             ssl_ptr ssl( SSL_new(ctx.get()), &SSL_free );
             ETDCASSERT(ssl, "SSL_new() failed - " << tls_errors());
             ETDCASSERT(SSL_set_fd(ssl.get(), pSok->__m_fd)==1, "SSL_set_fd() failed - " << tls_errors());
